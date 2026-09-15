@@ -127,6 +127,33 @@ only the runner permission; the restricted group is what confines the runner.
 otherwise leaves the VM alive and the hourly reaper becomes the only thing that
 cleans up — which is a backstop, not a plan.
 
+**A long-lived runner has undeclared state, and the VM is where you find out.**
+Every repository that moves here was passing on a box somebody had been fixing
+by hand for months. Nothing recorded those fixes, so the first ephemeral run
+surfaces them all at once, and they do not look like missing dependencies —
+they look like your code broke. Budget for a round of this, and treat each one
+as a line to add to an executable dependency list in the repo, not as a thing
+to fix on the VM.
+
+The nastiest are the dependencies that fail *silently*. A missing shared
+library stops the process and names itself; a missing **font** renders happily
+in a substitute, so a visual-regression suite fails as a pixel diff and reads
+as a CSS regression. Resist the urge to re-record the baselines: that bakes the
+substitute in and destroys the signal for whoever hits it next. Measure what
+changed — if the page chrome around the changed pixels is byte-identical, it is
+the environment, not the page. Two that catch people, because a browser resolves
+both outside the page's own font stack:
+
+- a metric-compatible **Arial** (`fonts-liberation`) — form controls are drawn
+  through the Arial alias, not from the page's CSS, so without it every route
+  with an `<input>`, `<select>` or `<button>` moves and every route without one
+  does not;
+- an **emoji** face (`fonts-noto-color-emoji`) — emoji in your own copy render
+  as tofu boxes on a base cloud image.
+
+Assert the property rather than the package (`fc-match`, `fc-list :charset=…`),
+so a box that satisfies it another way is not forced onto your choice.
+
 **A cold VM has no caches.** Anything your suite relied on surviving between
 runs (a warm build directory, a checkout, a tree-hash cache) is gone every time.
 That is usually the right trade — it also removes the shared-state corruption
