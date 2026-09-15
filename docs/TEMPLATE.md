@@ -156,7 +156,9 @@ RAM from inside the run, next to the tool versions you already print.
 **Compilation scales with cores almost linearly, so this is the cheap lever.**
 One measurement of the same cold release build of a ~400-crate Rust workspace:
 501 s on four cores, 139 s on twenty-four — 3.6x for 6x the cores, which puts
-the parallel fraction near 87%. It stays near-linear until link-time
+the parallel fraction near 96% (Amdahl, solved from the two points). Projected
+from those: ~284 s at eight cores, ~175 s at sixteen. It stays near-linear until
+link-time
 optimisation serialises at the end, which is the floor no core count and no
 cache moves. Before building any cache infrastructure, check what the runner is
 actually sized at: a `qm set` is a smaller change than a cache service and on
