@@ -52,6 +52,14 @@ jobs:
       - name: reap
         run: bash scripts/test-reap.sh
 
+      # The substrate list is mostly DATA -- a set of package names and machine
+      # properties -- and data has no behaviour to observe, so this suite asserts
+      # the content of the list and that --check mutates nothing. It matters
+      # because a missing entry does not fail here; it fails in a consumer's run,
+      # on a VM that is destroyed forty seconds later.
+      - name: template substrate
+        run: bash scripts/test-template-substrate.sh
+
       # A second reap suite, in Python, inherited from deckdumpster. It covers
       # the age and enumeration paths against a stubbed Proxmox API; the bash
       # suite covers the busy check and the VM-to-runner correlation. Kept as

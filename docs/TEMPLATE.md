@@ -133,31 +133,111 @@ qm config <TEMPLATE_VMID> | grep -q '^agent: 1' \
 
 ## Packages and tooling
 
-Install all of these before converting to a template. The rationale for each
-follows; do not trim the list without re-reading the script it came from.
-
-### Podman (rootless-capable)
+### The substrate — run the script, do not paste the list
 
 ```bash
-sudo apt install -y podman uidmap slirp4netns fuse-overlayfs
+sudo bash scripts/template-substrate.sh            # apply
+bash scripts/template-substrate.sh --check         # verify; exits 1 if anything is missing
 ```
 
-Rootless Podman requires:
+Run this before converting the VM to a template, and re-run `--check` after
+cloning if you want to prove a clone came up correctly.
+
+**This section used to be the list itself, as prose with bash blocks to paste.**
+Nothing executed it and nothing checked it, so it drifted from what the runners
+actually needed and every consuming repository rediscovered the gap separately —
+one CI round-trip at a time, on a VM destroyed forty seconds later. In a single
+afternoon two repositories independently hit the same missing `pasta`, the same
+uid-pinning bug and the same boot-time `dpkg` race, while a third had already
+solved two of them months earlier in a file the others could not see. The list is
+now `scripts/template-substrate.sh`; the rationale stays here.
+
+**What the substrate covers, and what it deliberately does not.** It is the set of
+machine properties *every* consumer needs and *no* consumer should have to know
+about. A dependency of one repository's suite — `uv`, Chromium's shared libraries,
+a Rust toolchain, metric-compatible fonts for visual regression — belongs in that
+repository's own `runner-deps` check. The test for the boundary: if a second
+repository would be surprised to need it, it is not substrate.
+
+### Podman (rootless-capable) — rationale
+
+Installed by the script. Rootless Podman requires:
+
 - `uidmap` / `newuidmap` — subordinate UID/GID mapping. Without it,
   `podman run` fails with "newuidmap not found".
-- `slirp4netns` or `pasta` — rootless networking. Podman 4.x defaults to
-  `pasta` when available; either works. On Debian/Ubuntu: `slirp4netns` is
-  the safe choice and is in the default repos.
 - `fuse-overlayfs` — rootless overlay storage driver. Without it Podman
   falls back to `vfs` (extremely slow; a ~983 MB builder stage takes
   minutes where overlay takes seconds).
+- `catatonit` — the init Podman uses for `--init`; absent, that flag fails late.
+- **`slirp4netns` *and* `passt` — both, deliberately.** Podman 4.x defaults to
+  `slirp4netns` and 5.x defaults to `pasta`, and **5.x does not fall back**: it
+  aborts with `could not find pasta, the network namespace can't be configured`.
+  `passt` is the package that provides the `pasta` binary. Installing both costs a
+  few hundred kilobytes and makes the image independent of which Podman major the
+  release happens to ship. An earlier version of this sheet called `slirp4netns`
+  "the safe choice", which stopped being true at Podman 5.
 
-After installing, set up `/etc/subuid` and `/etc/subgid` for the runner user
-if they are not already present:
-```bash
-sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 runner
-```
+`/etc/subuid` and `/etc/subgid` for the runner user are set by the script too.
 Confirm with `podman unshare cat /proc/self/uid_map` as the runner user.
+
+### Unprivileged user namespaces must not be AppArmor-restricted
+
+Ubuntu 24.04 turned on `kernel.apparmor_restrict_unprivileged_userns`, which drops
+a process creating an unprivileged userns into a restricted AppArmor domain. Podman
+starts `pasta` inside the rootless network namespace that **user-defined (bridge)**
+networks require; `pasta` lands in that domain and Podman, in a different one, can
+no longer signal it:
+
+```
+Error: rootless netns: cleanup: 1 error occurred:
+  * rootless netns: kill network process: permission denied
+```
+
+naming neither AppArmor nor a namespace, and reproducing with `pasta` correctly
+installed. Containers on Podman's **default** network are unaffected — which is why
+one repository's suite passes on this template while another's does not, and why
+the gap stayed invisible until a consumer with a different network shape arrived.
+
+The script sets it to 0 both live and in `/etc/sysctl.d/`, because the live value
+does not survive the reboot between building a template and cloning it.
+
+### unattended-upgrades is disabled
+
+A VM that lives thirty minutes and is then destroyed has nothing to gain from an
+unattended upgrade, and it holds the `dpkg` lock at exactly the moment provisioning
+wants it:
+
+```
+E: Could not get lock /var/lib/dpkg/lock-frontend.
+   It is held by process 1392 (unattended-upgr)
+```
+
+It is a **race**, so it fails perhaps one run in several with a package list that
+installed cleanly on the runs either side. That is the expensive shape: it reads as
+a broken dependency list rather than a timing bug, and the first thing anyone does
+is re-run, which works. The script disables the unit (the durable fix) *and* passes
+`DPkg::Lock::Timeout` (which still works on a box where somebody re-enabled it).
+
+### A C compiler is a machine property
+
+`build-essential` and `pkg-config`. Rust shells out to `cc` to **link** and fails
+with ``error: linker `cc` not found``, which reads as a broken Rust toolchain and is
+a missing Debian package. Native Python wheels and cgo do the same. It was on the
+old shared box because somebody had put it there, and no file recorded it.
+
+### /tmp must not be a RAM disk
+
+Ubuntu mounts `/tmp` as a tmpfs sized at half of RAM. A suite with a disk floor then
+measures that, not the root filesystem:
+
+```
+ERROR: only 4G free on /tmp (floor 10G).
+tmpfs  3.7G  400K  3.7G  1% /tmp
+```
+
+on a VM whose `/` had 79G free. The script **reports** this rather than changing it:
+the fix is a template decision (mask `tmp.mount`, or size the VM's RAM for it) and
+silently remounting `/tmp` under a running job would be worse than the diagnosis.
 
 **Minimum Podman version: 4.4.** Quadlet `.container` file support was added
 in Podman 4.4. Older versions silently ignore `.container` files —
@@ -171,7 +251,13 @@ mechanism Quadlet uses) were introduced in systemd 239. Ubuntu 22.04 ships
 systemd 249 (fine); Ubuntu 20.04 ships 245 (fine). Confirm with
 `systemctl --version`.
 
-### uv
+### uv — NOT substrate: one consumer's dependency
+
+Kept here as a worked example of the boundary, not as something this template
+must carry. `uv` is a dependency of one repository's suite, so it belongs in that
+repository's own `runner-deps` check, which declares what is its own. Baking every
+consumer's toolchain into the shared image is how the image becomes a place where
+nobody can tell what is still needed.
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -181,7 +267,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 itself. Install as the runner user so `~/.local/bin/uv` is on `PATH`.
 Confirm with `uv --version`.
 
-### Playwright / Chromium system libraries
+### Playwright / Chromium system libraries — NOT substrate
+
+Also one consumer's dependency; see the boundary note under "uv". The same applies
+to metric-compatible fonts (`fonts-liberation`): a runner without them renders form
+controls through a fallback face and turns a visual-regression suite red in a way
+that looks like a CSS change. That is real, and it belongs to the repository that
+does visual regression.
+
 
 `deploy/ci.sh` runs:
 ```bash
@@ -202,11 +295,8 @@ Without these, `shot-scraper install` succeeds but the first Playwright
 launch fails with `error while loading shared libraries: libnss3.so`.
 That failure happens mid-suite, long after everything looks fine.
 
-### git, curl, jq
+### git, curl, jq — installed by the substrate script
 
-```bash
-sudo apt install -y git curl jq
-```
 
 `deploy/ci.sh` and several deploy scripts call `curl` and `jq` directly.
 `git` is required by the GitHub Actions runner and for `uv` operations that
