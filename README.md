@@ -111,6 +111,27 @@ gh api -X PATCH /orgs/DeckDumpster/actions/runner-groups/3 \
   -f name=ephemeral-ci -F allows_public_repositories=true
 ```
 
+**...and the repository must be IN that group.** Same symptom exactly — a job
+queued forever beside an idle, online, correctly-labelled runner, with no error
+and no annotation — and a different cause, which is what makes it expensive:
+`ephemeral-ci` is `visibility: selected`, so a repository missing from its list
+cannot use the runner even though the runner registered *into* that group and is
+sitting there idle. Someone who reads the paragraph above, checks
+`allows_public_repositories`, finds it already `true` and stops has eliminated
+the wrong one of the two. Check both, in this order:
+
+```sh
+# the runner is in the group and the group allows public repos...
+gh api /orgs/DeckDumpster/actions/runner-groups/3/runners --jq '.runners[].name'
+# ...AND the repository is on the group's list
+gh api /orgs/DeckDumpster/actions/runner-groups/3/repositories --jq '.repositories[].full_name'
+```
+
+The fix is step 1 of the one-time setup above, which is easy to skip precisely
+because nothing fails until a run is already halfway through: `provision`
+succeeds, the VM boots, the runner registers and comes online, and only the
+`test` job never starts.
+
 That is safe **only because these runners are per-run**. `provision` needs repo
 secrets, a fork pull request does not receive them, so a fork can never cause a
 runner to exist — its `test` job would queue against a label that is never
