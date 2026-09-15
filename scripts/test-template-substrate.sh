@@ -108,11 +108,12 @@ fi
 
 # The UNIT must be acted on, not merely mentioned. Matching the bare name passed a
 # copy that only named it in a log line, which disables nothing.
-if has 'systemctl disable[^|]*unattended-upgrades' \
-   || { has 'systemctl disable' && has 'unattended-upgrades\.service'; }; then
-    ok "unattended-upgrades is handled"
+# MASKED, not merely disabled: a disabled unit can be pulled back in as another
+# unit's dependency. TEMPLATE.md has said so since e02f95b.
+if has 'systemctl mask[^|]*unattended-upgrades'; then
+    ok "unattended-upgrades is masked, not just disabled"
 else
-    bad "unattended-upgrades is handled" "the unit is named but never disabled; it races provisioning for the dpkg lock at boot"
+    bad "unattended-upgrades is masked, not just disabled" "disable alone is undone by any unit that depends on it"
 fi
 
 if has 'DPkg::Lock::Timeout=[0-9]+'; then

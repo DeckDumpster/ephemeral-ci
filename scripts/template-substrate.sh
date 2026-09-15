@@ -248,10 +248,17 @@ check_userns() {
 # holds the dpkg lock at exactly the moment provisioning wants it. This is the
 # durable half of the fix; APT_LOCK_WAIT above is the half that still works on a
 # box where somebody has re-enabled it.
+# MASKED, NOT MERELY DISABLED. A disabled unit can be pulled back in as another
+# unit's dependency; masking is what makes that impossible. Purging is finer still
+# and satisfies this check by making the unit absent.
 check_unattended() {
-    systemctl list-unit-files 'unattended-upgrades.service' >/dev/null 2>&1 || return 0
-    systemctl is-enabled unattended-upgrades.service >/dev/null 2>&1 || return 0
-    lack "unattended-upgrades disabled" "it races provisioning for the dpkg lock at boot and fails roughly one run in several, looking like a broken dependency list"
+    local state
+    command -v systemctl >/dev/null 2>&1 || return 0
+    state="$(systemctl is-enabled unattended-upgrades.service 2>/dev/null)"
+    case "$state" in
+        ''|masked|disabled|'not-found'|linked-runtime) return 0 ;;
+    esac
+    lack "unattended-upgrades masked" "it is '$state'; it races provisioning for the dpkg lock at boot and fails roughly one run in several, looking like a broken dependency list"
     return 1
 }
 
@@ -318,11 +325,19 @@ if [ -n "$(sysctl -n "$APPARMOR_SYSCTL" 2>/dev/null)" ]; then
     $SUDO sysctl -q -w "${APPARMOR_SYSCTL}=0" || note "could not set ${APPARMOR_SYSCTL} live"
 fi
 
-if systemctl list-unit-files 'unattended-upgrades.service' >/dev/null 2>&1 \
-   && systemctl is-enabled unattended-upgrades.service >/dev/null 2>&1; then
-    note "disabling unattended-upgrades (it races provisioning for the dpkg lock)"
-    $SUDO systemctl disable --now unattended-upgrades.service \
-        || note "could not disable unattended-upgrades"
+if command -v systemctl >/dev/null 2>&1; then
+    case "$(systemctl is-enabled unattended-upgrades.service 2>/dev/null)" in
+        ''|masked|'not-found') ;;
+        *)
+            note "masking unattended-upgrades (it races provisioning for the dpkg lock)"
+            $SUDO systemctl disable --now unattended-upgrades.service \
+                || note "could not disable unattended-upgrades"
+            # Masking is the part that lasts: a merely-disabled unit can be pulled
+            # back in as another unit's dependency.
+            $SUDO systemctl mask unattended-upgrades.service \
+                || note "could not mask unattended-upgrades"
+            ;;
+    esac
 fi
 
 # Re-check and report. A partial apply is a failure here rather than a surprise

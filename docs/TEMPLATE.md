@@ -203,20 +203,10 @@ does not survive the reboot between building a template and cloning it.
 
 ### unattended-upgrades is disabled
 
-A VM that lives thirty minutes and is then destroyed has nothing to gain from an
-unattended upgrade, and it holds the `dpkg` lock at exactly the moment provisioning
-wants it:
-
-```
-E: Could not get lock /var/lib/dpkg/lock-frontend.
-   It is held by process 1392 (unattended-upgr)
-```
-
-It is a **race**, so it fails perhaps one run in several with a package list that
-installed cleanly on the runs either side. That is the expensive shape: it reads as
-a broken dependency list rather than a timing bug, and the first thing anyone does
-is re-run, which works. The script disables the unit (the durable fix) *and* passes
-`DPkg::Lock::Timeout` (which still works on a box where somebody re-enabled it).
+Applied by the script; see **"unattended-upgrades must not be running"** below for
+the full rationale and the verification. The script masks the unit as well as
+disabling it, because a disabled unit can be pulled back in as a dependency, and
+it passes `DPkg::Lock::Timeout` on every apt call as the belt to that braces.
 
 ### A C compiler is a machine property
 
@@ -227,29 +217,9 @@ old shared box because somebody had put it there, and no file recorded it.
 
 ### /tmp must not be a RAM disk
 
-Ubuntu mounts `/tmp` as a tmpfs sized at half of RAM. A suite with a disk floor then
-measures that, not the root filesystem:
-
-```
-ERROR: only 4G free on /tmp (floor 10G).
-tmpfs  3.7G  400K  3.7G  1% /tmp
-```
-
-on a VM whose `/` had 79G free. The script **reports** this rather than changing it:
-the fix is a template decision (mask `tmp.mount`, or size the VM's RAM for it) and
-silently remounting `/tmp` under a running job would be worse than the diagnosis.
-
-**Minimum Podman version: 4.4.** Quadlet `.container` file support was added
-in Podman 4.4. Older versions silently ignore `.container` files —
-`systemctl --user start mtgc-<instance>` succeeds but starts nothing, and
-every subsequent `podman port` call returns empty. On Ubuntu 22.04 the repo
-version is 3.4; install from the Kubic OBS repo or the
-`ppa:projectatomic/ppa` PPA to get ≥ 4.4.
-
-**Minimum systemd version: 239.** User-mode systemd generators (the
-mechanism Quadlet uses) were introduced in systemd 239. Ubuntu 22.04 ships
-systemd 249 (fine); Ubuntu 20.04 ships 245 (fine). Confirm with
-`systemctl --version`.
+The script **reports** this and does not change it — the fix is a template
+decision and remounting `/tmp` under a running job would be worse than the
+diagnosis. See **"/tmp must not be a tmpfs"** below for the rationale.
 
 ### uv — NOT substrate: one consumer's dependency
 
