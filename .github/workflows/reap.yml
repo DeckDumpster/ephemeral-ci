@@ -1,0 +1,92 @@
+name: Reap orphaned runner VMs
+
+# THE BACKSTOP THAT WAS DOCUMENTED AND NEVER BUILT.
+#
+# Every consuming workflow tears its VM down under `if: always()`, which covers
+# a failed or cancelled job. It does NOT cover a run GitHub drops, a
+# cancellation landing between the clone and the vmid output, or the hypervisor
+# rebooting mid-run. Without a reaper those become a hypervisor full of dead
+# clones, discovered as a storage-full alert weeks later with no way to tell
+# which clones are live.
+#
+# deckdumpster's README described this workflow in the present tense for the
+# whole life of the feature. It did not exist. It lives here rather than in a
+# consuming repository because the pool is org-wide: a VM leaked by one repo's
+# run has to be reaped whether or not that repo's CI ever runs again.
+
+on:
+  schedule:
+    # Hourly. MAX_AGE_HOURS defaults to 8, which is the 6h GitHub job ceiling
+    # plus a 2h buffer, so this never races a running job.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Print what would be destroyed and touch nothing.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Reap
+        id: reap
+        env:
+          PVE_API_HOST: ${{ vars.PVE_API_HOST }}
+          PVE_NODE: ${{ vars.PVE_NODE }}
+          TEMPLATE_VMID: ${{ vars.TEMPLATE_VMID }}
+          PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+          PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+          CRED_FILE: /dev/null
+          # The busy check reads the ORG runner list, which secrets.GITHUB_TOKEN
+          # cannot see. Without a PAT here the check degrades to age-only and
+          # says so in the log.
+          GITHUB_TOKEN: ${{ secrets.RUNNER_REG_PAT }}
+          GH_ORG: ${{ github.repository_owner }}
+        run: |
+          args=()
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.dry-run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          # reap.sh writes its report to stderr and exits non-zero only when a
+          # VM's age could not be determined. Capture both so the step below can
+          # tell "reaped nothing" from "reaped something".
+          set +e
+          bash scripts/reap.sh "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/reap.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      # REAPING SOMETHING IS NOT A SUCCESS. An orphan means a teardown failed
+      # for a run GitHub already reported green. A silent hourly job that
+      # quietly cleans up after a broken teardown is how the broken teardown
+      # stays broken, so this turns a reap into a red run someone has to look
+      # at. Runs after the step above under `if: always()` so it also fires when
+      # reap.sh itself exited non-zero on an unknown age.
+      - name: An orphan means a teardown failed
+        if: always() && steps.reap.outcome != 'skipped'
+        run: |
+          log="$RUNNER_TEMP/reap.log"
+          [ -f "$log" ] || exit 0
+          n=$(sed -n 's/.*destroyed \([0-9]\+\) VM(s).*/\1/p' "$log" | tail -1)
+          if [ -n "$n" ] && [ "$n" -gt 0 ]; then
+            echo "::error::reaped $n orphaned VM(s) — a teardown failed for a run that reported green"
+            sed 's/^/  /' "$log"
+            exit 1
+          fi
+          echo "no orphans"

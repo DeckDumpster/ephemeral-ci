@@ -1,0 +1,97 @@
+name: CI
+
+# This repository's own gate. It runs on GitHub-hosted runners deliberately:
+# gating the ephemeral-runner mechanism on the ephemeral runner it provides
+# means a change that breaks provisioning can never be tested, because the
+# thing under test is also the thing that would have to work to test it.
+#
+# These three suites used to live in deckdumpster and one of them ran as a gate
+# inside deploy/ci.sh, so the mechanism's tests only ever ran when that one
+# repository's CI ran. Here they gate the mechanism itself, which is the only
+# place they were ever about.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The exclusions are named individually, never widened to "all warnings",
+      # so anything not on this list is a hard failure on new code.
+      #
+      #   SC1091, SC1090  the credential file and the pvapi helper are sourced
+      #                   from paths resolved at runtime on the hypervisor;
+      #                   shellcheck cannot follow either and there is no
+      #                   directive that makes a runtime path constant.
+      #   SC2034          pvapi.sh sets PVAPI_STATUS and PVAPI_BODY for its
+      #                   CALLERS to read after sourcing, and two tests capture
+      #                   stdout only to keep it out of the log. Each is a
+      #                   variable used somewhere shellcheck cannot see.
+      #   SC2015          `a && b || c` appears throughout as a deliberate
+      #                   idiom. Rewriting 16 sites in scripts that destroy
+      #                   virtual machines to satisfy a style check is a worse
+      #                   trade than the check is worth.
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -e SC1091,SC1090,SC2034,SC2015 scripts/*.sh scripts/guest/*.sh
+
+      - name: provision
+        run: bash scripts/test-provision.sh
+
+      - name: teardown
+        run: bash scripts/test-teardown.sh
+
+      - name: reap
+        run: bash scripts/test-reap.sh
+
+      # A composite action with a malformed action.yml fails at the moment a
+      # consumer calls it, in that consumer's run, with an error naming this
+      # repository. Parsing them here means the break is found where it was
+      # made. Checks structure, not just YAML validity: `runs.using` and every
+      # step having a shell are the two mistakes that actually get made.
+      - name: action definitions parse and declare a shell
+        run: |
+          python3 - <<'PY'
+          import sys, yaml, pathlib
+          bad = 0
+          for f in sorted(pathlib.Path(".").glob("*/action.yml")):
+              d = yaml.safe_load(f.read_text())
+              runs = d.get("runs", {})
+              if runs.get("using") != "composite":
+                  print(f"{f}: runs.using is {runs.get('using')!r}, expected 'composite'"); bad += 1
+              for i, step in enumerate(runs.get("steps", [])):
+                  if "run" in step and "shell" not in step:
+                      print(f"{f}: step {i} ({step.get('name','?')}) has `run` with no `shell`"); bad += 1
+              print(f"{f}: ok" if not bad else f"{f}: checked")
+          sys.exit(1 if bad else 0)
+          PY
+
+      # Every input the actions declare must be consumed somewhere in the file,
+      # and every ${{ inputs.x }} must be declared. A typo in either direction
+      # is silent: an undeclared input expands to the empty string, so a
+      # misspelled secret reaches provision.sh as "" and the failure surfaces
+      # as a Proxmox auth error on a machine that no longer exists.
+      - name: action inputs are declared and used
+        run: |
+          python3 - <<'PY'
+          import sys, re, yaml, pathlib
+          bad = 0
+          for f in sorted(pathlib.Path(".").glob("*/action.yml")):
+              text = f.read_text()
+              d = yaml.safe_load(text)
+              declared = set(d.get("inputs", {}) or {})
+              used = set(re.findall(r"inputs\.([a-zA-Z0-9_-]+)", text))
+              for x in sorted(declared - used):
+                  print(f"{f}: input '{x}' is declared but never used"); bad += 1
+              for x in sorted(used - declared):
+                  print(f"{f}: '${{{{ inputs.{x} }}}}' is used but never declared"); bad += 1
+          sys.exit(1 if bad else 0)
+          PY
