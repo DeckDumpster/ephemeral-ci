@@ -129,6 +129,52 @@ qm config <TEMPLATE_VMID> | grep -q '^agent: 1' \
     || echo "FAIL: run 'qm set <TEMPLATE_VMID> --agent 1'"
 ```
 
+### CPU and memory — the template is the only thing that decides these
+
+`provision.sh` sets no `--cores`, no `--sockets` and no `--memory`. Clones
+inherit the template's config wholesale, so the size a CI run gets is decided
+once, here, and **nothing downstream will ever tell you it was decided wrong.**
+
+```bash
+qm set <TEMPLATE_VMID> --cores 4 --memory 8192
+```
+
+That is a starting point, not a recommendation for every suite. Size it against
+the work, then verify by measurement rather than by feel:
+
+**Make the run report the machine it ran on.** This is the part that is easy to
+skip and expensive to have skipped. A consuming repository's timing constants —
+a parallel-job cap, a "this takes about N minutes" comment, a timeout — were
+each measured on some box, and a comment almost never records which one. Move
+the suite to a differently-sized machine and every one of those numbers is
+quietly wrong, in an unknown direction. A cold compile documented in one
+repository as a three-to-four minute step measured over eight on a runner with
+a fraction of the cores of the machine that figure came from, and nothing
+flagged it, because no run had ever logged its own core count. Print cores and
+RAM from inside the run, next to the tool versions you already print.
+
+**Compilation scales with cores almost linearly, so this is the cheap lever.**
+One measurement of the same cold release build of a ~400-crate Rust workspace:
+501 s on four cores, 139 s on twenty-four — 3.6x for 6x the cores, which puts
+the parallel fraction near 87%. It stays near-linear until link-time
+optimisation serialises at the end, which is the floor no core count and no
+cache moves. Before building any cache infrastructure, check what the runner is
+actually sized at: a `qm set` is a smaller change than a cache service and on
+an undersized guest it is usually the larger win.
+
+**CPU overcommits; RAM does not.** Several runner VMs can each claim more vCPUs
+than the node has cores and simply time-share — CI is bursty and mostly waits,
+so this is close to free, and vCPUs are the cheap axis to be generous on. Memory
+is the hard one: every concurrent run holds its full allocation for the length
+of the run. The node's usable RAM divided by the per-runner allocation **is**
+your concurrency ceiling, and exceeding it does not queue, it swaps — which
+surfaces as gates failing on replication lag or container start timeouts rather
+than as anything that looks like memory pressure.
+
+**Do not give the guest a tmpfs `/tmp`** — see the separate note below. On a
+small guest it competes with the build for the same RAM, and a suite that writes
+large fixtures to `/tmp` is then racing its own compiler for pages.
+
 ---
 
 ## Packages and tooling
