@@ -52,6 +52,14 @@ jobs:
       - name: reap
         run: bash scripts/test-reap.sh
 
+      # The substrate list is mostly DATA -- a set of package names and machine
+      # properties -- and data has no behaviour to observe, so this suite asserts
+      # the content of the list and that --check mutates nothing. It matters
+      # because a missing entry does not fail here; it fails in a consumer's run,
+      # on a VM that is destroyed forty seconds later.
+      - name: template substrate
+        run: bash scripts/test-template-substrate.sh
+
       # A second reap suite, in Python, inherited from deckdumpster. It covers
       # the age and enumeration paths against a stubbed Proxmox API; the bash
       # suite covers the busy check and the VM-to-runner correlation. Kept as
@@ -101,7 +109,16 @@ jobs:
               used = set(re.findall(r"inputs\.([a-zA-Z0-9_-]+)", text))
               for x in sorted(declared - used):
                   print(f"{f}: input '{x}' is declared but never used"); bad += 1
+              # The literal characters "$" "{" "{" MUST NOT appear adjacent anywhere
+              # in this run: block. GitHub lexes the whole script for expressions
+              # before the shell ever sees it, finds "{{ inputs" inside the
+              # f-string's escaped braces, fails to parse it, and the run becomes
+              # a startup_failure -- no jobs, no annotation on any step, and the
+              # workflow listed by its path instead of its name. It is the whole
+              # file that dies, so the other six checks here never ran either.
+              # Assembled from pieces so the sequence never exists in the source.
+              expr = "$" + "{{ inputs.%s }}"
               for x in sorted(used - declared):
-                  print(f"{f}: '${{{{ inputs.{x} }}}}' is used but never declared"); bad += 1
+                  print(f"{f}: '{expr % x}' is used but never declared"); bad += 1
           sys.exit(1 if bad else 0)
           PY
