@@ -239,6 +239,130 @@ pick_vmid() {
     printf '%s' "$vmid"
 }
 
+# --- Wait for the node to have room -------------------------------------------
+#
+# WHY THIS IS HERE AND NOT IN THE GUEST. By the time a runner VM exists its
+# memory is already committed, so a limit enforced inside the runner is a
+# limit enforced too late. This is the last point at which not starting is
+# still free.
+#
+# WHY NOT A GITHUB `concurrency:` GROUP. GitHub holds exactly one PENDING run
+# per group and every newer arrival evicts the previous one, so several pull
+# requests pushed together do not queue -- one runs, one waits, and the rest
+# are CANCELLED. A consumer of this action has that written up in its own
+# workflow after four runs disappeared that way. A cancelled run looks
+# identical to one that has not started, which is the worst property a
+# capacity control can have.
+#
+# ALLOCATION, NOT USAGE. This sums maxmem over running VMs rather than reading
+# the node's free memory. Ballooning and KSM make "used" an understatement: a
+# guest holding 16 GiB that has touched 4 reports 4, and memory is precisely
+# the resource that cannot be overcommitted. The conservative number is the
+# only correct one here.
+#
+# Summing EVERY running VM, not just this pool's, is the point. A hypervisor
+# that also carries production services and other fleets has those in the sum
+# for free, so nobody has to declare their sizes here or remember to update a
+# constant when one of them grows. A budget written as a number goes stale in
+# silence; a budget derived from the node does not.
+#
+# IT WAITS, IT DOES NOT FAIL. A red pull request for a capacity reason is
+# indistinguishable from a broken test, and costs someone the diagnosis before
+# they can discover it was never about their change.
+#
+# THE RACE IS ABSORBED, NOT COORDINATED. Two provision jobs can both observe
+# room and both clone; the API offers no atomic reserve, and inventing one
+# across GitHub-hosted runners would be far more machinery than the failure
+# deserves. Requiring room for this runner plus CAPACITY_SLACK_RUNNERS more
+# bounds the overshoot at exactly that many. It is the same instinct as the
+# clone-is-the-collision-check below: lean on what the API makes authoritative
+# and size the slack for what it does not.
+#
+# EVERYTHING HERE PRINTS TO STDERR. stdout carries the vmid= output contract.
+CAPACITY_TIMEOUT="${CAPACITY_TIMEOUT:-1800}"
+CAPACITY_POLL="${CAPACITY_POLL:-15}"
+CAPACITY_SLACK_RUNNERS="${CAPACITY_SLACK_RUNNERS:-1}"
+# Left for the hypervisor itself -- ZFS ARC, the kernel, and whatever is not a
+# guest. Not a safety margin for the guests; that is what the slack is for.
+NODE_MEM_RESERVE_MIB="${NODE_MEM_RESERVE_MIB:-8192}"
+
+# Prints "<total_mib> <allocated_mib> <template_mib>" for the node, or nothing
+# if the token cannot see them.
+#
+# TWO CALLS, AND NEVER /config. scripts/test-provision.sh asserts that nothing
+# reads a VM's /config before the clone -- that probe is what pick_vmid was
+# rewritten to remove, because a pool-scoped token cannot do it and the clone
+# is the authoritative collision check instead. The template's own maxmem is
+# already in the /qemu list this reads anyway, so taking it from there keeps
+# the invariant AND costs one call fewer than asking for it separately.
+node_memory() {
+    # This file's own pvapi() prints the body on stdout and returns non-zero on
+    # anything but 2xx -- it is NOT the pvapi.sh that exports PVAPI_STATUS.
+    local status_body qemu_body total rest
+    status_body="$(pvapi GET "/nodes/${PVE_NODE}/status" 2>/dev/null)" || return 1
+    total="$(printf '%s' "$status_body" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin)["data"]["memory"]["total"]//1048576)' 2>/dev/null)" || return 1
+    [ -n "$total" ] || return 1
+
+    qemu_body="$(pvapi GET "/nodes/${PVE_NODE}/qemu" 2>/dev/null)" || return 1
+    rest="$(printf '%s' "$qemu_body" | TEMPLATE_VMID="$TEMPLATE_VMID" python3 -c \
+        'import json,os,sys
+d=json.load(sys.stdin)["data"]
+tid=str(os.environ["TEMPLATE_VMID"])
+run=sum(v.get("maxmem",0) for v in d if v.get("status")=="running")//1048576
+tpl=[v.get("maxmem",0)//1048576 for v in d if str(v.get("vmid"))==tid]
+print(run, tpl[0] if tpl else 0)' 2>/dev/null)" || return 1
+    [ -n "$rest" ] || return 1
+    printf '%s %s' "$total" "$rest"
+}
+
+wait_for_capacity() {
+    local total alloc want free need waited=0 pair
+    while :; do
+        if ! pair="$(node_memory)" || [ -z "$pair" ]; then
+            # A pool-scoped token cannot read the node or its VM list. That is a
+            # grant to widen -- Sys.Audit on /nodes/<node> for the total and
+            # VM.Audit on /vms for the guests, both read-only -- not a reason to
+            # fail a run. But it must be said out loud, because a capacity
+            # control that quietly does nothing is worse than none at all.
+            #
+            # THE TWO GRANTS ARE INDEPENDENT AND HALF OF THEM IS THE DANGEROUS
+            # STATE. /nodes/<node>/status needs Sys.Audit; /nodes/<node>/qemu is
+            # FILTERED by VM.Audit rather than refused, so a token holding the
+            # first and not the second gets a 200 carrying only the VMs it can
+            # see. The sum is then legitimately small, the cap passes, and
+            # nothing anywhere reports a problem -- a check that cannot fail is
+            # not a check. Grant both or neither.
+            printf '::warning::provision.sh: cannot read node memory (needs Sys.Audit on /nodes/%s AND VM.Audit on /vms) -- proceeding with NO capacity cap\n' "$PVE_NODE" >&2
+            return 0
+        fi
+        set -- $pair
+        total="$1"; alloc="$2"; want="$3"
+        if [ "${want:-0}" -le 0 ]; then
+            printf '::warning::provision.sh: template %s reports no memory -- proceeding with NO capacity cap\n' "$TEMPLATE_VMID" >&2
+            return 0
+        fi
+        need=$(( want * (1 + CAPACITY_SLACK_RUNNERS) ))
+        free=$(( total - alloc - NODE_MEM_RESERVE_MIB ))
+        if [ "$free" -ge "$need" ]; then
+            printf 'provision.sh: %s has %s MiB free of %s (reserve %s, running VMs allocate %s); this runner wants %s\n' \
+                "$PVE_NODE" "$free" "$total" "$NODE_MEM_RESERVE_MIB" "$alloc" "$want" >&2
+            return 0
+        fi
+        if [ "$waited" -ge "$CAPACITY_TIMEOUT" ]; then
+            printf '::error::provision.sh: waited %ss for room on %s. %s MiB free of %s (reserve %s, running VMs allocate %s); this runner needs %s MiB including slack for %s concurrent clone(s).\n' \
+                "$waited" "$PVE_NODE" "$free" "$total" "$NODE_MEM_RESERVE_MIB" "$alloc" "$need" "$CAPACITY_SLACK_RUNNERS" >&2
+            return 1
+        fi
+        printf 'provision.sh: %s has %s MiB free, need %s -- waiting (%ss/%ss)\n' \
+            "$PVE_NODE" "$free" "$need" "$waited" "$CAPACITY_TIMEOUT" >&2
+        sleep "$CAPACITY_POLL"
+        waited=$(( waited + CAPACITY_POLL ))
+    done
+}
+
+wait_for_capacity || exit 1
+
 # --- Pick a VMID ---
 VMID="$(pick_vmid)" || exit 1
 

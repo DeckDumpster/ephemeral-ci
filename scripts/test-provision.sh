@@ -154,6 +154,23 @@ case "$path" in
     /nodes/*/qemu/*/agent/exec)
         body='{"data":{"pid":1234}}'
         ;;
+    # Node-level reads for the capacity wait. LAST on purpose: a case glob's
+    # * spans /, so /nodes/*/status also matches /nodes/<node>/tasks/<upid>/status
+    # and would hand poll_task a memory blob instead of an exitstatus. Every
+    # specific pattern above must get first refusal.
+    #   CURL_NODE_CODE       -- HTTP code for both (default 200; 403 models a
+    #                           pool-scoped token that cannot see the node)
+    #   CURL_NODE_TOTAL_MIB  -- node RAM
+    #   CURL_NODE_ALLOC_MIB  -- summed maxmem of the running VMs
+    #   CURL_TEMPLATE_MIB    -- the template's maxmem
+    /nodes/*/status)
+        http_code="${CURL_NODE_CODE:-200}"
+        body="{\"data\":{\"memory\":{\"total\":$(( ${CURL_NODE_TOTAL_MIB:-131072} * 1048576 ))}}}"
+        ;;
+    /nodes/*/qemu)
+        http_code="${CURL_NODE_CODE:-200}"
+        body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( ${CURL_NODE_ALLOC_MIB:-0} * 1048576 ))},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 ))}]}"
+        ;;
     *)
         printf 'curl stub: unhandled path: %s\n' "$path" >&2
         exit 1
@@ -551,6 +568,98 @@ else
     ko "test-14: probe file has no non-ASCII — the check proves nothing"
 fi
 rm -f "$_ascii_probe"
+
+# ---------------------------------------------------------------------------
+# Test 15 -- the capacity wait: it gates on ALLOCATION, it waits rather than
+# failing, and a permission gap never blocks a run.
+#
+# Node 131072 MiB, reserve 8192 (the default), template 16384. So with the
+# other guests allocating 65536 the node has 57344 free and a runner needing
+# 32768 (itself plus one slack) starts; the arithmetic is stated here rather
+# than computed so a change to the formula shows up as a failing test.
+# ---------------------------------------------------------------------------
+export CURL_NODE_TOTAL_MIB=131072
+export CURL_TEMPLATE_MIB=16384
+export CAPACITY_POLL=1
+export CAPACITY_TIMEOUT=3
+
+# (a) room -- provisioning reaches the clone
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=65536 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-15: with room on the node, the clone goes ahead"
+else
+    ko "test-15: the capacity wait blocked a clone that fits"
+fi
+
+# (b) no room -- it waits, then fails WITHOUT cloning. A capacity control that
+# clones anyway is decoration.
+rm -f "$CURL_ARGV_FILE"
+_cap_err="$SCRATCH/cap-err"
+CURL_NODE_ALLOC_MIB=120000 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>"$_cap_err" && _cap_rc=0 || _cap_rc=$?
+if [ "$_cap_rc" -ne 0 ]; then
+    ok "test-15: a node with no room fails the provision"
+else
+    ko "test-15: provisioned onto a node with no room"
+fi
+if grep -qF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ko "test-15: cloned anyway — the wait did not gate the clone"
+else
+    ok "test-15: and NOTHING was cloned"
+fi
+# law-escalations-carry-their-evidence: the error has to carry the numbers, not
+# point at the hypervisor. Whoever reads it is reading a job log, not a console.
+if grep -q '::error::' "$_cap_err" && grep -q '131072' "$_cap_err" \
+   && grep -q '120000' "$_cap_err"; then
+    ok "test-15: the timeout names the node total and what is allocated"
+else
+    ko "test-15: timeout error does not carry the numbers it decided on"
+fi
+
+# (c) the token cannot read the node -- warn, never block. A run must not go
+# red because a grant is missing; that reads as a broken test.
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_CODE=403 CURL_NODE_ALLOC_MIB=0 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>"$_cap_err" && _cap_rc=0 || _cap_rc=$?
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-15: an unreadable node does not block provisioning"
+else
+    ko "test-15: a missing grant blocked a run"
+fi
+# Both grants, named. Sys.Audit alone yields a 200 carrying a FILTERED VM list
+# rather than a refusal, so a warning that names only one of them talks someone
+# into the state where the cap silently undercounts.
+if grep -q '::warning::' "$_cap_err" && grep -q 'Sys.Audit' "$_cap_err" \
+   && grep -q 'VM.Audit' "$_cap_err"; then
+    ok "test-15: and it says so out loud, naming both grants that fix it"
+else
+    ko "test-15: uncapped provisioning was silent or named an incomplete grant"
+fi
+
+# (d) the slack is load-bearing. Exactly one runner's worth free is NOT enough:
+# two provisions can observe it at once and the API has no atomic reserve.
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=106496 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>"$_cap_err" && _cap_rc=0 || _cap_rc=$?
+if grep -qF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ko "test-15: room for exactly one runner was treated as room — no slack"
+else
+    ok "test-15: room for exactly one runner is not enough (slack held)"
+fi
+# Positive control: the same node WITH the slack disabled does clone, so the
+# case above proves the slack and not merely that the arithmetic is off.
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=106496 CAPACITY_SLACK_RUNNERS=0 run_provision valid-label \
+    test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-15: and CAPACITY_SLACK_RUNNERS=0 on the same node does clone"
+else
+    ko "test-15: slack=0 still refused — the refusal was not about slack"
+fi
+
+unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_ALLOC_MIB
+unset CAPACITY_POLL CAPACITY_TIMEOUT
 
 # ---------------------------------------------------------------------------
 # Summary

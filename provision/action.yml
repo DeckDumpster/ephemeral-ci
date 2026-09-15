@@ -64,6 +64,31 @@ inputs:
     description: How long to wait for the runner to appear in the org runner list.
     required: false
     default: '240'
+  node-memory-reserve-mib:
+    description: >-
+      RAM left for the hypervisor itself -- kernel, ZFS ARC, whatever is not a
+      guest. NOT a safety margin for the guests; that is capacity-slack-runners.
+      The capacity wait sums maxmem over every running VM on the node, so other
+      fleets and production services are already in the total and nobody has to
+      declare their sizes here.
+    required: false
+    default: '8192'
+  capacity-slack-runners:
+    description: >-
+      How many extra runners' worth of room to require before cloning. Two
+      provision jobs can observe the same free memory and both clone, and the
+      API has no atomic reserve; this bounds that overshoot instead of trying to
+      coordinate across GitHub-hosted runners. It costs that many slots of
+      standing headroom, which is the price of the guarantee -- 0 disables it.
+    required: false
+    default: '1'
+  capacity-timeout-seconds:
+    description: >-
+      How long to wait for room before giving up. The wait is deliberately long:
+      a run that waits is a slow run, and a run that fails for capacity is
+      indistinguishable from a broken test to whoever opened the pull request.
+    required: false
+    default: '1800'
 
 outputs:
   vmid:
@@ -128,6 +153,9 @@ runs:
         PVE_TOKEN_ID: ${{ inputs.pve-token-id }}
         PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
         RUNNER_GROUP: ${{ inputs.runner-group }}
+        NODE_MEM_RESERVE_MIB: ${{ inputs.node-memory-reserve-mib }}
+        CAPACITY_SLACK_RUNNERS: ${{ inputs.capacity-slack-runners }}
+        CAPACITY_TIMEOUT: ${{ inputs.capacity-timeout-seconds }}
         CRED_FILE: /dev/null
       run: |
         set +e

@@ -125,6 +125,34 @@ the whole defence — keep that scope in mind when extending the `GHRunner`
 role or adding paths. See "Proxmox user permissions" below for the full role
 definition and the `pveum acl modify` commands that set this scope.
 
+#### The capacity wait wants two read grants, and they widen that scope
+
+`provision.sh` waits for the node to have room before it clones, and to do
+that truthfully it has to see guests outside its own pool — otherwise it is
+blind to exactly the production services and other fleets it must not squeeze.
+That needs two read-only privileges the pool scope does not include:
+
+```
+pveum role add GHRunnerCapacity -privs "Sys.Audit,VM.Audit"
+pveum acl modify /nodes/<node> --roles GHRunnerCapacity --tokens '<user>@pve!<token>'
+pveum acl modify /vms          --roles GHRunnerCapacity --tokens '<user>@pve!<token>'
+```
+
+**Grant both or neither.** `/nodes/<node>/status` needs `Sys.Audit`;
+`/nodes/<node>/qemu` is *filtered* by `VM.Audit` rather than refused. A token
+holding the first and not the second receives a 200 carrying only the VMs it
+can already see, the sum is legitimately small, the cap passes every time, and
+nothing reports a problem. A check that cannot fail is not a check.
+
+**Weigh this against the paragraph above**, which says to treat the token as
+reachable by any pull-request author. These privileges grant no write, no
+console and no guest-agent access, but they do expose the node's inventory —
+every guest's id, name, run state and allocated memory. That is a real
+widening of what a leaked token reveals, in exchange for a capacity control
+that cannot silently go stale. Declining it is defensible: `provision.sh`
+warns and proceeds uncapped rather than failing, so the grant is optional and
+its absence is loud. What is not defensible is granting one privilege.
+
 > **Pending (db-58r2):** once the guest file-write path is proven, drop
 > `VM.GuestAgent.Unrestricted` from the `GHRunner` role, leaving
 > `VM.GuestAgent.Audit` and `VM.GuestAgent.FileSystemMgmt`. Arbitrary guest
