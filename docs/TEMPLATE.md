@@ -646,3 +646,35 @@ Clones created with **Linked Clone** (`--full 0`) share the template's base
 disk and are created in seconds. Each clone boots as a fresh VM, reads the
 token `provision.sh` injected via cloud-init, and self-registers via
 `start-runner.sh` before the runner agent picks up its job.
+
+## /tmp must not be a tmpfs
+
+Ubuntu mounts `/tmp` as a tmpfs sized at half of RAM. On an 8G runner that is
+3.7G, and a CI suite that stages a container build or a cargo link through it
+runs out of room long before the disk does.
+
+The failure does not look like a disk failure. It reaches the suite as
+`ld terminated with signal 7 [Bus error]`, or as a disk-floor refusal naming
+`/tmp` on a machine whose root filesystem has 79G free:
+
+```
+ERROR: only 4G free on /tmp (floor 10G).
+tmpfs  3.7G  400K  3.7G  1% /tmp
+```
+
+Both consuming repositories have hit this on their first ephemeral run, because
+both were developed against a long-lived box with a disk-backed `/tmp` and
+nothing in either repository said they depended on that.
+
+Give the template a disk-backed `/tmp`:
+
+```bash
+sudo systemctl mask tmp.mount
+# verify on the next boot -- "tmpfs" here means it is still a RAM disk
+stat -f -c %T /tmp
+```
+
+Each repository also guards its own `TMPDIR` in `deploy/ci.sh`, which is what
+makes a developer's systemd laptop work too. The guard is not a substitute for
+fixing the template: it relocates `TMPDIR`, and anything that hardcodes `/tmp`
+rather than honouring it is still on the RAM disk.
