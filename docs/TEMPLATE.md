@@ -678,3 +678,46 @@ Each repository also guards its own `TMPDIR` in `deploy/ci.sh`, which is what
 makes a developer's systemd laptop work too. The guard is not a substitute for
 fixing the template: it relocates `TMPDIR`, and anything that hardcodes `/tmp`
 rather than honouring it is still on the RAM disk.
+
+## unattended-upgrades must not be running
+
+A per-run VM boots, systemd starts `unattended-upgrades`, and the job's
+dependency install starts — in that order, seconds apart. Whoever reaches
+`/var/lib/dpkg/lock-frontend` second loses:
+
+```
+E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1392 (unattended-upgr)
+E: Unable to acquire the dpkg frontend lock (/var/lib/dpkg/lock-frontend), is another process using it?
+```
+
+and every package the run needed is simply absent — a compiler, podman, the
+browser libraries — so the job dies before the suite is ever reached.
+
+**It is a race, which is the expensive part.** It fails perhaps one run in
+several, the same dependency list having installed cleanly on the runs either
+side of it, so it reads as a broken list rather than a timing bug. The first
+thing anyone does is re-run, and the re-run works.
+
+A machine that lives thirty minutes and is then destroyed has nothing to gain
+from unattended upgrades — the template is where its patch level is decided, not
+the boot after it:
+
+```bash
+sudo systemctl disable --now unattended-upgrades.service
+sudo systemctl mask unattended-upgrades.service
+sudo apt-get purge -y unattended-upgrades   # or leave it masked
+# verify on the next boot -- nothing should hold the lock
+sudo fuser -v /var/lib/dpkg/lock-frontend
+```
+
+A consuming repository should ALSO pass a lock timeout on every apt call, so it
+waits for the holder rather than failing:
+
+```sh
+apt-get install -y -o DPkg::Lock::Timeout=600 <packages>
+```
+
+Belt and braces on purpose: the option covers a developer's laptop that happens
+to be mid-upgrade and any template that has drifted, and masking the service
+means a healthy run never waits at all. Waiting on the lock beats a retry loop,
+which only sleeps and races the same holder again.
