@@ -120,41 +120,76 @@ _reap_setup() {
     mkdir -p "$REAP_SNIPPETS"
     BIN="$RD/bin"
     mkdir -p "$BIN"
+    # Dummy CA cert file — exists so the curl stub allows the --cacert check.
+    REAP_CA_CERT="$RD/ca.pem"
+    printf 'DUMMY-CA-CERT\n' > "$REAP_CA_CERT"
     # Each stub file is placed at $BIN/.stub-<key>; curl reads them by URL pattern.
     printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
     printf '{"data":{"name":"gh-runner-500","meta":"ctime=1000000000"}}\n' > "$BIN/.stub-qemu-config"
     printf '{"data":"UPID:pve:1:1:1:stop:500:root@pam:"}\n' > "$BIN/.stub-stop"
     printf '{"data":{"status":"stopped"}}\n' > "$BIN/.stub-current"
+    # pvapi.sh calls curl with -o FILE -w '%{http_code}': body to file, status
+    # to stdout. The stub handles both conventions. It also checks --cacert FILE
+    # to simulate the "file not found" failure curl returns (exit 77) when
+    # PVE_CA_CERT_FILE points to a non-existent path.
     cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
 url=""
-for arg in "$@"; do
-    case "$arg" in https://*) url="$arg" ;; esac
+output_file=""
+write_out_fmt=""
+cacert_file=""
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+    arg="${args[$i]}"
+    case "$arg" in
+        https://*) url="$arg" ;;
+        -o|--output) i=$(( i + 1 )); output_file="${args[$i]}" ;;
+        -w|--write-out) i=$(( i + 1 )); write_out_fmt="${args[$i]}" ;;
+        --cacert) i=$(( i + 1 )); cacert_file="${args[$i]}" ;;
+    esac
+    i=$(( i + 1 ))
 done
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 printf '%s\n' "$url" >> "$BIN_DIR/.urls"
+if [ -n "$cacert_file" ]; then
+    printf '%s\n' "$cacert_file" >> "$BIN_DIR/.cacerts"
+    if [ ! -f "$cacert_file" ]; then
+        printf 'curl: (77) error setting certificate file: %s\n' "$cacert_file" >&2
+        exit 77
+    fi
+fi
+_respond() {
+    local body="$1" status="${2:-200}"
+    if [ -n "$output_file" ]; then
+        printf '%s' "$body" > "$output_file"
+        [ "$write_out_fmt" = '%{http_code}' ] && printf '%s' "$status"
+    else
+        printf '%s\n' "$body"
+    fi
+}
 # GitHub API first: these URLs have no /api2/json to strip, and falling through
 # to the Proxmox matcher below would make every runner query an "unhandled path".
 case "$url" in
     https://api.github.com/orgs/*/actions/runners*)
-        cat "$BIN_DIR/.stub-gh-org-runners" 2>/dev/null || echo '{"runners":[]}'
+        _respond "$(cat "$BIN_DIR/.stub-gh-org-runners" 2>/dev/null || echo '{"runners":[]}')"
         exit 0 ;;
     https://api.github.com/repos/*/actions/runners*)
-        cat "$BIN_DIR/.stub-gh-repo-runners" 2>/dev/null || echo '{"runners":[]}'
+        _respond "$(cat "$BIN_DIR/.stub-gh-repo-runners" 2>/dev/null || echo '{"runners":[]}')"
         exit 0 ;;
 esac
 path="${url#https://}"
 path="${path#*/api2/json}"
 if [[ "$path" =~ /qemu/[0-9]+/config ]]; then
-    cat "$BIN_DIR/.stub-qemu-config"
+    _respond "$(cat "$BIN_DIR/.stub-qemu-config")"
 elif [[ "$path" =~ /qemu/[0-9]+/status/current ]]; then
-    cat "$BIN_DIR/.stub-current"
+    _respond "$(cat "$BIN_DIR/.stub-current")"
 elif [[ "$path" =~ /qemu/[0-9]+/status/stop ]]; then
-    cat "$BIN_DIR/.stub-stop"
+    _respond "$(cat "$BIN_DIR/.stub-stop")"
 elif [[ "$path" =~ purge ]]; then
-    echo '{"data":"UPID:pve:2:2:2:destroy:500:root@pam:"}'
+    _respond '{"data":"UPID:pve:2:2:2:destroy:500:root@pam:"}'
 elif [[ "$path" =~ /nodes/[^/]+/qemu$ ]]; then
-    cat "$BIN_DIR/.stub-qemu-list"
+    _respond "$(cat "$BIN_DIR/.stub-qemu-list")"
 else
     printf 'curl stub: unhandled path: %s\n' "$path" >&2
     exit 1
@@ -177,6 +212,7 @@ _run_reap() {
     PVE_NODE=pve \
     PVE_TOKEN_ID=test@pve!tok \
     PVE_TOKEN_SECRET=00000000-0000-0000-0000-000000000000 \
+    PVE_CA_CERT_FILE="$REAP_CA_CERT" \
     GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
     GH_REPO="${GH_REPO:-}" \
     GH_ORG="${GH_ORG:-}" \
@@ -273,11 +309,12 @@ echo "--- Test 3: TEMPLATE_VMID from CRED_FILE reaches reap.sh"
     # Do NOT set TEMPLATE_VMID — it must come from CRED_FILE only.
     output=$(
         PATH="$BIN:$PATH" \
-            SNIPPETS_DIR="$REAP_SNIPPETS" \
+        SNIPPETS_DIR="$REAP_SNIPPETS" \
         CRED_FILE="$CRED_FILE" \
         PVE_NODE=pve \
         PVE_TOKEN_ID=test@pve!tok \
         PVE_TOKEN_SECRET=00000000-0000-0000-0000-000000000000 \
+        PVE_CA_CERT_FILE="$REAP_CA_CERT" \
         GITHUB_TOKEN="" \
         GH_REPO="" \
         bash "$REAP" --dry-run 2>&1 || true
@@ -451,6 +488,79 @@ echo "--- Test 7: busy check uses the runner name from the VM description"
     }
 ) && _pass "Test 7: busy check uses the runner name from the VM description" \
   || _fail "Test 7: busy check uses the runner name from the VM description"
+
+# ============================================================
+# TEST 8: reap.sh fails loudly when PVE_CA_CERT_FILE is missing.
+#
+# Without a CA cert file the Proxmox API cannot be reached with a verified
+# connection. pvapi.sh passes --cacert to curl; curl exits 77 when the cert
+# file does not exist. reap.sh must exit non-zero — never silently proceed
+# with an unverified connection.
+#
+# POSITIVE CONTROL: the same run with a valid cert file succeeds (reaps
+# nothing because the VM list is empty) to confirm it is the missing cert,
+# not something else, that caused the failure.
+# ============================================================
+echo "--- Test 8: reap.sh fails loudly when CA cert file is missing"
+(
+    _reap_setup
+    # Empty VM list so any real work is absent — only the cert check matters.
+    printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
+
+    # Without PVE_CA_CERT_FILE: pvapi.sh defaults to /etc/pve/pve-root-ca.pem,
+    # which does not exist here. The curl stub exits 77 and reap.sh must fail.
+    rc=0
+    PATH="$BIN:$PATH" \
+    SNIPPETS_DIR="$REAP_SNIPPETS" \
+    PVE_NODE=pve \
+    PVE_TOKEN_ID=test@pve!tok \
+    PVE_TOKEN_SECRET=00000000-0000-0000-0000-000000000000 \
+    GITHUB_TOKEN="" GH_REPO="" GH_ORG="" \
+    bash "$REAP" --dry-run 2>/dev/null || rc=$?
+
+    [ "$rc" -ne 0 ] || {
+        echo "  expected fail: reap.sh returned 0 without a CA cert file" >&2
+        exit 1
+    }
+
+    # Positive control: with the CA cert file present, the run succeeds.
+    rc=0
+    _run_reap --dry-run 2>/dev/null || rc=$?
+    [ "$rc" -eq 0 ] || {
+        echo "  expected fail: reap.sh returned $rc with a valid CA cert file" >&2
+        exit 1
+    }
+) && _pass "Test 8: reap.sh fails loudly when CA cert file is missing" \
+  || _fail "Test 8: reap.sh fails loudly when CA cert file is missing"
+
+# ============================================================
+# TEST 9: reap.sh passes --cacert with the supplied CA cert file.
+#
+# Verifies that the CA cert path actually reaches curl — not just that the
+# run succeeds. The curl stub logs every --cacert argument; this test reads
+# that log and confirms the expected path was passed on every Proxmox call.
+# ============================================================
+echo "--- Test 9: reap.sh passes --cacert with the supplied CA cert file"
+(
+    _reap_setup
+    printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
+
+    _run_reap --dry-run 2>/dev/null || true
+
+    # The stub wrote every --cacert path to .cacerts (one per curl call).
+    if [ ! -s "$BIN/.cacerts" ]; then
+        echo "  expected fail: curl stub .cacerts log is empty — --cacert was not passed" >&2
+        exit 1
+    fi
+    # Every entry must be the cert file we provided.
+    while IFS= read -r line; do
+        [ "$line" = "$REAP_CA_CERT" ] || {
+            echo "  expected fail: --cacert path '$line' != expected '$REAP_CA_CERT'" >&2
+            exit 1
+        }
+    done < "$BIN/.cacerts"
+) && _pass "Test 9: reap.sh passes --cacert with the supplied CA cert file" \
+  || _fail "Test 9: reap.sh passes --cacert with the supplied CA cert file"
 
 # ============================================================
 # Summary

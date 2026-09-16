@@ -39,6 +39,13 @@ inputs:
   pve-node:
     description: Proxmox node name.
     required: true
+  pve-ca-cert:
+    description: >-
+      Proxmox cluster CA certificate (PEM), used to verify the API TLS
+      connection. Supply as a repository or environment variable
+      (vars.PVE_CA_CERT). Without this the connection fails loudly — there
+      is no insecure fallback.
+    required: true
 
 runs:
   using: composite
@@ -49,6 +56,14 @@ runs:
         oauth-client-id: ${{ inputs.ts-oauth-client-id }}
         oauth-secret: ${{ inputs.ts-oauth-secret }}
         tags: tag:ci
+
+    - name: Write CA certificate
+      shell: bash
+      env:
+        PVE_CA_CERT: ${{ inputs.pve-ca-cert }}
+      run: |
+        printf '%s\n' "$PVE_CA_CERT" > "$RUNNER_TEMP/pve-root-ca.pem"
+        echo "PVE_CA_CERT_FILE=$RUNNER_TEMP/pve-root-ca.pem" >> "$GITHUB_ENV"
 
     - name: Destroy the runner VM
       if: inputs.vmid != ''
