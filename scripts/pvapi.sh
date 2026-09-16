@@ -20,14 +20,20 @@
 #   PVE_TOKEN_SECRET — Proxmox API token secret
 #
 # Optional environment variables (have defaults):
-#   PVE_API_HOST — Proxmox hostname or IP (default: localhost)
-#   PVE_API_PORT — Proxmox API port (default: 8006)
+#   PVE_API_HOST     — Proxmox hostname or IP (default: localhost)
+#   PVE_API_PORT     — Proxmox API port (default: 8006)
+#   PVE_CA_CERT_FILE — path to the Proxmox cluster CA certificate (PEM).
+#                      Defaults to /etc/pve/pve-root-ca.pem, which exists on
+#                      the hypervisor itself. Callers running off-node (e.g. a
+#                      GitHub-hosted runner) must set this to a temp file
+#                      written from a repository variable (vars.PVE_CA_CERT).
+#                      If the file does not exist curl exits 77; that is the
+#                      intended loud failure — do not fall back to --insecure.
 #
 # Transport notes:
-#   -k/--insecure: the Proxmox API on a loopback address ships with a
-#       self-signed certificate; the token carries the credential, not TLS
-#       chain trust. Do not copy this flag to a call that goes over the
-#       network.
+#   --cacert: TLS verification uses the cluster CA. The token authenticates
+#       the caller; TLS verification authenticates the server the token is
+#       sent to. Neither can substitute for the other.
 #   -sS: -s suppresses the progress meter; -S restores curl's transport-error
 #       messages to stderr. Never use -s alone — connection refused, TLS
 #       failure, and a malformed URL from an unset variable all produce empty
@@ -52,7 +58,8 @@ pvapi() {
     PVAPI_BODY=""
     local _tmpfile _status _rc=0
     _tmpfile=$(mktemp)
-    _status=$(curl -sS --insecure \
+    _status=$(curl -sS \
+        --cacert "${PVE_CA_CERT_FILE:-/etc/pve/pve-root-ca.pem}" \
         -o "$_tmpfile" -w '%{http_code}' \
         -X "$method" \
         -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \

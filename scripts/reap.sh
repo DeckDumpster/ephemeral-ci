@@ -55,6 +55,10 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=pvapi.sh
+. "${PVAPI_SH:-${SCRIPT_DIR}/pvapi.sh}"
+
 CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
 if [ -f "$CRED_FILE" ]; then
     # shellcheck source=/dev/null
@@ -106,23 +110,6 @@ if [ -z "$PVE_NODE" ]; then
     echo "reap.sh: PVE_NODE is required" >&2
     exit 1
 fi
-
-# ---------------------------------------------------------------------------
-# Proxmox HTTP API wrapper
-#
-# Exits non-zero on HTTP 4xx/5xx (--fail) or connection error (--show-error).
-# All response output goes to stdout; curl diagnostics go to stderr.
-# ---------------------------------------------------------------------------
-pvapi() {
-    local method="$1" path="$2"
-    shift 2
-    curl --silent --fail --show-error \
-        --request "$method" \
-        --header "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
-        --header "Accept: application/json" \
-        "https://${PVE_API_HOST}:${PVE_API_PORT}/api2/json${path}" \
-        "$@"
-}
 
 # ---------------------------------------------------------------------------
 # GitHub runner busy check
@@ -195,12 +182,12 @@ EOF
 # ---------------------------------------------------------------------------
 vm_stop() {
     local vmid="$1"
-    pvapi POST "/nodes/${PVE_NODE}/qemu/${vmid}/status/stop" >/dev/null 2>&1 || true
+    pvapi POST "/nodes/${PVE_NODE}/qemu/${vmid}/status/stop" 2>/dev/null || true
     local deadline=$(( $(date +%s) + 60 ))
     while true; do
         local vm_status
-        vm_status="$(
-            pvapi GET "/nodes/${PVE_NODE}/qemu/${vmid}/status/current" 2>/dev/null \
+        pvapi GET "/nodes/${PVE_NODE}/qemu/${vmid}/status/current" 2>/dev/null || break
+        vm_status="$(printf '%s' "$PVAPI_BODY" \
             | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null
         )" || break
         [ "$vm_status" = "stopped" ] && return 0
@@ -230,10 +217,15 @@ fi
 # template and live clones; the gh-runner-* name filter is still required
 # because the template itself is in the pool and must never be reaped.
 QEMU_LIST=""
-if ! QEMU_LIST="$(pvapi GET "/nodes/${PVE_NODE}/qemu")"; then
+if ! pvapi GET "/nodes/${PVE_NODE}/qemu"; then
     echo "reap.sh: failed to enumerate VMs from Proxmox API" >&2
     exit 1
 fi
+if [[ "${PVAPI_STATUS:-}" != 2* ]]; then
+    echo "reap.sh: failed to enumerate VMs from Proxmox API (HTTP ${PVAPI_STATUS:-})" >&2
+    exit 1
+fi
+QEMU_LIST="$PVAPI_BODY"
 
 mapfile -t RUNNER_VMIDS < <(
     python3 - "$QEMU_LIST" <<'EOF'
@@ -309,12 +301,19 @@ EOF
     # timestamp). Reading from the API JSON avoids the original awk
     # field-separator bug where awk -F'creation=' never matched.
     VM_CONFIG=""
-    if ! VM_CONFIG="$(pvapi GET "/nodes/${PVE_NODE}/qemu/${VMID}/config")"; then
+    if ! pvapi GET "/nodes/${PVE_NODE}/qemu/${VMID}/config"; then
         echo "reap.sh: VM $VMID ($VM_NAME): failed to read config; skipping" >&2
         (( skipped++ )) || true
         (( unknown_age++ )) || true
         continue
     fi
+    if [[ "${PVAPI_STATUS:-}" != 2* ]]; then
+        echo "reap.sh: VM $VMID ($VM_NAME): config API returned HTTP ${PVAPI_STATUS:-}; skipping" >&2
+        (( skipped++ )) || true
+        (( unknown_age++ )) || true
+        continue
+    fi
+    VM_CONFIG="$PVAPI_BODY"
     META_EPOCH="$(python3 - "$VM_CONFIG" <<'EOF'
 import json, sys, re
 meta = json.loads(sys.argv[1]).get("data", {}).get("meta", "")
@@ -399,7 +398,7 @@ EOF
     vm_stop "$VMID" || true
 
     # Destroy. purge=1 removes disks and snapshots registered to this VM.
-    if pvapi DELETE "/nodes/${PVE_NODE}/qemu/${VMID}?purge=1" >/dev/null; then
+    if pvapi DELETE "/nodes/${PVE_NODE}/qemu/${VMID}?purge=1" && [[ "${PVAPI_STATUS:-}" = 2* ]]; then
         # Remove the cloud-init snippet that holds the registration token.
         # An orphan by definition never had a teardown, so nothing removed it.
         _REAP_SNIPPET="${SNIPPETS_DIR}/gh-runner-${VMID}.yaml"

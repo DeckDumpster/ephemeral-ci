@@ -42,6 +42,13 @@ jobs:
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
 
+      - name: Write CA certificate
+        env:
+          PVE_CA_CERT: ${{ vars.PVE_CA_CERT }}
+        run: |
+          printf '%s\n' "$PVE_CA_CERT" > "$RUNNER_TEMP/pve-root-ca.pem"
+          echo "PVE_CA_CERT_FILE=$RUNNER_TEMP/pve-root-ca.pem" >> "$GITHUB_ENV"
+
       - name: Reap
         id: reap
         env:
