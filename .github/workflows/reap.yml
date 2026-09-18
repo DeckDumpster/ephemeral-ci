@@ -53,6 +53,7 @@ jobs:
         id: reap
         env:
           PVE_API_HOST: ${{ vars.PVE_API_HOST }}
+          PVE_API_HOSTNAME: ${{ vars.PVE_NODE }}
           PVE_NODE: ${{ vars.PVE_NODE }}
           TEMPLATE_VMID: ${{ vars.TEMPLATE_VMID }}
           PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
