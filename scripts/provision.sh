@@ -336,6 +336,8 @@ wait_for_capacity() {
             printf '::warning::provision.sh: cannot read node memory (needs Sys.Audit on /nodes/%s AND VM.Audit on /vms) -- proceeding with NO capacity cap\n' "$PVE_NODE" >&2
             return 0
         fi
+        # Split on purpose: $pair is "total alloc want".
+        # shellcheck disable=SC2086
         set -- $pair
         total="$1"; alloc="$2"; want="$3"
         if [ "${want:-0}" -le 0 ]; then
