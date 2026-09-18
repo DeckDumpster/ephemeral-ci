@@ -665,47 +665,70 @@ unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_ALLOC_MIB
 unset CAPACITY_POLL CAPACITY_TIMEOUT
 
 # ---------------------------------------------------------------------------
-# Test 16 -- apt automation check: provision fails when the guest check fails
+# Test 16 -- apt automation: drifted template is masked and warned, not refused
 #
-# provision.sh verifies that apt-daily.timer, apt-daily-upgrade.timer, and
-# unattended-upgrades.service are all masked before delivering credentials.
-# A template that has drifted must fail loudly at provision time, before
-# the race has a chance to hit 20 minutes into a run on a VM that is gone.
+# provision.sh masks unattended-upgrades.service, apt-daily.timer, and
+# apt-daily-upgrade.timer in the clone before delivering credentials. If the
+# guest script returns 2 (units were enabled before masking), provision issues
+# a ::warning:: naming the template and proceeds. If it returns any other
+# non-zero value (mask or verify failed), provision exits 1.
+#
+# The sp-3q0cz version refused (exit 1) on any non-zero guest exit code.
+# This case (CURL_EXEC_CHECK_RC=2) must fail there but pass here.
 # ---------------------------------------------------------------------------
+
+# (a) drifted template: guest script returns 2 (was enabled, now masked).
+# provision must proceed with a ::warning:: and deliver credentials.
 rm -f "$CURL_ARGV_FILE"
-export CURL_EXEC_CHECK_RC=1
+export CURL_EXEC_CHECK_RC=2
 _err16="$SCRATCH/err16"
 bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
     >/dev/null 2>"$_err16" && _rc16=0 || _rc16=$?
 unset CURL_EXEC_CHECK_RC
 
-if [ "$_rc16" -ne 0 ]; then
-    ok "test-16: provision fails when the apt automation check fails"
+if [ "$_rc16" -eq 0 ]; then
+    ok "test-16a: provision proceeds despite drifted template"
 else
-    ko "test-16: provision succeeded despite apt automation being enabled in the guest"
+    ko "test-16a: provision refused a drifted template instead of masking and proceeding (rc=$_rc16)"
 fi
 
-# Credentials must not be delivered: the token must not reach the guest.
 if grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ko "test-16: credentials delivered despite apt check failure"
+    ok "test-16a: credentials delivered after masking drifted timers"
 else
-    ok "test-16: credentials not delivered when apt check fails"
+    ko "test-16a: credentials not delivered despite successful mask"
 fi
 
-# The error must name the template so the operator knows what to fix.
-if grep -q 'template' "$_err16" 2>/dev/null; then
-    ok "test-16: error names the template"
+if grep -q '::warning::' "$_err16" 2>/dev/null; then
+    ok "test-16a: ::warning:: issued for drifted template"
 else
-    ko "test-16: error does not name the template (got: $(cat "$_err16"))"
+    ko "test-16a: no ::warning:: for drifted template (got: $(cat "$_err16"))"
 fi
 
-# Positive control: with the check passing (default RC=0), credentials are delivered.
+if grep -q '101' "$_err16" 2>/dev/null; then
+    ok "test-16a: warning names the template"
+else
+    ko "test-16a: warning does not name the template (got: $(cat "$_err16"))"
+fi
+
+# (b) mask call fails: guest script returns 1. provision must exit non-zero
+# and must not deliver credentials.
 rm -f "$CURL_ARGV_FILE"
-run_provision valid-label test-token https://github.com/owner/repo >/dev/null
-if grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-16: credentials delivered when apt check passes (positive control)"
+export CURL_EXEC_CHECK_RC=1
+_err16b="$SCRATCH/err16b"
+bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err16b" && _rc16b=0 || _rc16b=$?
+unset CURL_EXEC_CHECK_RC
+
+if [ "$_rc16b" -ne 0 ]; then
+    ok "test-16b: provision exits non-zero when mask fails"
 else
-    ko "test-16: credentials not delivered even when apt check passes"
+    ko "test-16b: provision succeeded despite mask failure"
+fi
+
+if grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ko "test-16b: credentials delivered despite mask failure"
+else
+    ok "test-16b: credentials not delivered when mask fails"
 fi
 
 # ---------------------------------------------------------------------------

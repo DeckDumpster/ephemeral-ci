@@ -515,26 +515,37 @@ while true; do
     sleep 2
 done
 
-# --- Verify template controls ---
+# --- Mask apt automation ---
 #
-# A clone inherits its systemd unit state from the template. Check that apt
-# automation is masked before delivering credentials: unattended-upgrades.service,
-# apt-daily.timer, and apt-daily-upgrade.timer together drive all automatic apt
-# runs, and each can race provisioning for the dpkg lock at boot. The failure is
-# a race, so it hits roughly one run in several with a dependency list that worked
-# the run before -- which reads as a broken list, not a timing bug.
+# A fresh clone inherits the template's systemd unit state. If apt timers are
+# enabled, unattended-upgrades or apt-daily-upgrade fires at a random point in
+# the first hour and needrestart can restart the runner's service, killing the
+# job mid-suite with "The runner has received a shutdown signal". Mask before
+# credentials land: the runner never starts on a node where an upgrade can
+# interrupt it.
 #
-# Fail here, loudly, rather than as a missing dependency 20 minutes into the run
-# on a VM that no longer exists (law-a-control-that-cannot-check-must-refuse).
-printf 'provision.sh: verifying apt automation controls in guest %s\n' "$VMID" >&2
+# If the template was drifted (timers enabled), emit a ::warning:: naming the
+# template and proceed: refusing every provision until the template is resealed
+# at the Proxmox console would block CI entirely, and masking handles the
+# immediate risk. If the mask itself fails, refuse.
+#
+# Guest script exit codes:
+#   0: all units were already masked/disabled -- template is clean
+#   2: one or more were enabled; all are now masked -- template was drifted
+#   1 (or other non-zero): mask or post-mask verify failed -- refuse
+printf 'provision.sh: masking apt automation in guest %s\n' "$VMID" >&2
+_apt_rc=0
 # shellcheck disable=SC2016
-if ! poll_exec "$VMID" 30 \
+poll_exec "$VMID" 60 \
     --data-urlencode "command=/bin/bash" \
     --data-urlencode "command=-c" \
-    --data-urlencode 'command=rc=0; for u in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do s=$(systemctl is-enabled "$u" 2>/dev/null); case "$s" in ""|masked|disabled|not-found|linked-runtime) ;; *) printf "FAIL: %s is %s (expected masked)\n" "$u" "$s" >&2; rc=1;; esac; done; exit $rc'; then
-    printf 'provision.sh: template %s has apt automation enabled; reseal from docs/TEMPLATE.md before cloning\n' "$TEMPLATE_VMID" >&2
-    exit 1
-fi
+    --data-urlencode 'command=drifted=0; for u in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do s=$(systemctl is-enabled "$u" 2>/dev/null); case "$s" in ""|masked|disabled|not-found|linked-runtime) ;; *) drifted=1;; esac; done; systemctl mask --now unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer || exit 1; for u in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do s=$(systemctl is-enabled "$u" 2>/dev/null); [ "$s" = "masked" ] || { printf "verify: %s is %s\n" "$u" "$s" >&2; exit 1; }; done; [ "$drifted" -eq 0 ] && exit 0 || exit 2' \
+    || _apt_rc=$?
+case "$_apt_rc" in
+    0) ;;
+    2) printf '::warning::provision.sh: template %s had apt automation enabled; units masked for this run\n' "$TEMPLATE_VMID" >&2 ;;
+    *) printf 'provision.sh: failed to mask apt automation in guest %s\n' "$VMID" >&2; exit 1 ;;
+esac
 
 # --- Deliver the guest script, then the token ---
 #
