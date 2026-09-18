@@ -811,8 +811,9 @@ from unattended upgrades — the template is where its patch level is decided, n
 the boot after it:
 
 ```bash
-sudo systemctl disable --now unattended-upgrades.service
-sudo systemctl mask unattended-upgrades.service
+# All three together: the service does the upgrades, the timers schedule them.
+sudo systemctl disable --now unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer
+sudo systemctl mask unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer
 sudo apt-get purge -y unattended-upgrades   # or leave it masked
 # verify on the next boot -- nothing should hold the lock
 sudo fuser -v /var/lib/dpkg/lock-frontend

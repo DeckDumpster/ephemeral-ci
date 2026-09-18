@@ -172,6 +172,51 @@ agent_retry() {
 }
 
 # ---------------------------------------------------------------------------
+# poll_exec <vmid> <timeout_s> [exec POST args...]
+#
+# Runs a command in the guest via agent/exec and waits for it to finish.
+# Forwards the command's stdout and stderr to this script's stderr so the
+# operator can read them in the job log. Returns the command's exit code, or
+# 1 on API error or timeout.
+#
+# WHY THIS EXISTS. agent/exec fires and forgets: it returns a pid, not output.
+# The result lives in exec-status and is not ready immediately. A caller that
+# trusts the fire-and-forget return code is reading the API call's success, not
+# the command's. guest-diag.sh uses the same poll pattern; see that file for
+# the prior state (it returned nothing useful).
+# ---------------------------------------------------------------------------
+poll_exec() {
+    local vmid="$1" timeout_s="$2"; shift 2
+    local pid body exited exitcode out_data err_data deadline
+    body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${vmid}/agent/exec" "$@")" || return 1
+    pid="$(printf '%s' "$body" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin).get("data",{}).get("pid",""))')"
+    [ -n "$pid" ] || { printf 'provision.sh: agent/exec returned no pid\n' >&2; return 1; }
+    deadline=$(( $(date +%s) + timeout_s ))
+    while true; do
+        body="$(pvapi GET "/nodes/${PVE_NODE}/qemu/${vmid}/agent/exec-status?pid=${pid}")" || return 1
+        exited="$(printf '%s' "$body" | python3 -c \
+            'import json,sys; print(json.load(sys.stdin).get("data",{}).get("exited",0))')"
+        if [ "$exited" = "1" ]; then
+            exitcode="$(printf '%s' "$body" | python3 -c \
+                'import json,sys; print(json.load(sys.stdin).get("data",{}).get("exitcode",1))')"
+            out_data="$(printf '%s' "$body" | python3 -c \
+                'import json,sys; d=json.load(sys.stdin).get("data",{}); sys.stdout.write(d.get("out-data",""))')"
+            err_data="$(printf '%s' "$body" | python3 -c \
+                'import json,sys; d=json.load(sys.stdin).get("data",{}); sys.stdout.write(d.get("err-data",""))')"
+            [ -n "$out_data" ] && printf '%s\n' "$out_data" >&2
+            [ -n "$err_data" ] && printf '%s\n' "$err_data" >&2
+            return "$exitcode"
+        fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            printf 'provision.sh: poll_exec timed out waiting for pid %s (%ss)\n' "$pid" "$timeout_s" >&2
+            return 1
+        fi
+        sleep 2
+    done
+}
+
+# ---------------------------------------------------------------------------
 # poll_task <upid>
 #
 # Waits for a Proxmox async task to reach status=stopped. Returns 0 when
@@ -469,6 +514,38 @@ while true; do
     fi
     sleep 2
 done
+
+# --- Mask apt automation ---
+#
+# A fresh clone inherits the template's systemd unit state. If apt timers are
+# enabled, unattended-upgrades or apt-daily-upgrade fires at a random point in
+# the first hour and needrestart can restart the runner's service, killing the
+# job mid-suite with "The runner has received a shutdown signal". Mask before
+# credentials land: the runner never starts on a node where an upgrade can
+# interrupt it.
+#
+# If the template was drifted (timers enabled), emit a ::warning:: naming the
+# template and proceed: refusing every provision until the template is resealed
+# at the Proxmox console would block CI entirely, and masking handles the
+# immediate risk. If the mask itself fails, refuse.
+#
+# Guest script exit codes:
+#   0: all units were already masked/disabled -- template is clean
+#   2: one or more were enabled; all are now masked -- template was drifted
+#   1 (or other non-zero): mask or post-mask verify failed -- refuse
+printf 'provision.sh: masking apt automation in guest %s\n' "$VMID" >&2
+_apt_rc=0
+# shellcheck disable=SC2016
+poll_exec "$VMID" 60 \
+    --data-urlencode "command=/bin/bash" \
+    --data-urlencode "command=-c" \
+    --data-urlencode 'command=drifted=0; for u in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do s=$(systemctl is-enabled "$u" 2>/dev/null); case "$s" in ""|masked|disabled|not-found|linked-runtime) ;; *) drifted=1;; esac; done; systemctl mask --now unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer || exit 1; for u in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do s=$(systemctl is-enabled "$u" 2>/dev/null); [ "$s" = "masked" ] || { printf "verify: %s is %s\n" "$u" "$s" >&2; exit 1; }; done; [ "$drifted" -eq 0 ] && exit 0 || exit 2' \
+    || _apt_rc=$?
+case "$_apt_rc" in
+    0) ;;
+    2) printf '::warning::provision.sh: template %s had apt automation enabled; units masked for this run\n' "$TEMPLATE_VMID" >&2 ;;
+    *) printf 'provision.sh: failed to mask apt automation in guest %s\n' "$VMID" >&2; exit 1 ;;
+esac
 
 # --- Deliver the guest script, then the token ---
 #
