@@ -1,0 +1,77 @@
+name: Advance v1
+
+# Moves the v1 tag to the most recent commit on main whose CI concluded
+# "success". Consumers pin @v1; this is the documented path for landing
+# a batch of changes onto them.
+#
+# CI must be running on push to main (ci.yml's push trigger) for this to
+# find green commits reliably. For commits that predate that trigger,
+# manually dispatch ci.yml on main first, wait for it to pass, then run
+# this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Print the target commit but do not move the tag.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find latest green commit on main
+        id: find-green
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin main
+          found=""
+          while IFS= read -r sha; do
+            conclusion=$(gh run list \
+              --repo "${{ github.repository }}" \
+              --commit "$sha" \
+              --workflow ci.yml \
+              --status completed \
+              --limit 1 \
+              --json conclusion \
+              -q '.[0].conclusion // empty' 2>/dev/null || true)
+            if [ "$conclusion" = "success" ]; then
+              found="$sha"
+              break
+            fi
+          done < <(git log --format='%H' origin/main | head -50)
+          if [ -z "$found" ]; then
+            echo "::error::No green CI run found in the last 50 commits on main. Trigger ci.yml via workflow_dispatch on main and wait for it to pass, then re-run this workflow."
+            exit 1
+          fi
+          echo "target=$found" >> "$GITHUB_OUTPUT"
+          echo "Latest green commit on main:"
+          git log --oneline -1 "$found"
+
+      - name: Show current v1 and target
+        run: |
+          current=$(git rev-parse refs/tags/v1 2>/dev/null || echo "(not set)")
+          target="${{ steps.find-green.outputs.target }}"
+          echo "Current v1 : $current"
+          echo "Target     : $target"
+          if [ "$current" = "$target" ]; then
+            echo "v1 is already at the latest green commit. Nothing to do."
+          fi
+
+      - name: Advance v1 tag
+        if: inputs.dry-run == false
+        run: |
+          target="${{ steps.find-green.outputs.target }}"
+          git tag -f v1 "$target"
+          git push origin v1 --force
+          echo "::notice::v1 advanced to $target"
