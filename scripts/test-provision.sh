@@ -617,24 +617,31 @@ else
     ko "test-15: timeout error does not carry the numbers it decided on"
 fi
 
-# (c) the token cannot read the node -- warn, never block. A run must not go
-# red because a grant is missing; that reads as a broken test.
+# (c) the token cannot read the node -- REFUSE (law-a-control-that-cannot-check-must-refuse).
+# warn-and-proceed was the original defect (sp-7zzni): a capacity control that disables
+# itself on a permission gap is worse than none at all. One red job with an actionable
+# message costs less than a hypervisor and an afternoon.
 rm -f "$CURL_ARGV_FILE"
 CURL_NODE_CODE=403 CURL_NODE_ALLOC_MIB=0 bash "$PROVISION" valid-label test-token \
     https://github.com/owner/repo >/dev/null 2>"$_cap_err" && _cap_rc=0 || _cap_rc=$?
-if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-15: an unreadable node does not block provisioning"
+if [ "$_cap_rc" -ne 0 ]; then
+    ok "test-15: a missing node-read grant fails the provision"
 else
-    ko "test-15: a missing grant blocked a run"
+    ko "test-15: a missing grant proceeded -- capacity cap silently disabled"
 fi
-# Both grants, named. Sys.Audit alone yields a 200 carrying a FILTERED VM list
-# rather than a refusal, so a warning that names only one of them talks someone
-# into the state where the cap silently undercounts.
-if grep -q '::warning::' "$_cap_err" && grep -q 'Sys.Audit' "$_cap_err" \
-   && grep -q 'VM.Audit' "$_cap_err"; then
-    ok "test-15: and it says so out loud, naming both grants that fix it"
+if ! grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-15: and nothing was cloned without a capacity check"
 else
-    ko "test-15: uncapped provisioning was silent or named an incomplete grant"
+    ko "test-15: cloned without a capacity check (law-a-control-that-cannot-check-must-refuse)"
+fi
+# law-alerts-must-be-actionable: name the failing call and HTTP status, not the
+# privileges needed in general. 'GET /nodes/x/status -> 403' is actionable;
+# 'needs Sys.Audit AND VM.Audit' is a restatement of the documentation and cannot
+# discriminate between two calls where only one is unauthorised (sp-7zzni note).
+if grep -q '403' "$_cap_err"; then
+    ok "test-15: the error names the HTTP status from the failing call"
+else
+    ko "test-15: error does not name the HTTP status"
 fi
 
 # (d) the slack is load-bearing. Exactly one runner's worth free is NOT enough:
@@ -656,6 +663,18 @@ if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
     ok "test-15: and CAPACITY_SLACK_RUNNERS=0 on the same node does clone"
 else
     ko "test-15: slack=0 still refused — the refusal was not about slack"
+fi
+
+# (e) CAPACITY_UNCAPPED=1 is the explicit opt-out for a deliberately uncapped
+# deployment. A missing privilege and a deliberate decision to run uncapped must
+# not produce the same behaviour; a caller who wants no cap must say so.
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_CODE=403 CAPACITY_UNCAPPED=1 run_provision valid-label test-token \
+    https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-15: CAPACITY_UNCAPPED=1 allows provisioning despite unreadable node"
+else
+    ko "test-15: CAPACITY_UNCAPPED=1 did not bypass the capacity check"
 fi
 
 unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_ALLOC_MIB
