@@ -244,22 +244,31 @@ check_userns() {
     return 1
 }
 
-# UNATTENDED-UPGRADES HAS NOTHING TO OFFER A VM THAT LIVES THIRTY MINUTES, and it
+# APT AUTOMATION HAS NOTHING TO OFFER A VM THAT LIVES THIRTY MINUTES, and it
 # holds the dpkg lock at exactly the moment provisioning wants it. This is the
 # durable half of the fix; APT_LOCK_WAIT above is the half that still works on a
 # box where somebody has re-enabled it.
+# ALL THREE UNITS. unattended-upgrades.service does the upgrades;
+# apt-daily-upgrade.timer schedules them; apt-daily.timer schedules the preceding
+# apt-get update. Masking only the service leaves the timers running, which can
+# still race for the lock at boot.
 # MASKED, NOT MERELY DISABLED. A disabled unit can be pulled back in as another
 # unit's dependency; masking is what makes that impossible. Purging is finer still
 # and satisfies this check by making the unit absent.
 check_unattended() {
-    local state
+    local state u
     command -v systemctl >/dev/null 2>&1 || return 0
-    state="$(systemctl is-enabled unattended-upgrades.service 2>/dev/null)"
-    case "$state" in
-        ''|masked|disabled|'not-found'|linked-runtime) return 0 ;;
-    esac
-    lack "unattended-upgrades masked" "it is '$state'; it races provisioning for the dpkg lock at boot and fails roughly one run in several, looking like a broken dependency list"
-    return 1
+    for u in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do
+        state="$(systemctl is-enabled "$u" 2>/dev/null)"
+        case "$state" in
+            ''|masked|disabled|'not-found'|linked-runtime) ;;
+            *)
+                lack "$u masked" "it is '$state'; apt automation races provisioning for the dpkg lock at boot — one run in several fails with a dependency list that worked the run before"
+                return 1
+                ;;
+        esac
+    done
+    return 0
 }
 
 # /tmp MUST NOT BE A RAM DISK. Ubuntu mounts /tmp as a tmpfs sized at half of RAM,
@@ -326,18 +335,18 @@ if [ -n "$(sysctl -n "$APPARMOR_SYSCTL" 2>/dev/null)" ]; then
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
-    case "$(systemctl is-enabled unattended-upgrades.service 2>/dev/null)" in
-        ''|masked|'not-found') ;;
-        *)
-            note "masking unattended-upgrades (it races provisioning for the dpkg lock)"
-            $SUDO systemctl disable --now unattended-upgrades.service \
-                || note "could not disable unattended-upgrades"
-            # Masking is the part that lasts: a merely-disabled unit can be pulled
-            # back in as another unit's dependency.
-            $SUDO systemctl mask unattended-upgrades.service \
-                || note "could not mask unattended-upgrades"
-            ;;
-    esac
+    for _apt_unit in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do
+        case "$(systemctl is-enabled "$_apt_unit" 2>/dev/null)" in
+            ''|masked|'not-found') ;;
+            *)
+                note "masking $_apt_unit (apt automation races provisioning for the dpkg lock)"
+                $SUDO systemctl disable --now "$_apt_unit" \
+                    || note "could not disable $_apt_unit"
+                $SUDO systemctl mask "$_apt_unit" \
+                    || note "could not mask $_apt_unit"
+                ;;
+        esac
+    done
 fi
 
 # Re-check and report. A partial apply is a failure here rather than a surprise

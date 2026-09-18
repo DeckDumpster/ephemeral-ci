@@ -151,6 +151,9 @@ case "$path" in
             body='{"data":null}'
         fi
         ;;
+    /nodes/*/qemu/*/agent/exec-status*)
+        body="{\"data\":{\"exited\":1,\"exitcode\":${CURL_EXEC_CHECK_RC:-0},\"out-data\":\"\",\"err-data\":\"\"}}"
+        ;;
     /nodes/*/qemu/*/agent/exec)
         body='{"data":{"pid":1234}}'
         ;;
@@ -660,6 +663,50 @@ fi
 
 unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_ALLOC_MIB
 unset CAPACITY_POLL CAPACITY_TIMEOUT
+
+# ---------------------------------------------------------------------------
+# Test 16 -- apt automation check: provision fails when the guest check fails
+#
+# provision.sh verifies that apt-daily.timer, apt-daily-upgrade.timer, and
+# unattended-upgrades.service are all masked before delivering credentials.
+# A template that has drifted must fail loudly at provision time, before
+# the race has a chance to hit 20 minutes into a run on a VM that is gone.
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE"
+export CURL_EXEC_CHECK_RC=1
+_err16="$SCRATCH/err16"
+bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err16" && _rc16=0 || _rc16=$?
+unset CURL_EXEC_CHECK_RC
+
+if [ "$_rc16" -ne 0 ]; then
+    ok "test-16: provision fails when the apt automation check fails"
+else
+    ko "test-16: provision succeeded despite apt automation being enabled in the guest"
+fi
+
+# Credentials must not be delivered: the token must not reach the guest.
+if grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ko "test-16: credentials delivered despite apt check failure"
+else
+    ok "test-16: credentials not delivered when apt check fails"
+fi
+
+# The error must name the template so the operator knows what to fix.
+if grep -q 'template' "$_err16" 2>/dev/null; then
+    ok "test-16: error names the template"
+else
+    ko "test-16: error does not name the template (got: $(cat "$_err16"))"
+fi
+
+# Positive control: with the check passing (default RC=0), credentials are delivered.
+rm -f "$CURL_ARGV_FILE"
+run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-16: credentials delivered when apt check passes (positive control)"
+else
+    ko "test-16: credentials not delivered even when apt check passes"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary
