@@ -172,6 +172,51 @@ agent_retry() {
 }
 
 # ---------------------------------------------------------------------------
+# poll_exec <vmid> <timeout_s> [exec POST args...]
+#
+# Runs a command in the guest via agent/exec and waits for it to finish.
+# Forwards the command's stdout and stderr to this script's stderr so the
+# operator can read them in the job log. Returns the command's exit code, or
+# 1 on API error or timeout.
+#
+# WHY THIS EXISTS. agent/exec fires and forgets: it returns a pid, not output.
+# The result lives in exec-status and is not ready immediately. A caller that
+# trusts the fire-and-forget return code is reading the API call's success, not
+# the command's. guest-diag.sh uses the same poll pattern; see that file for
+# the prior state (it returned nothing useful).
+# ---------------------------------------------------------------------------
+poll_exec() {
+    local vmid="$1" timeout_s="$2"; shift 2
+    local pid body exited exitcode out_data err_data deadline
+    body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${vmid}/agent/exec" "$@")" || return 1
+    pid="$(printf '%s' "$body" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin).get("data",{}).get("pid",""))')"
+    [ -n "$pid" ] || { printf 'provision.sh: agent/exec returned no pid\n' >&2; return 1; }
+    deadline=$(( $(date +%s) + timeout_s ))
+    while true; do
+        body="$(pvapi GET "/nodes/${PVE_NODE}/qemu/${vmid}/agent/exec-status?pid=${pid}")" || return 1
+        exited="$(printf '%s' "$body" | python3 -c \
+            'import json,sys; print(json.load(sys.stdin).get("data",{}).get("exited",0))')"
+        if [ "$exited" = "1" ]; then
+            exitcode="$(printf '%s' "$body" | python3 -c \
+                'import json,sys; print(json.load(sys.stdin).get("data",{}).get("exitcode",1))')"
+            out_data="$(printf '%s' "$body" | python3 -c \
+                'import json,sys; d=json.load(sys.stdin).get("data",{}); sys.stdout.write(d.get("out-data",""))')"
+            err_data="$(printf '%s' "$body" | python3 -c \
+                'import json,sys; d=json.load(sys.stdin).get("data",{}); sys.stdout.write(d.get("err-data",""))')"
+            [ -n "$out_data" ] && printf '%s\n' "$out_data" >&2
+            [ -n "$err_data" ] && printf '%s\n' "$err_data" >&2
+            return "$exitcode"
+        fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            printf 'provision.sh: poll_exec timed out waiting for pid %s (%ss)\n' "$pid" "$timeout_s" >&2
+            return 1
+        fi
+        sleep 2
+    done
+}
+
+# ---------------------------------------------------------------------------
 # poll_task <upid>
 #
 # Waits for a Proxmox async task to reach status=stopped. Returns 0 when
@@ -469,6 +514,27 @@ while true; do
     fi
     sleep 2
 done
+
+# --- Verify template controls ---
+#
+# A clone inherits its systemd unit state from the template. Check that apt
+# automation is masked before delivering credentials: unattended-upgrades.service,
+# apt-daily.timer, and apt-daily-upgrade.timer together drive all automatic apt
+# runs, and each can race provisioning for the dpkg lock at boot. The failure is
+# a race, so it hits roughly one run in several with a dependency list that worked
+# the run before -- which reads as a broken list, not a timing bug.
+#
+# Fail here, loudly, rather than as a missing dependency 20 minutes into the run
+# on a VM that no longer exists (law-a-control-that-cannot-check-must-refuse).
+printf 'provision.sh: verifying apt automation controls in guest %s\n' "$VMID" >&2
+# shellcheck disable=SC2016
+if ! poll_exec "$VMID" 30 \
+    --data-urlencode "command=/bin/bash" \
+    --data-urlencode "command=-c" \
+    --data-urlencode 'command=rc=0; for u in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do s=$(systemctl is-enabled "$u" 2>/dev/null); case "$s" in ""|masked|disabled|not-found|linked-runtime) ;; *) printf "FAIL: %s is %s (expected masked)\n" "$u" "$s" >&2; rc=1;; esac; done; exit $rc'; then
+    printf 'provision.sh: template %s has apt automation enabled; reseal from docs/TEMPLATE.md before cloning\n' "$TEMPLATE_VMID" >&2
+    exit 1
+fi
 
 # --- Deliver the guest script, then the token ---
 #
