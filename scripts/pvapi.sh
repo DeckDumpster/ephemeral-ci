@@ -29,6 +29,16 @@
 #                      written from a repository variable (vars.PVE_CA_CERT).
 #                      If the file does not exist curl exits 77; that is the
 #                      intended loud failure — do not fall back to --insecure.
+#   PVE_TLS_HOST     — TLS hostname for certificate verification. Set this when
+#                      PVE_API_HOST is an IP address and the Proxmox TLS cert
+#                      is issued for a hostname (typical when connecting via a
+#                      Tailscale IP). When set, the URL uses PVE_TLS_HOST as
+#                      the hostname and curl receives
+#                        --resolve PVE_TLS_HOST:PORT:PVE_API_HOST
+#                      so the connection reaches the correct IP while TLS
+#                      verifies against the correct name. Leave unset when
+#                      PVE_API_HOST is already the hostname the cert was issued
+#                      for.
 #
 # Transport notes:
 #   --cacert: TLS verification uses the cluster CA. The token authenticates
@@ -57,13 +67,23 @@ pvapi() {
     PVAPI_STATUS=""
     PVAPI_BODY=""
     local _tmpfile _status _rc=0
+    local _api_host="${PVE_API_HOST:-localhost}"
+    local _port="${PVE_API_PORT:-8006}"
+    local _url_host _resolve_args=()
+    if [ -n "${PVE_TLS_HOST:-}" ]; then
+        _url_host="$PVE_TLS_HOST"
+        _resolve_args=(--resolve "${PVE_TLS_HOST}:${_port}:${_api_host}")
+    else
+        _url_host="$_api_host"
+    fi
     _tmpfile=$(mktemp)
     _status=$(curl -sS \
+        "${_resolve_args[@]+"${_resolve_args[@]}"}" \
         --cacert "${PVE_CA_CERT_FILE:-/etc/pve/pve-root-ca.pem}" \
         -o "$_tmpfile" -w '%{http_code}' \
         -X "$method" \
         -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
-        "https://${PVE_API_HOST:-localhost}:${PVE_API_PORT:-8006}/api2/json${path}" \
+        "https://${_url_host}:${_port}/api2/json${path}" \
         "$@") || _rc=$?
     PVAPI_STATUS="$_status"
     PVAPI_BODY=$(cat "$_tmpfile")

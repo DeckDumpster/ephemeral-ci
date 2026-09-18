@@ -134,6 +134,7 @@ _reap_setup() {
     # PVE_CA_CERT_FILE points to a non-existent path.
     cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 url=""
 output_file=""
 write_out_fmt=""
@@ -147,10 +148,10 @@ while [ "$i" -lt "${#args[@]}" ]; do
         -o|--output) i=$(( i + 1 )); output_file="${args[$i]}" ;;
         -w|--write-out) i=$(( i + 1 )); write_out_fmt="${args[$i]}" ;;
         --cacert) i=$(( i + 1 )); cacert_file="${args[$i]}" ;;
+        --resolve) i=$(( i + 1 )); printf '%s\n' "${args[$i]}" >> "$BIN_DIR/.resolves" ;;
     esac
     i=$(( i + 1 ))
 done
-BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 printf '%s\n' "$url" >> "$BIN_DIR/.urls"
 if [ -n "$cacert_file" ]; then
     printf '%s\n' "$cacert_file" >> "$BIN_DIR/.cacerts"
@@ -561,6 +562,65 @@ echo "--- Test 9: reap.sh passes --cacert with the supplied CA cert file"
     done < "$BIN/.cacerts"
 ) && _pass "Test 9: reap.sh passes --cacert with the supplied CA cert file" \
   || _fail "Test 9: reap.sh passes --cacert with the supplied CA cert file"
+
+# ============================================================
+# TEST 10: PVE_TLS_HOST causes pvapi to use --resolve so that TLS
+#          verifies against the hostname while the connection goes to the IP.
+#
+# This covers the production failure where PVE_API_HOST is a Tailscale IP
+# (e.g. 100.75.27.46) but the Proxmox TLS cert is issued for a hostname
+# (e.g. pve). Without PVE_TLS_HOST, curl fails: "no alternative certificate
+# subject name matches target host name '100.75.27.46'". With PVE_TLS_HOST=pve,
+# pvapi adds --resolve pve:8006:100.75.27.46 and uses https://pve:8006/...,
+# so the cert verifies against the hostname.
+#
+# ASSERTIONS:
+#   a) The URL logged by the stub contains the TLS hostname, not the IP.
+#   b) A --resolve entry mapping TLS_HOST:PORT:IP was passed to curl.
+#   c) The run succeeds (empty VM list, no error).
+# ============================================================
+echo "--- Test 10: PVE_TLS_HOST triggers --resolve so TLS verifies against the hostname"
+(
+    _reap_setup
+    printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
+
+    rc=0
+    PATH="$BIN:$PATH" \
+    SNIPPETS_DIR="$REAP_SNIPPETS" \
+    PVE_NODE=pve \
+    PVE_TOKEN_ID=test@pve!tok \
+    PVE_TOKEN_SECRET=00000000-0000-0000-0000-000000000000 \
+    PVE_CA_CERT_FILE="$REAP_CA_CERT" \
+    PVE_API_HOST=100.75.27.46 \
+    PVE_TLS_HOST=pve \
+    GITHUB_TOKEN="" GH_REPO="" GH_ORG="" \
+    bash "$REAP" --dry-run 2>/dev/null || rc=$?
+
+    [ "$rc" -eq 0 ] || {
+        echo "  expected fail: reap.sh returned $rc with PVE_TLS_HOST set" >&2
+        exit 1
+    }
+
+    # (a) URL must use the TLS hostname, not the IP.
+    if grep -q 'https://100\.75\.27\.46' "$BIN/.urls" 2>/dev/null; then
+        echo "  expected fail: URL contained the IP (100.75.27.46) instead of the TLS hostname (pve)" >&2
+        exit 1
+    fi
+    if ! grep -q 'https://pve:' "$BIN/.urls" 2>/dev/null; then
+        echo "  expected fail: URL did not contain the TLS hostname (pve)" >&2
+        echo "  URLs requested:" >&2; sed 's/^/    /' "$BIN/.urls" >&2
+        exit 1
+    fi
+
+    # (b) --resolve entry must map pve:8006:100.75.27.46.
+    if ! grep -q 'pve:8006:100\.75\.27\.46' "$BIN/.resolves" 2>/dev/null; then
+        echo "  expected fail: --resolve pve:8006:100.75.27.46 was not passed to curl" >&2
+        echo "  --resolve args seen:" >&2
+        cat "$BIN/.resolves" 2>/dev/null | sed 's/^/    /' >&2 || echo "    (none)" >&2
+        exit 1
+    fi
+) && _pass "Test 10: PVE_TLS_HOST triggers --resolve for TLS hostname verification" \
+  || _fail "Test 10: PVE_TLS_HOST triggers --resolve for TLS hostname verification"
 
 # ============================================================
 # Summary

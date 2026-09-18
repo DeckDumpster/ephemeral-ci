@@ -53,6 +53,10 @@ jobs:
         id: reap
         env:
           PVE_API_HOST: ${{ vars.PVE_API_HOST }}
+          # Set PVE_TLS_HOST when PVE_API_HOST is a Tailscale IP and the Proxmox
+          # TLS cert is issued for a hostname. pvapi.sh uses --resolve to connect
+          # to the IP while verifying TLS against the hostname.
+          PVE_TLS_HOST: ${{ vars.PVE_TLS_HOST }}
           PVE_NODE: ${{ vars.PVE_NODE }}
           TEMPLATE_VMID: ${{ vars.TEMPLATE_VMID }}
           PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
@@ -89,10 +93,21 @@ jobs:
         if: always() && steps.reap.outcome != 'skipped'
         run: |
           log="$RUNNER_TEMP/reap.log"
-          [ -f "$log" ] || exit 0
+          if [ ! -f "$log" ]; then
+            if [ "${{ steps.reap.outcome }}" = "failure" ]; then
+              echo "::error::reaper failed before writing a log — the host may have leaked VMs; check Tailscale connectivity and PVE_TLS_HOST"
+              exit 1
+            fi
+            exit 0
+          fi
           n=$(sed -n 's/.*destroyed \([0-9]\+\) VM(s).*/\1/p' "$log" | tail -1)
           if [ -n "$n" ] && [ "$n" -gt 0 ]; then
             echo "::error::reaped $n orphaned VM(s) — a teardown failed for a run that reported green"
+            sed 's/^/  /' "$log"
+            exit 1
+          fi
+          if [ "${{ steps.reap.outcome }}" = "failure" ]; then
+            echo "::error::reaper failed — the host may have leaked VMs; inspect the Reap step log above"
             sed 's/^/  /' "$log"
             exit 1
           fi
