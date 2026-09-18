@@ -134,6 +134,7 @@ _reap_setup() {
     # PVE_CA_CERT_FILE points to a non-existent path.
     cat > "$BIN/curl" <<'STUB'
 #!/usr/bin/env bash
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 url=""
 output_file=""
 write_out_fmt=""
@@ -151,7 +152,6 @@ while [ "$i" -lt "${#args[@]}" ]; do
     esac
     i=$(( i + 1 ))
 done
-BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 printf '%s\n' "$url" >> "$BIN_DIR/.urls"
 if [ -n "$cacert_file" ]; then
     printf '%s\n' "$cacert_file" >> "$BIN_DIR/.cacerts"
