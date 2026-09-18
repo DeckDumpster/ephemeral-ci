@@ -12,6 +12,12 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Every six hours. A broken main is visible on its own without waiting
+    # for a PR to land against it.
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -122,3 +128,37 @@ jobs:
                   print(f"{f}: '{expr % x}' is used but never declared"); bad += 1
           sys.exit(1 if bad else 0)
           PY
+
+  # Only runs when `test` fails on a pull request. Checks whether the base
+  # branch's most recent CI run is also failing, which would mean the red is
+  # inherited from the base rather than introduced by this PR. A failing
+  # base-check with the annotation "Base is red" is the signal; a passing
+  # base-check with "Base is green" confirms the PR itself is the cause.
+  base-check:
+    if: always() && github.event_name == 'pull_request' && needs.test.result == 'failure'
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Report if base is also red
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base_ref="${{ github.base_ref }}"
+          base_conclusion=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --branch "$base_ref" \
+            --workflow ci.yml \
+            --status completed \
+            --limit 1 \
+            --json conclusion \
+            -q '.[0].conclusion // empty' 2>/dev/null || true)
+          if [ -z "$base_conclusion" ]; then
+            echo "No completed CI run found for $base_ref; cannot determine base state."
+          elif [ "$base_conclusion" = "success" ]; then
+            echo "Base ($base_ref) is green — this PR introduced the failure."
+          else
+            echo "::error title=Base is red::$base_ref last completed CI run: $base_conclusion. This PR's test failure may be inherited from the base branch, not introduced here."
+            exit 1
+          fi
