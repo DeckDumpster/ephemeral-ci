@@ -612,13 +612,13 @@ echo "--- Test 10: PVE_API_HOSTNAME routes URL through hostname with --resolve"
     # a. The URL must use the hostname, not the IP.
     if grep -qF "https://${FAKE_IP}:" "$BIN/.urls" 2>/dev/null; then
         echo "  expected fail: curl URL contains the IP '$FAKE_IP' — hostname not used" >&2
-        echo "  URLs requested:" >&2; cat "$BIN/.urls" | sed 's/^/    /' >&2
+        echo "  URLs requested:" >&2; sed 's/^/    /' "$BIN/.urls" >&2
         exit 1
     fi
     if ! grep -qF "https://${FAKE_HOST}:" "$BIN/.urls" 2>/dev/null; then
         echo "  expected fail: curl URL does not contain the hostname '$FAKE_HOST'" >&2
         echo "  URLs logged (may be empty if curl was not called):" >&2
-        cat "$BIN/.urls" 2>/dev/null | sed 's/^/    /' >&2 || echo "    (no .urls file)" >&2
+        sed 's/^/    /' "$BIN/.urls" 2>/dev/null >&2 || echo "    (no .urls file)" >&2
         exit 1
     fi
 
