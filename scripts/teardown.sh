@@ -73,6 +73,8 @@ CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
 STOP_POLL_INTERVAL="${STOP_POLL_INTERVAL:-2}"
 FORCE_STOP_WAIT="${FORCE_STOP_WAIT:-5}"
+JOURNAL_TIMEOUT="${JOURNAL_TIMEOUT:-30}"
+JOURNAL_POLL_INTERVAL="${JOURNAL_POLL_INTERVAL:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=pvapi.sh
@@ -131,6 +133,67 @@ import json, sys
 d = json.load(sys.stdin).get('data', '')
 print(d if isinstance(d, str) else '')
 " 2>/dev/null || true
+}
+
+# Pull the guest journal over the qemu-guest-agent before the VM is stopped.
+# Must never return non-zero — a leaked VM costs more than a missing diagnostic.
+# Bounded by JOURNAL_TIMEOUT seconds because the guest may be wedged.
+_capture_journal() {
+    local timeout="${JOURNAL_TIMEOUT:-30}" poll_interval="${JOURNAL_POLL_INTERVAL:-1}"
+    echo "teardown.sh: capturing guest journal from VM $VMID (timeout ${timeout}s)" >&2
+
+    pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/agent/exec" \
+        --data-urlencode "command=/bin/sh" \
+        --data-urlencode "command=-c" \
+        --data-urlencode "command=journalctl -b --no-pager | tail -n 500" || {
+        echo "teardown.sh: guest-agent exec call failed (HTTP ${PVAPI_STATUS:-none}) — journal unavailable" >&2
+        return 0
+    }
+    if [ "$PVAPI_STATUS" != "200" ]; then
+        echo "teardown.sh: guest-agent exec returned HTTP $PVAPI_STATUS — journal unavailable" >&2
+        return 0
+    fi
+
+    local pid
+    pid="$(printf '%s' "$PVAPI_BODY" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin).get("data",{}).get("pid",""))' \
+        2>/dev/null || true)"
+    if [ -z "$pid" ]; then
+        echo "teardown.sh: guest-agent returned no pid — journal unavailable" >&2
+        return 0
+    fi
+
+    local _deadline
+    _deadline=$(( $(date +%s) + timeout ))
+    while true; do
+        pvapi GET "/nodes/${PVE_NODE}/qemu/${VMID}/agent/exec-status?pid=${pid}" || {
+            echo "teardown.sh: exec-status poll failed — journal unavailable" >&2
+            return 0
+        }
+        if [ "$PVAPI_STATUS" = "200" ]; then
+            local _exited
+            _exited=$(printf '%s' "$PVAPI_BODY" | python3 -c \
+                'import json,sys; print(json.load(sys.stdin).get("data",{}).get("exited",0))' \
+                2>/dev/null || echo 0)
+            if [ "$_exited" = "1" ]; then
+                echo "teardown.sh: --- guest journal ---" >&2
+                printf '%s' "$PVAPI_BODY" | python3 -c '
+import json, sys
+d = json.load(sys.stdin).get("data", {})
+for k in ("out-data", "err-data"):
+    if d.get(k):
+        sys.stdout.write(d[k])
+' >&2 || true
+                echo "teardown.sh: --- end guest journal ---" >&2
+                return 0
+            fi
+        fi
+        if [ "$(date +%s)" -ge "$_deadline" ]; then
+            echo "teardown.sh: guest-agent timed out after ${timeout}s — journal unavailable" >&2
+            return 0
+        fi
+        sleep "$poll_interval"
+    done
 }
 
 # Guard 3: check host state before the ownership guards.
@@ -207,6 +270,9 @@ if [ "$IN_POOL" != "yes" ]; then
     echo "teardown.sh: VM $VMID is not a member of pool $PVE_POOL — refusing" >&2
     exit 1
 fi
+
+# Pull the guest journal before the VM is gone. Must not fail teardown.
+_capture_journal || true
 
 # --- Stop ---
 #

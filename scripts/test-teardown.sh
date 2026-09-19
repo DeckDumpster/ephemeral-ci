@@ -111,6 +111,8 @@ _run_teardown() {
     STOP_TIMEOUT="${STOP_TIMEOUT:-1}" \
     STOP_POLL_INTERVAL=0 \
     FORCE_STOP_WAIT=0 \
+    JOURNAL_TIMEOUT="${JOURNAL_TIMEOUT:-2}" \
+    JOURNAL_POLL_INTERVAL=0 \
     bash "$TEARDOWN" "$@"
 }
 
@@ -147,14 +149,18 @@ echo "--- Test 1: live VM in pool → rc=0, VM destroyed"
     _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
     # Call 2: GET /pools/<pool> → 200, VMID is a member
     _resp 2 200 "$(_pool_with $VMID)"
-    # Call 3: POST /status/stop → 200, UPID
-    _resp 3 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
-    # Call 4: GET /tasks/.../status → stopped/OK
-    _resp 4 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
-    # Call 5: GET /status/current → stopped
-    _resp 5 200 '{"data":{"status":"stopped"}}'
-    # Call 6: DELETE → 200
-    _resp 6 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:500:root@pam:"}'
+    # Call 3: POST /agent/exec → 200, journal pid (journal capture)
+    _resp 3 200 '{"data":{"pid":9876}}'
+    # Call 4: GET /agent/exec-status → 200, exited (journal capture)
+    _resp 4 200 '{"data":{"exited":1,"out-data":"","exitcode":0}}'
+    # Call 5: POST /status/stop → 200, UPID
+    _resp 5 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
+    # Call 6: GET /tasks/.../status → stopped/OK
+    _resp 6 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
+    # Call 7: GET /status/current → stopped
+    _resp 7 200 '{"data":{"status":"stopped"}}'
+    # Call 8: DELETE → 200
+    _resp 8 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:500:root@pam:"}'
 
     rc=0
     _run_teardown $VMID >/dev/null 2>&1 || rc=$?
@@ -228,15 +234,19 @@ echo "--- Test 4: stop leaves VM running → no destroy, reports it"
     _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
     # Call 2: GET /pools/<pool> → 200, VMID is a member
     _resp 2 200 "$(_pool_with $VMID)"
-    # Call 3: POST /status/stop → 200
-    _resp 3 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
-    # Call 4: GET /tasks/.../status → still running (triggers timeout immediately
-    # since STOP_TIMEOUT=1 and STOP_POLL_INTERVAL=0)
-    _resp 4 200 '{"data":{"status":"running"}}'
-    # Call 5: force-stop POST → 200
+    # Call 3: POST /agent/exec → 200, journal pid (journal capture)
+    _resp 3 200 '{"data":{"pid":9876}}'
+    # Call 4: GET /agent/exec-status → 200, exited (journal capture)
+    _resp 4 200 '{"data":{"exited":1,"exitcode":0}}'
+    # Call 5: POST /status/stop → 200
     _resp 5 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
-    # Call 6: GET /status/current after force-stop → still running
+    # Call 6: GET /tasks/.../status → still running (triggers timeout immediately
+    # since STOP_TIMEOUT=1 and STOP_POLL_INTERVAL=0)
     _resp 6 200 '{"data":{"status":"running"}}'
+    # Call 7: force-stop POST → 200
+    _resp 7 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
+    # Call 8: GET /status/current after force-stop → still running
+    _resp 8 200 '{"data":{"status":"running"}}'
 
     rc=0
     _run_teardown $VMID >/dev/null 2>&1 || rc=$?
@@ -330,6 +340,126 @@ echo "--- Test 8: non-numeric VMID → rc≠0"
     [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero for non-numeric VMID" >&2; exit 1; }
     _assert_eq "call count" "$(_call_count)" "0"
 ) && _pass "Test 8" || _fail "Test 8"
+
+# ============================================================
+# TEST 9: journal lines appear in teardown's output
+#
+# The agent returns real journal text. Confirm it appears in teardown's
+# stderr — this is the signal that the content was streamed, not silently
+# discarded. A test that only checks exit code cannot tell this from a no-op.
+# ============================================================
+echo "--- Test 9: journal output appears in teardown stderr"
+(
+    _setup
+    VMID=500
+    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 2 200 "$(_pool_with $VMID)"
+    # Call 3: POST /agent/exec → 200, pid
+    _resp 3 200 '{"data":{"pid":9876}}'
+    # Call 4: GET /agent/exec-status → 200, exited with recognizable journal text
+    _resp 4 200 '{"data":{"exited":1,"out-data":"Sep 18 shutdown: runner-killed-deliberately\n","exitcode":0}}'
+    _resp 5 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
+    _resp 6 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
+    _resp 7 200 '{"data":{"status":"stopped"}}'
+    _resp 8 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:500:root@pam:"}'
+
+    rc=0
+    output=$(_run_teardown $VMID 2>&1) || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && echo "$output" | grep -q "runner-killed-deliberately" \
+        || { echo "  FAIL: journal text not found in output" >&2; exit 1; } \
+    && _assert_log_has "PVAPI:DELETE:"
+) && _pass "Test 9" || _fail "Test 9"
+
+# ============================================================
+# TEST 10: agent exec returns HTTP error → "unavailable", teardown completes
+#
+# When the guest-agent is not running (Proxmox returns non-200), journal
+# capture prints "unavailable" and teardown still destroys the VM.
+# ============================================================
+echo "--- Test 10: agent exec HTTP error → unavailable, teardown still completes"
+(
+    _setup
+    VMID=500
+    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 2 200 "$(_pool_with $VMID)"
+    # Call 3: POST /agent/exec → 500 (agent not available)
+    _resp 3 500 '{"errors":"qemu agent is not running"}'
+    # Stop/destroy calls follow immediately after journal gives up
+    _resp 4 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
+    _resp 5 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
+    _resp 6 200 '{"data":{"status":"stopped"}}'
+    _resp 7 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:500:root@pam:"}'
+
+    rc=0
+    output=$(_run_teardown $VMID 2>&1) || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && echo "$output" | grep -q "journal unavailable" \
+        || { echo "  FAIL: 'journal unavailable' not found in output" >&2; exit 1; } \
+    && _assert_log_has "PVAPI:DELETE:"
+) && _pass "Test 10" || _fail "Test 10"
+
+# ============================================================
+# TEST 11: agent exec returns no pid → "unavailable", teardown completes
+#
+# Proxmox accepts the exec call (200) but returns no pid in the body.
+# Journal capture says so and teardown continues.
+# ============================================================
+echo "--- Test 11: agent exec returns no pid → unavailable, teardown still completes"
+(
+    _setup
+    VMID=500
+    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 2 200 "$(_pool_with $VMID)"
+    # Call 3: POST /agent/exec → 200 but body has no pid
+    _resp 3 200 '{"data":{}}'
+    # Stop/destroy calls follow immediately
+    _resp 4 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
+    _resp 5 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
+    _resp 6 200 '{"data":{"status":"stopped"}}'
+    _resp 7 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:500:root@pam:"}'
+
+    rc=0
+    output=$(_run_teardown $VMID 2>&1) || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && echo "$output" | grep -q "journal unavailable" \
+        || { echo "  FAIL: 'journal unavailable' not found in output" >&2; exit 1; } \
+    && _assert_log_has "PVAPI:DELETE:"
+) && _pass "Test 11" || _fail "Test 11"
+
+# ============================================================
+# TEST 12: agent exec-status never says exited → timeout, teardown completes
+#
+# With JOURNAL_TIMEOUT=0 the deadline fires immediately after the first poll.
+# Teardown must still destroy the VM and return 0.
+# ============================================================
+echo "--- Test 12: agent exec-status never exits → timeout, teardown still completes"
+(
+    _setup
+    VMID=500
+    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 2 200 "$(_pool_with $VMID)"
+    # Call 3: POST /agent/exec → 200, pid returned
+    _resp 3 200 '{"data":{"pid":9876}}'
+    # Call 4: GET /agent/exec-status → 200, exited=0 (still running); deadline then fires
+    _resp 4 200 '{"data":{"exited":0}}'
+    # Stop/destroy calls follow immediately after timeout
+    _resp 5 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
+    _resp 6 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
+    _resp 7 200 '{"data":{"status":"stopped"}}'
+    _resp 8 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:500:root@pam:"}'
+
+    rc=0
+    JOURNAL_TIMEOUT=0 output=$(_run_teardown $VMID 2>&1) || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && echo "$output" | grep -q "journal unavailable" \
+        || { echo "  FAIL: 'journal unavailable' not found in output" >&2; exit 1; } \
+    && _assert_log_has "PVAPI:DELETE:"
+) && _pass "Test 12" || _fail "Test 12"
 
 # ============================================================
 # Summary
