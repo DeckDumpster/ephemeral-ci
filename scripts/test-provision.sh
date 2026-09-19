@@ -684,20 +684,21 @@ unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_ALLOC_MIB
 unset CAPACITY_POLL CAPACITY_TIMEOUT
 
 # ---------------------------------------------------------------------------
-# Test 16 -- apt automation: drifted template is masked and warned, not refused
+# Test 16 -- apt automation: drifted template is refused, not masked-and-warned
 #
 # provision.sh masks unattended-upgrades.service, apt-daily.timer, and
 # apt-daily-upgrade.timer in the clone before delivering credentials. If the
-# guest script returns 2 (units were enabled before masking), provision issues
-# a ::warning:: naming the template and proceeds. If it returns any other
+# guest script returns 2 (units were enabled before masking), provision exits 1
+# naming the template -- a warning that succeeds cannot surface a fault that
+# appears 20 minutes later as a dpkg-lock failure. If it returns any other
 # non-zero value (mask or verify failed), provision exits 1.
 #
-# The sp-3q0cz version refused (exit 1) on any non-zero guest exit code.
-# This case (CURL_EXEC_CHECK_RC=2) must fail there but pass here.
+# The sp-vp0me version warned-and-proceeded on exit code 2. This case must now
+# fail: law-a-control-that-cannot-check-must-refuse.
 # ---------------------------------------------------------------------------
 
 # (a) drifted template: guest script returns 2 (was enabled, now masked).
-# provision must proceed with a ::warning:: and deliver credentials.
+# provision must refuse with ::error:: and not deliver credentials.
 rm -f "$CURL_ARGV_FILE"
 export CURL_EXEC_CHECK_RC=2
 _err16="$SCRATCH/err16"
@@ -705,28 +706,28 @@ bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
     >/dev/null 2>"$_err16" && _rc16=0 || _rc16=$?
 unset CURL_EXEC_CHECK_RC
 
-if [ "$_rc16" -eq 0 ]; then
-    ok "test-16a: provision proceeds despite drifted template"
+if [ "$_rc16" -ne 0 ]; then
+    ok "test-16a: provision refuses a drifted template"
 else
-    ko "test-16a: provision refused a drifted template instead of masking and proceeding (rc=$_rc16)"
+    ko "test-16a: provision proceeded despite drifted template (rc=$_rc16)"
 fi
 
-if grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-16a: credentials delivered after masking drifted timers"
+if ! grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-16a: credentials not delivered when template is drifted"
 else
-    ko "test-16a: credentials not delivered despite successful mask"
+    ko "test-16a: credentials delivered despite drifted template"
 fi
 
-if grep -q '::warning::' "$_err16" 2>/dev/null; then
-    ok "test-16a: ::warning:: issued for drifted template"
+if grep -q '::error::' "$_err16" 2>/dev/null; then
+    ok "test-16a: ::error:: issued for drifted template"
 else
-    ko "test-16a: no ::warning:: for drifted template (got: $(cat "$_err16"))"
+    ko "test-16a: no ::error:: for drifted template (got: $(cat "$_err16"))"
 fi
 
 if grep -q '101' "$_err16" 2>/dev/null; then
-    ok "test-16a: warning names the template"
+    ok "test-16a: error names the template"
 else
-    ko "test-16a: warning does not name the template (got: $(cat "$_err16"))"
+    ko "test-16a: error does not name the template (got: $(cat "$_err16"))"
 fi
 
 # (b) mask call fails: guest script returns 1. provision must exit non-zero

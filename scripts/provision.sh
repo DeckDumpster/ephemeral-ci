@@ -530,14 +530,17 @@ done
 # credentials land: the runner never starts on a node where an upgrade can
 # interrupt it.
 #
-# If the template was drifted (timers enabled), emit a ::warning:: naming the
-# template and proceed: refusing every provision until the template is resealed
-# at the Proxmox console would block CI entirely, and masking handles the
-# immediate risk. If the mask itself fails, refuse.
+# If the template was drifted (timers enabled), refuse: a warning that succeeds
+# cannot surface a fault that appears 20 minutes later as a dpkg-lock failure
+# (law-a-control-that-cannot-check-must-refuse). The guest's units are masked
+# before the check exits so the running clone is safe regardless, but a drifted
+# template must be resealed (bash scripts/template-substrate.sh inside the
+# template VM, then convert) before CI can provision again.
+# If the mask call itself fails, also refuse.
 #
 # Guest script exit codes:
 #   0: all units were already masked/disabled -- template is clean
-#   2: one or more were enabled; all are now masked -- template was drifted
+#   2: one or more were enabled; all are now masked -- template is drifted: refuse
 #   1 (or other non-zero): mask or post-mask verify failed -- refuse
 printf 'provision.sh: masking apt automation in guest %s\n' "$VMID" >&2
 _apt_rc=0
@@ -549,7 +552,7 @@ poll_exec "$VMID" 60 \
     || _apt_rc=$?
 case "$_apt_rc" in
     0) ;;
-    2) printf '::warning::provision.sh: template %s had apt automation enabled; units masked for this run\n' "$TEMPLATE_VMID" >&2 ;;
+    2) printf '::error::provision.sh: template %s has apt automation enabled; reseal the template (bash scripts/template-substrate.sh) before provisioning\n' "$TEMPLATE_VMID" >&2; exit 1 ;;
     *) printf 'provision.sh: failed to mask apt automation in guest %s\n' "$VMID" >&2; exit 1 ;;
 esac
 
