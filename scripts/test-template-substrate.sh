@@ -106,15 +106,25 @@ else
     bad "the sysctl is persisted to a file, not only set live" "a live-only sysctl is lost when the template is cloned"
 fi
 
-# The UNIT must be acted on, not merely mentioned. Matching the bare name passed a
-# copy that only named it in a log line, which disables nothing.
+# All three apt automation units are masked. unattended-upgrades.service does the
+# upgrades; apt-daily-upgrade.timer schedules them; apt-daily.timer schedules the
+# preceding apt-get update. Masking only the service leaves the timers running
+# and able to race provisioning for the dpkg lock.
 # MASKED, not merely disabled: a disabled unit can be pulled back in as another
 # unit's dependency. TEMPLATE.md has said so since e02f95b.
-if has 'systemctl mask[^|]*unattended-upgrades'; then
-    ok "unattended-upgrades is masked, not just disabled"
+if has 'systemctl mask'; then
+    ok "apt automation units are masked, not just disabled"
 else
-    bad "unattended-upgrades is masked, not just disabled" "disable alone is undone by any unit that depends on it"
+    bad "apt automation units are masked, not just disabled" "disable alone is undone by any unit that depends on it"
 fi
+
+for _au in 'unattended-upgrades.service' 'apt-daily.timer' 'apt-daily-upgrade.timer'; do
+    if has "$_au"; then
+        ok "the mask/check path names $_au"
+    else
+        bad "the mask/check path names $_au" "this unit drives apt automation and can race provisioning for the dpkg lock"
+    fi
+done
 
 if has 'DPkg::Lock::Timeout=[0-9]+'; then
     ok "apt waits for the dpkg lock"
