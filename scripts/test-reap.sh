@@ -138,6 +138,7 @@ url=""
 output_file=""
 write_out_fmt=""
 cacert_file=""
+resolve_arg=""
 args=("$@")
 i=0
 while [ "$i" -lt "${#args[@]}" ]; do
@@ -147,6 +148,7 @@ while [ "$i" -lt "${#args[@]}" ]; do
         -o|--output) i=$(( i + 1 )); output_file="${args[$i]}" ;;
         -w|--write-out) i=$(( i + 1 )); write_out_fmt="${args[$i]}" ;;
         --cacert) i=$(( i + 1 )); cacert_file="${args[$i]}" ;;
+        --resolve) i=$(( i + 1 )); resolve_arg="${args[$i]}" ;;
     esac
     i=$(( i + 1 ))
 done
@@ -158,6 +160,9 @@ if [ -n "$cacert_file" ]; then
         printf 'curl: (77) error setting certificate file: %s\n' "$cacert_file" >&2
         exit 77
     fi
+fi
+if [ -n "$resolve_arg" ]; then
+    printf '%s\n' "$resolve_arg" >> "$BIN_DIR/.resolves"
 fi
 _respond() {
     local body="$1" status="${2:-200}"
@@ -561,6 +566,76 @@ echo "--- Test 9: reap.sh passes --cacert with the supplied CA cert file"
     done < "$BIN/.cacerts"
 ) && _pass "Test 9: reap.sh passes --cacert with the supplied CA cert file" \
   || _fail "Test 9: reap.sh passes --cacert with the supplied CA cert file"
+
+# ============================================================
+# TEST 10: PVE_API_HOSTNAME causes URL to use the hostname and --resolve
+#          to pin it to PVE_API_HOST (the tailnet IP).
+#
+# The reaper workflow sets PVE_API_HOST to a tailnet IP. The Proxmox TLS
+# certificate carries no SAN for that IP — it is issued for the node name.
+# Supplying the correct CA only fixes chain trust; the name mismatch still
+# fails validation.
+#
+# The fix: pvapi.sh reads PVE_API_HOSTNAME and, when set, uses it as the URL
+# host and adds --resolve <hostname>:<port>:<ip> so curl connects to the IP
+# but validates against the certificate's name.
+#
+# DISCRIMINATING ASSERTIONS:
+#   a. The Proxmox URL must use the hostname, not the IP.
+#   b. Every curl call to the Proxmox API must carry a --resolve argument
+#      in the form <hostname>:<port>:<ip>.
+# ============================================================
+echo "--- Test 10: PVE_API_HOSTNAME routes URL through hostname with --resolve"
+(
+    _reap_setup
+    printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
+
+    FAKE_IP="100.64.0.1"
+    FAKE_HOST="pve"
+    FAKE_PORT="8006"
+
+    PATH="$BIN:$PATH" \
+    SNIPPETS_DIR="$REAP_SNIPPETS" \
+    TEMPLATE_VMID=101 \
+    PVE_NODE=pve \
+    PVE_TOKEN_ID=test@pve!tok \
+    PVE_TOKEN_SECRET=00000000-0000-0000-0000-000000000000 \
+    PVE_CA_CERT_FILE="$REAP_CA_CERT" \
+    GITHUB_TOKEN="" \
+    GH_REPO="" \
+    GH_ORG="" \
+    PVE_API_HOST="$FAKE_IP" \
+    PVE_API_HOSTNAME="$FAKE_HOST" \
+    PVE_API_PORT="$FAKE_PORT" \
+    bash "$REAP" --dry-run 2>/dev/null || true
+
+    # a. The URL must use the hostname, not the IP.
+    if grep -qF "https://${FAKE_IP}:" "$BIN/.urls" 2>/dev/null; then
+        echo "  expected fail: curl URL contains the IP '$FAKE_IP' — hostname not used" >&2
+        echo "  URLs requested:" >&2; sed 's/^/    /' "$BIN/.urls" >&2
+        exit 1
+    fi
+    if ! grep -qF "https://${FAKE_HOST}:" "$BIN/.urls" 2>/dev/null; then
+        echo "  expected fail: curl URL does not contain the hostname '$FAKE_HOST'" >&2
+        echo "  URLs logged (may be empty if curl was not called):" >&2
+        sed 's/^/    /' "$BIN/.urls" 2>/dev/null >&2 || echo "    (no .urls file)" >&2
+        exit 1
+    fi
+
+    # b. Every Proxmox call must carry --resolve <hostname>:<port>:<ip>.
+    EXPECTED_RESOLVE="${FAKE_HOST}:${FAKE_PORT}:${FAKE_IP}"
+    if [ ! -s "$BIN/.resolves" ]; then
+        echo "  expected fail: no --resolve argument was passed to curl" >&2
+        exit 1
+    fi
+    while IFS= read -r line; do
+        [ "$line" = "$EXPECTED_RESOLVE" ] || {
+            echo "  expected fail: --resolve '$line' != expected '$EXPECTED_RESOLVE'" >&2
+            exit 1
+        }
+    done < "$BIN/.resolves"
+) && _pass "Test 10: PVE_API_HOSTNAME routes URL through hostname with --resolve" \
+  || _fail "Test 10: PVE_API_HOSTNAME routes URL through hostname with --resolve"
 
 # ============================================================
 # Summary

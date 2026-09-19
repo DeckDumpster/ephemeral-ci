@@ -34,8 +34,16 @@ inputs:
     description: Proxmox API token secret.
     required: true
   pve-api-host:
-    description: Proxmox API host, reachable over the tailnet.
+    description: Proxmox API host (IP or hostname), reachable over the tailnet.
     required: true
+  pve-api-hostname:
+    description: >-
+      Hostname as it appears in the Proxmox TLS certificate. Required when
+      pve-api-host is an IP address (the certificate carries no SAN for IPs).
+      When set, pvapi.sh connects to pve-api-host but validates TLS against
+      this name. Typically the same value as pve-node.
+    required: false
+    default: ''
   pve-node:
     description: Proxmox node name.
     required: true
@@ -70,6 +78,7 @@ runs:
       shell: bash
       env:
         PVE_API_HOST: ${{ inputs.pve-api-host }}
+        PVE_API_HOSTNAME: ${{ inputs.pve-api-hostname }}
         PVE_NODE: ${{ inputs.pve-node }}
         PVE_TOKEN_ID: ${{ inputs.pve-token-id }}
         PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
