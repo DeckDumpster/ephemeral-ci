@@ -51,6 +51,10 @@
 #   PVE_API_HOST   -- Proxmox API hostname or IP (default: localhost)
 #   PVE_API_PORT   -- Proxmox API port (default: 8006)
 #   RUNNER_GROUP   -- runner group the guest registers into (default: ephemeral-ci)
+#   CAPACITY_UNCAPPED -- set to "1" to provision without a memory capacity check.
+#                   Must be set by the caller; provision.sh never sets it from a
+#                   failed permission check. A missing privilege and a deliberate
+#                   decision to run uncapped must not produce the same behaviour.
 #
 # API transport notes:
 #   -k: loopback only. The request never leaves the host, so anyone positioned
@@ -282,6 +286,7 @@ pick_vmid() {
 CAPACITY_TIMEOUT="${CAPACITY_TIMEOUT:-1800}"
 CAPACITY_POLL="${CAPACITY_POLL:-15}"
 CAPACITY_SLACK_RUNNERS="${CAPACITY_SLACK_RUNNERS:-1}"
+CAPACITY_UNCAPPED="${CAPACITY_UNCAPPED:-0}"
 # Left for the hypervisor itself -- ZFS ARC, the kernel, and whatever is not a
 # guest. Not a safety margin for the guests; that is what the slack is for.
 NODE_MEM_RESERVE_MIB="${NODE_MEM_RESERVE_MIB:-8192}"
@@ -298,13 +303,16 @@ NODE_MEM_RESERVE_MIB="${NODE_MEM_RESERVE_MIB:-8192}"
 node_memory() {
     # This file's own pvapi() prints the body on stdout and returns non-zero on
     # anything but 2xx -- it is NOT the pvapi.sh that exports PVAPI_STATUS.
+    # stderr is NOT suppressed here: pvapi already logs the failing call and its
+    # HTTP status to stderr (e.g. "pvapi GET /nodes/x/status -> HTTP 403"), and
+    # that message is the actionable signal when the token lacks the grant.
     local status_body qemu_body total rest
-    status_body="$(pvapi GET "/nodes/${PVE_NODE}/status" 2>/dev/null)" || return 1
+    status_body="$(pvapi GET "/nodes/${PVE_NODE}/status")" || return 1
     total="$(printf '%s' "$status_body" | python3 -c \
         'import json,sys; print(json.load(sys.stdin)["data"]["memory"]["total"]//1048576)' 2>/dev/null)" || return 1
     [ -n "$total" ] || return 1
 
-    qemu_body="$(pvapi GET "/nodes/${PVE_NODE}/qemu" 2>/dev/null)" || return 1
+    qemu_body="$(pvapi GET "/nodes/${PVE_NODE}/qemu")" || return 1
     rest="$(printf '%s' "$qemu_body" | TEMPLATE_VMID="$TEMPLATE_VMID" python3 -c \
         'import json,os,sys
 d=json.load(sys.stdin)["data"]
@@ -320,21 +328,19 @@ wait_for_capacity() {
     local total alloc want free need waited=0 pair
     while :; do
         if ! pair="$(node_memory)" || [ -z "$pair" ]; then
-            # A pool-scoped token cannot read the node or its VM list. That is a
-            # grant to widen -- Sys.Audit on /nodes/<node> for the total and
-            # VM.Audit on /vms for the guests, both read-only -- not a reason to
-            # fail a run. But it must be said out loud, because a capacity
-            # control that quietly does nothing is worse than none at all.
-            #
-            # THE TWO GRANTS ARE INDEPENDENT AND HALF OF THEM IS THE DANGEROUS
-            # STATE. /nodes/<node>/status needs Sys.Audit; /nodes/<node>/qemu is
-            # FILTERED by VM.Audit rather than refused, so a token holding the
-            # first and not the second gets a 200 carrying only the VMs it can
-            # see. The sum is then legitimately small, the cap passes, and
-            # nothing anywhere reports a problem -- a check that cannot fail is
-            # not a check. Grant both or neither.
-            printf '::warning::provision.sh: cannot read node memory (needs Sys.Audit on /nodes/%s AND VM.Audit on /vms) -- proceeding with NO capacity cap\n' "$PVE_NODE" >&2
-            return 0
+            # node_memory() already printed the failing call and HTTP status to
+            # stderr via pvapi(). Naming the call (not just the required grants)
+            # is what lets an operator distinguish a token with the wrong ACL
+            # from a token with privsep whose ACL never intersected with the
+            # user's rows -- the same symptom, the same message, two different
+            # fixes. 'pvapi GET /nodes/x/status -> HTTP 403' points at one call;
+            # 'needs Sys.Audit AND VM.Audit' points at neither (sp-7zzni note).
+            if [ "${CAPACITY_UNCAPPED:-0}" = "1" ]; then
+                printf '::warning::provision.sh: CAPACITY_UNCAPPED=1 -- proceeding with NO capacity cap\n' >&2
+                return 0
+            fi
+            printf '::error::provision.sh: cannot read node memory (see pvapi error above for the failing call) -- refusing to clone without a capacity check. Grant the token Sys.Audit on /nodes/%s and VM.Audit on /vms, or set CAPACITY_UNCAPPED=1 for a deliberately uncapped deployment.\n' "$PVE_NODE" >&2
+            return 1
         fi
         # Split on purpose: $pair is "total alloc want".
         # shellcheck disable=SC2086
