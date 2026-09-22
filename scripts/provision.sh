@@ -51,10 +51,18 @@
 #   PVE_API_HOST   -- Proxmox API hostname or IP (default: localhost)
 #   PVE_API_PORT   -- Proxmox API port (default: 8006)
 #   RUNNER_GROUP   -- runner group the guest registers into (default: ephemeral-ci)
-#   CAPACITY_UNCAPPED -- set to "1" to provision without a memory capacity check.
+#   CAPACITY_UNCAPPED -- set to "1" to provision without any capacity check.
 #                   Must be set by the caller; provision.sh never sets it from a
 #                   failed permission check. A missing privilege and a deliberate
 #                   decision to run uncapped must not produce the same behaviour.
+#   CPU_OVERCOMMIT_RATIO -- vCPUs to allocate per physical CPU thread (default: 4).
+#                   CPU overcommit is legitimate where memory overcommit is not: a
+#                   guest that gets less CPU than it expects slows down; a guest that
+#                   gets less memory than it expects crashes. 4 vCPUs per thread is
+#                   conservative for CI: runners burst hard for seconds and idle the
+#                   rest of a job.
+#   NODE_CPU_RESERVE_VCPUS -- vCPUs withheld for the hypervisor and non-guest work
+#                   (default: 0). Analogous to NODE_MEM_RESERVE_MIB.
 #
 # API transport notes:
 #   -k: loopback only. The request never leaves the host, so anyone positioned
@@ -335,80 +343,110 @@ CAPACITY_UNCAPPED="${CAPACITY_UNCAPPED:-0}"
 # Left for the hypervisor itself -- ZFS ARC, the kernel, and whatever is not a
 # guest. Not a safety margin for the guests; that is what the slack is for.
 NODE_MEM_RESERVE_MIB="${NODE_MEM_RESERVE_MIB:-8192}"
+# CPU overcommit ratio: how many vCPUs to allocate per physical CPU thread.
+# CPU overcommit is legitimate where memory overcommit is not: a guest that is
+# allocated 8 vCPUs on a node with 8 threads slows down under contention; a
+# guest allocated 8 GiB on a node with 6 GiB crashes. 4:1 is conservative for
+# CI runners that burst hard for seconds and idle the rest of the job.
+CPU_OVERCOMMIT_RATIO="${CPU_OVERCOMMIT_RATIO:-4}"
+# vCPUs reserved for the hypervisor itself and any non-guest workloads.
+NODE_CPU_RESERVE_VCPUS="${NODE_CPU_RESERVE_VCPUS:-0}"
 
-# Prints "<total_mib> <allocated_mib> <template_mib>" for the node, or nothing
-# if the token cannot see them.
+# Prints "<total_mib> <total_cpus> <alloc_mib> <template_mib> <alloc_cpus> <template_cpus>"
+# for the node, or nothing if the token cannot see them.
 #
 # TWO CALLS, AND NEVER /config. scripts/test-provision.sh asserts that nothing
 # reads a VM's /config before the clone -- that probe is what pick_vmid was
 # rewritten to remove, because a pool-scoped token cannot do it and the clone
-# is the authoritative collision check instead. The template's own maxmem is
-# already in the /qemu list this reads anyway, so taking it from there keeps
-# the invariant AND costs one call fewer than asking for it separately.
-node_memory() {
+# is the authoritative collision check instead. The template's maxmem and cpus
+# are already in the /qemu list this reads, so taking them from there keeps the
+# invariant AND costs one call fewer than asking for them separately.
+node_resources() {
     # This file's own pvapi() prints the body on stdout and returns non-zero on
     # anything but 2xx -- it is NOT the pvapi.sh that exports PVAPI_STATUS.
     # stderr is NOT suppressed here: pvapi already logs the failing call and its
     # HTTP status to stderr (e.g. "pvapi GET /nodes/x/status -> HTTP 403"), and
     # that message is the actionable signal when the token lacks the grant.
-    local status_body qemu_body total rest
+    local status_body qemu_body status_vals rest
     status_body="$(pvapi GET "/nodes/${PVE_NODE}/status")" || return 1
-    total="$(printf '%s' "$status_body" | python3 -c \
-        'import json,sys; print(json.load(sys.stdin)["data"]["memory"]["total"]//1048576)' 2>/dev/null)" || return 1
-    [ -n "$total" ] || return 1
+    status_vals="$(printf '%s' "$status_body" | python3 -c \
+        'import json,sys; d=json.load(sys.stdin)["data"]
+print(d["memory"]["total"]//1048576, d["cpuinfo"]["cpus"])' 2>/dev/null)" || return 1
+    [ -n "$status_vals" ] || return 1
 
     qemu_body="$(pvapi GET "/nodes/${PVE_NODE}/qemu")" || return 1
     rest="$(printf '%s' "$qemu_body" | TEMPLATE_VMID="$TEMPLATE_VMID" python3 -c \
         'import json,os,sys
 d=json.load(sys.stdin)["data"]
 tid=str(os.environ["TEMPLATE_VMID"])
-run=sum(v.get("maxmem",0) for v in d if v.get("status")=="running")//1048576
-tpl=[v.get("maxmem",0)//1048576 for v in d if str(v.get("vmid"))==tid]
-print(run, tpl[0] if tpl else 0)' 2>/dev/null)" || return 1
+run_mem=sum(v.get("maxmem",0) for v in d if v.get("status")=="running")//1048576
+run_cpu=sum(int(v.get("cpus",0)) for v in d if v.get("status")=="running")
+tpl=[v for v in d if str(v.get("vmid"))==tid]
+tpl_mem=tpl[0].get("maxmem",0)//1048576 if tpl else 0
+tpl_cpu=int(tpl[0].get("cpus",0)) if tpl else 0
+print(run_mem, tpl_mem, run_cpu, tpl_cpu)' 2>/dev/null)" || return 1
     [ -n "$rest" ] || return 1
-    printf '%s %s' "$total" "$rest"
+    printf '%s %s' "$status_vals" "$rest"
 }
 
 wait_for_capacity() {
-    local total alloc want free need waited=0 pair
+    local total_mib total_cpus alloc_mib want_mib alloc_cpus want_cpus \
+          free_mib need_mib free_cpus need_cpus \
+          waited=0 resources
     while :; do
-        if ! pair="$(node_memory)" || [ -z "$pair" ]; then
-            # node_memory() already printed the failing call and HTTP status to
-            # stderr via pvapi(). Naming the call (not just the required grants)
-            # is what lets an operator distinguish a token with the wrong ACL
-            # from a token with privsep whose ACL never intersected with the
-            # user's rows -- the same symptom, the same message, two different
-            # fixes. 'pvapi GET /nodes/x/status -> HTTP 403' points at one call;
+        if ! resources="$(node_resources)" || [ -z "$resources" ]; then
+            # node_resources() already printed the failing call and HTTP status
+            # to stderr via pvapi(). Naming the call (not just the required
+            # grants) is what lets an operator distinguish a token with the
+            # wrong ACL from one whose ACL never intersected with the user's
+            # rows -- the same symptom, the same message, two different fixes.
+            # 'pvapi GET /nodes/x/status -> HTTP 403' points at one call;
             # 'needs Sys.Audit AND VM.Audit' points at neither (sp-7zzni note).
             if [ "${CAPACITY_UNCAPPED:-0}" = "1" ]; then
                 printf '::warning::provision.sh: CAPACITY_UNCAPPED=1 -- proceeding with NO capacity cap\n' >&2
                 return 0
             fi
-            printf '::error::provision.sh: cannot read node memory (see pvapi error above for the failing call) -- refusing to clone without a capacity check. Grant the token Sys.Audit on /nodes/%s and VM.Audit on /vms, or set CAPACITY_UNCAPPED=1 for a deliberately uncapped deployment.\n' "$PVE_NODE" >&2
+            printf '::error::provision.sh: cannot read node resources (see pvapi error above for the failing call) -- refusing to clone without a capacity check. Grant the token Sys.Audit on /nodes/%s and VM.Audit on /vms, or set CAPACITY_UNCAPPED=1 for a deliberately uncapped deployment.\n' "$PVE_NODE" >&2
             return 1
         fi
-        # Split on purpose: $pair is "total alloc want".
+        # $resources is "total_mib total_cpus alloc_mib template_mib alloc_cpus template_cpus"
         # shellcheck disable=SC2086
-        set -- $pair
-        total="$1"; alloc="$2"; want="$3"
-        if [ "${want:-0}" -le 0 ]; then
+        set -- $resources
+        total_mib="$1"; total_cpus="$2"; alloc_mib="$3"; want_mib="$4"
+        alloc_cpus="$5"; want_cpus="$6"
+        if [ "${want_mib:-0}" -le 0 ]; then
             printf '::warning::provision.sh: template %s reports no memory -- proceeding with NO capacity cap\n' "$TEMPLATE_VMID" >&2
             return 0
         fi
-        need=$(( want * (1 + CAPACITY_SLACK_RUNNERS) ))
-        free=$(( total - alloc - NODE_MEM_RESERVE_MIB ))
-        if [ "$free" -ge "$need" ]; then
-            printf 'provision.sh: %s has %s MiB free of %s (reserve %s, running VMs allocate %s); this runner wants %s\n' \
-                "$PVE_NODE" "$free" "$total" "$NODE_MEM_RESERVE_MIB" "$alloc" "$want" >&2
+        need_mib=$(( want_mib * (1 + CAPACITY_SLACK_RUNNERS) ))
+        free_mib=$(( total_mib - alloc_mib - NODE_MEM_RESERVE_MIB ))
+        # vCPU budget = physical threads * overcommit ratio, minus the reserve.
+        # ALLOCATION, NOT USAGE: sum configured cpus of running VMs, not load
+        # average. Load is a lagging measure; this gate runs before trouble
+        # starts. If the template reports 0 cpus the CPU check is skipped.
+        need_cpus=$(( want_cpus * (1 + CAPACITY_SLACK_RUNNERS) ))
+        free_cpus=$(( total_cpus * CPU_OVERCOMMIT_RATIO - alloc_cpus - NODE_CPU_RESERVE_VCPUS ))
+        if [ "$free_mib" -ge "$need_mib" ] \
+           && { [ "${want_cpus:-0}" -le 0 ] || [ "$free_cpus" -ge "$need_cpus" ]; }; then
+            printf 'provision.sh: %s has %s MiB free of %s (reserve %s, VMs allocate %s); %s vCPUs free (budget %s x %s = %s, reserve %s, VMs allocate %s); this runner wants %s MiB / %s vCPUs\n' \
+                "$PVE_NODE" "$free_mib" "$total_mib" "$NODE_MEM_RESERVE_MIB" "$alloc_mib" \
+                "$free_cpus" "$total_cpus" "$CPU_OVERCOMMIT_RATIO" \
+                "$(( total_cpus * CPU_OVERCOMMIT_RATIO ))" \
+                "$NODE_CPU_RESERVE_VCPUS" "$alloc_cpus" \
+                "$want_mib" "$want_cpus" >&2
             return 0
         fi
         if [ "$waited" -ge "$CAPACITY_TIMEOUT" ]; then
-            printf '::error::provision.sh: waited %ss for room on %s. %s MiB free of %s (reserve %s, running VMs allocate %s); this runner needs %s MiB including slack for %s concurrent clone(s).\n' \
-                "$waited" "$PVE_NODE" "$free" "$total" "$NODE_MEM_RESERVE_MIB" "$alloc" "$need" "$CAPACITY_SLACK_RUNNERS" >&2
+            printf '::error::provision.sh: waited %ss for room on %s. Memory: %s MiB free of %s (reserve %s, VMs allocate %s, need %s). CPU: %s vCPUs free of %s (budget %s x %s, reserve %s, VMs allocate %s, need %s). Slack: %s concurrent clone(s).\n' \
+                "$waited" "$PVE_NODE" \
+                "$free_mib" "$total_mib" "$NODE_MEM_RESERVE_MIB" "$alloc_mib" "$need_mib" \
+                "$free_cpus" "$(( total_cpus * CPU_OVERCOMMIT_RATIO ))" \
+                "$total_cpus" "$CPU_OVERCOMMIT_RATIO" "$NODE_CPU_RESERVE_VCPUS" "$alloc_cpus" "$need_cpus" \
+                "$CAPACITY_SLACK_RUNNERS" >&2
             return 1
         fi
-        printf 'provision.sh: %s has %s MiB free, need %s -- waiting (%ss/%ss)\n' \
-            "$PVE_NODE" "$free" "$need" "$waited" "$CAPACITY_TIMEOUT" >&2
+        printf 'provision.sh: %s: memory %s MiB free (need %s), cpu %s vCPUs free (need %s) -- waiting (%ss/%ss)\n' \
+            "$PVE_NODE" "$free_mib" "$need_mib" "$free_cpus" "$need_cpus" "$waited" "$CAPACITY_TIMEOUT" >&2
         sleep "$CAPACITY_POLL"
         waited=$(( waited + CAPACITY_POLL ))
     done

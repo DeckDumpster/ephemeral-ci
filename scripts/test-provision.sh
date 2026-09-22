@@ -161,18 +161,36 @@ case "$path" in
     # * spans /, so /nodes/*/status also matches /nodes/<node>/tasks/<upid>/status
     # and would hand poll_task a memory blob instead of an exitstatus. Every
     # specific pattern above must get first refusal.
-    #   CURL_NODE_CODE       -- HTTP code for both (default 200; 403 models a
-    #                           pool-scoped token that cannot see the node)
-    #   CURL_NODE_TOTAL_MIB  -- node RAM
-    #   CURL_NODE_ALLOC_MIB  -- summed maxmem of the running VMs
-    #   CURL_TEMPLATE_MIB    -- the template's maxmem
+    #   CURL_NODE_CODE          -- HTTP code for both (default 200; 403 models a
+    #                              pool-scoped token that cannot see the node)
+    #   CURL_NODE_TOTAL_MIB     -- node RAM in MiB (default 131072)
+    #   CURL_NODE_ALLOC_MIB     -- summed maxmem of running VMs in MiB (default 0)
+    #   CURL_TEMPLATE_MIB       -- the template's maxmem in MiB (default 8192)
+    #   CURL_NODE_CPUS          -- node physical CPU thread count (default 32)
+    #   CURL_NODE_ALLOC_CPUS    -- summed cpus of running VMs (default 0)
+    #   CURL_TEMPLATE_CPUS      -- the template's cpus (default 8)
+    #   CURL_CPU_TIGHT_POLLS    -- if set to N, the first N /qemu list calls
+    #                              return CURL_CPU_TIGHT_ALLOC_CPUS (default 120)
+    #                              for the running VM's cpus, then revert to
+    #                              CURL_NODE_ALLOC_CPUS. Models a concurrent VM
+    #                              finishing and freeing cores mid-wait.
     /nodes/*/status)
         http_code="${CURL_NODE_CODE:-200}"
-        body="{\"data\":{\"memory\":{\"total\":$(( ${CURL_NODE_TOTAL_MIB:-131072} * 1048576 ))}}}"
+        body="{\"data\":{\"memory\":{\"total\":$(( ${CURL_NODE_TOTAL_MIB:-131072} * 1048576 ))},\"cpuinfo\":{\"cpus\":${CURL_NODE_CPUS:-32}}}}"
         ;;
     /nodes/*/qemu)
         http_code="${CURL_NODE_CODE:-200}"
-        body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( ${CURL_NODE_ALLOC_MIB:-0} * 1048576 ))},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 ))}]}"
+        _eff_alloc_cpus="${CURL_NODE_ALLOC_CPUS:-0}"
+        if [ -n "${CURL_CPU_TIGHT_POLLS:-}" ]; then
+            _qemu_list_state="${TMPDIR:-/tmp}/qemu-list-count"
+            _qcnt=$(cat "$_qemu_list_state" 2>/dev/null || echo 0)
+            _qcnt=$(( _qcnt + 1 ))
+            printf '%s' "$_qcnt" > "$_qemu_list_state"
+            if [ "$_qcnt" -le "${CURL_CPU_TIGHT_POLLS}" ]; then
+                _eff_alloc_cpus="${CURL_CPU_TIGHT_ALLOC_CPUS:-120}"
+            fi
+        fi
+        body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( ${CURL_NODE_ALLOC_MIB:-0} * 1048576 )),\"cpus\":${_eff_alloc_cpus}},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8}}]}"
         ;;
     *)
         printf 'curl stub: unhandled path: %s\n' "$path" >&2
@@ -750,6 +768,151 @@ if grep -qF 'file=/run/gh-runner-init' "$CURL_ARGV_FILE" 2>/dev/null; then
 else
     ok "test-16b: credentials not delivered when mask fails"
 fi
+
+# ---------------------------------------------------------------------------
+# Test 17 -- CPU is the binding constraint when memory has room
+#
+# The memory gate guards one dimension; the CPU gate guards another. A node
+# with RAM to spare but no vCPU budget must block even though the memory check
+# alone would pass. This was the actual failure mode on 2026-09-22: four PRs
+# arrived together, each got a VM because the node had memory for all of them,
+# and the jobs starved each other on cores.
+#
+# Arithmetic:
+#   Node 131072 MiB / 32 CPUs; CPU_OVERCOMMIT_RATIO=4 -> budget 128 vCPUs
+#   Template 16384 MiB / 8 vCPUs; CAPACITY_SLACK_RUNNERS=1
+#   Running VMs allocate 8192 MiB / 116 vCPUs
+#
+#   Memory: free = 131072 - 8192 - 8192 = 114688 MiB, need = 32768 -> OK
+#   CPU:    free = 128 - 116 - 0 = 12 vCPUs,          need = 16    -> blocked
+# ---------------------------------------------------------------------------
+export CURL_NODE_TOTAL_MIB=131072
+export CURL_TEMPLATE_MIB=16384
+export CURL_NODE_CPUS=32
+export CURL_TEMPLATE_CPUS=8
+export CPU_OVERCOMMIT_RATIO=4
+export CAPACITY_POLL=1
+export CAPACITY_TIMEOUT=3
+
+rm -f "$CURL_ARGV_FILE"
+_err17="$SCRATCH/err17"
+CURL_NODE_ALLOC_MIB=8192 CURL_NODE_ALLOC_CPUS=116 bash "$PROVISION" \
+    valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err17" && _rc17=0 || _rc17=$?
+
+if [ "$_rc17" -ne 0 ]; then
+    ok "test-17: CPU-bound node blocks the provision"
+else
+    ko "test-17: provision proceeded despite insufficient vCPU budget"
+fi
+
+if ! grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-17: nothing cloned when CPU is the binding constraint"
+else
+    ko "test-17: a VM was cloned despite the CPU gate"
+fi
+
+if grep -q '::error::' "$_err17" && grep -q '116' "$_err17"; then
+    ok "test-17: timeout error names the allocated CPU count"
+else
+    ko "test-17: timeout error does not carry the CPU numbers (got: $(cat "$_err17"))"
+fi
+
+# Positive control: the same node with enough CPU does proceed.
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=8192 CURL_NODE_ALLOC_CPUS=0 run_provision \
+    valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-17: same node with CPU free clones successfully"
+else
+    ko "test-17: positive control failed -- CPU gate blocked when it should pass"
+fi
+
+unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_CPUS CURL_TEMPLATE_CPUS
+unset CPU_OVERCOMMIT_RATIO CAPACITY_POLL CAPACITY_TIMEOUT
+
+# ---------------------------------------------------------------------------
+# Test 18 -- the CPU gate WAITS and proceeds when a VM goes away
+#
+# A capacity gate that only fails is useless: a queue that never advances is
+# a queue. This test verifies the wait loop actually loops: after two polls
+# that see the CPU budget exhausted, the third sees it clear and proceeds.
+#
+# CURL_CPU_TIGHT_POLLS=2 makes the stub return 120 allocated vCPUs for the
+# first two /qemu list calls, then revert to CURL_NODE_ALLOC_CPUS=0.
+# With budget 128 and template_cpus=8, need=16: 128-120=8 < 16 for two polls,
+# then 128-0=128 >= 16 on the third.
+# ---------------------------------------------------------------------------
+export CURL_NODE_TOTAL_MIB=131072
+export CURL_TEMPLATE_MIB=16384
+export CURL_NODE_CPUS=32
+export CURL_TEMPLATE_CPUS=8
+export CURL_NODE_ALLOC_CPUS=0
+export CPU_OVERCOMMIT_RATIO=4
+export CAPACITY_POLL=1
+export CAPACITY_TIMEOUT=15
+
+rm -f "$CURL_ARGV_FILE" "${TMPDIR:-/tmp}/qemu-list-count"
+CURL_CPU_TIGHT_POLLS=2 CURL_CPU_TIGHT_ALLOC_CPUS=120 run_provision \
+    valid-label test-token https://github.com/owner/repo >/dev/null
+_rc18=$?
+rm -f "${TMPDIR:-/tmp}/qemu-list-count"
+
+if [ "$_rc18" -eq 0 ]; then
+    ok "test-18: provision waits and proceeds when CPU clears mid-wait"
+else
+    ko "test-18: provision did not proceed after CPU budget freed (rc=$_rc18)"
+fi
+
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-18: a VM was cloned after the CPU wait resolved"
+else
+    ko "test-18: clone never happened after the CPU wait"
+fi
+
+unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_CPUS CURL_TEMPLATE_CPUS
+unset CURL_NODE_ALLOC_CPUS CPU_OVERCOMMIT_RATIO CAPACITY_POLL CAPACITY_TIMEOUT
+
+# ---------------------------------------------------------------------------
+# Test 19 -- CAPACITY_SLACK_RUNNERS still bounds overshoot for the CPU gate
+#
+# Two provision jobs can both observe a free vCPU slot at the same time; the
+# API has no atomic reserve. CAPACITY_SLACK_RUNNERS demands room for this
+# runner plus slack more, so both can clone without exhausting the budget.
+#
+# Arithmetic (CPU, slack=1):
+#   budget 128, alloc 116, free 12 < need 16 -> blocked
+#   budget 128, alloc 116, free 12 >= need 8 (slack=0) -> clones
+# ---------------------------------------------------------------------------
+export CURL_NODE_TOTAL_MIB=131072
+export CURL_TEMPLATE_MIB=16384
+export CURL_NODE_CPUS=32
+export CURL_TEMPLATE_CPUS=8
+export CPU_OVERCOMMIT_RATIO=4
+export CAPACITY_POLL=1
+export CAPACITY_TIMEOUT=3
+
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_CPUS=116 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>/dev/null && _cap19=0 || _cap19=$?
+if ! grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-19: room for exactly one vCPU slot is not enough (CPU slack held)"
+else
+    ko "test-19: room for exactly one vCPU slot was treated as enough -- no slack"
+fi
+
+# Positive control: slack=0 on the same node does clone.
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_CPUS=116 CAPACITY_SLACK_RUNNERS=0 run_provision \
+    valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-19: CAPACITY_SLACK_RUNNERS=0 on the same CPU budget does clone"
+else
+    ko "test-19: slack=0 still refused -- the refusal was not about CPU slack"
+fi
+
+unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_CPUS CURL_TEMPLATE_CPUS
+unset CPU_OVERCOMMIT_RATIO CAPACITY_POLL CAPACITY_TIMEOUT
 
 # ---------------------------------------------------------------------------
 # Summary
