@@ -278,6 +278,23 @@ if "$DRY_RUN"; then
     echo "reap.sh: DRY RUN — max-age-hours=$MAX_AGE_HOURS cutoff=$(date -d "@$CUTOFF" --iso-8601=seconds 2>/dev/null || date -r "$CUTOFF" '+%Y-%m-%dT%H:%M:%S')" >&2
 fi
 
+# Read the template's meta.ctime once. Proxmox copies the meta field verbatim
+# from the template at clone time, so a clone's meta.ctime is the template's
+# creation time, not the clone's own. A VM whose meta.ctime equals the
+# template's has an unknown age and must be skipped rather than treated as
+# being as old as the template (law-a-control-that-cannot-check-must-refuse).
+# On failure the comparison is skipped and the meta.ctime fallback proceeds.
+TEMPLATE_META_EPOCH=""
+if pvapi GET "/nodes/${PVE_NODE}/qemu/${TEMPLATE_VMID}/config" && [[ "${PVAPI_STATUS:-}" = 2* ]]; then
+    TEMPLATE_META_EPOCH="$(python3 - "$PVAPI_BODY" <<'EOF'
+import json, sys, re
+meta = json.loads(sys.argv[1]).get("data", {}).get("meta", "")
+m = re.search(r"ctime=(\d+)", meta)
+print(m.group(1) if m else "")
+EOF
+)"
+fi
+
 # Enumerate runner VMs via the Proxmox API.
 # A failure here is a hard error: we cannot reap safely if we cannot enumerate.
 # The pveum grant is scoped to /pool/ephemeral-ci so this only sees the
@@ -411,6 +428,15 @@ EOF
         VM_EPOCH="$PROVISION_EPOCH"
         AGE_SOURCE="provision-time"
     elif [ -n "$META_EPOCH" ] && [[ "$META_EPOCH" =~ ^[0-9]+$ ]]; then
+        # meta.ctime is copied verbatim from the template at clone time.
+        # When it matches the template's own ctime, the value is the template's
+        # creation time — not this clone's — and the age is unknown.
+        if [ -n "$TEMPLATE_META_EPOCH" ] && [ "$META_EPOCH" = "$TEMPLATE_META_EPOCH" ]; then
+            echo "reap.sh: VM $VMID ($VM_NAME): meta.ctime matches template's — age unknown; skipping" >&2
+            (( skipped++ )) || true
+            (( unknown_age++ )) || true
+            continue
+        fi
         VM_EPOCH="$META_EPOCH"
         AGE_SOURCE="qm-config"
     else

@@ -18,6 +18,10 @@
 #   7. The busy check looks up the RUNNER name recorded in the VM description,
 #      not the VM's own name — the two are different strings and only the
 #      former is registered with GitHub.
+#  13. A VM whose meta.ctime matches the template's is skipped as unknown-age
+#      rather than being treated as old-as-the-template (sp-v6gwy).
+#  14. Positive control: a VM with a distinct meta.ctime IS aged and reaped,
+#      confirming 13 does not make every meta.ctime VM unknown-age (sp-v6gwy).
 #
 # Run: bash deploy/ephemeral-runner/test-reap.sh
 
@@ -128,6 +132,11 @@ _reap_setup() {
     printf '{"data":{"name":"gh-runner-500","meta":"ctime=1000000000"}}\n' > "$BIN/.stub-qemu-config"
     printf '{"data":"UPID:pve:1:1:1:stop:500:root@pam:"}\n' > "$BIN/.stub-stop"
     printf '{"data":{"status":"stopped"}}\n' > "$BIN/.stub-current"
+    # Template (VMID 101) config — ctime must differ from the VM ctime (1000000000)
+    # used in most tests, so the new template-ctime comparison does not erroneously
+    # mark existing test VMs as unknown-age.
+    printf '{"data":{"template":1,"meta":"creation-qemu=11.0.0,ctime=800000000"}}\n' \
+        > "$BIN/.stub-qemu-config-101"
     # pvapi.sh calls curl with -o FILE -w '%{http_code}': body to file, status
     # to stdout. The stub handles both conventions. It also checks --cacert FILE
     # to simulate the "file not found" failure curl returns (exit 77) when
@@ -185,8 +194,13 @@ case "$url" in
 esac
 path="${url#https://}"
 path="${path#*/api2/json}"
-if [[ "$path" =~ /qemu/[0-9]+/config ]]; then
-    _respond "$(cat "$BIN_DIR/.stub-qemu-config")"
+if [[ "$path" =~ /qemu/([0-9]+)/config ]]; then
+    _vmid="${BASH_REMATCH[1]}"
+    if [ -f "$BIN_DIR/.stub-qemu-config-${_vmid}" ]; then
+        _respond "$(cat "$BIN_DIR/.stub-qemu-config-${_vmid}")"
+    else
+        _respond "$(cat "$BIN_DIR/.stub-qemu-config")"
+    fi
 elif [[ "$path" =~ /qemu/[0-9]+/status/current ]]; then
     _respond "$(cat "$BIN_DIR/.stub-current")"
 elif [[ "$path" =~ /qemu/[0-9]+/status/stop ]]; then
@@ -705,6 +719,82 @@ echo "--- Test 12: provision_time= overrides meta.ctime — old VM IS reaped"
     }
 ) && _pass "Test 12: provision_time= overrides meta.ctime (old VM reaped)" \
   || _fail "Test 12: provision_time= overrides meta.ctime (old VM reaped)"
+
+# ============================================================
+# TEST 13: A VM whose meta.ctime matches the template's is skipped as
+#          unknown-age, not treated as being as old as the template.
+#
+# Before sp-v6gwy: provision_time= absent → fall back to meta.ctime →
+# VM appears 241h old (same age as the template). The reaper would mark it
+# for destruction based on a timestamp that was copied from the template at
+# clone time and reflects nothing about the clone's actual age.
+#
+# After the fix: meta.ctime == template's ctime → age unknown → skip.
+#
+# POSITIVE CONTROL IS TEST 14: asserting "kept" here would be vacuous if an
+# implementation that returns unknown-age for every VM also passed.
+# ============================================================
+echo "--- Test 13: VM with meta.ctime == template's ctime is skipped as unknown-age"
+(
+    _reap_setup
+    TEMPLATE_CTIME=1000000000
+    printf '{"data":{"template":1,"meta":"creation-qemu=11.0.0,ctime=%s"}}\n' \
+        "$TEMPLATE_CTIME" > "$BIN/.stub-qemu-config-101"
+    printf '{"data":[{"vmid":500,"name":"gh-runner-500"}]}\n' > "$BIN/.stub-qemu-list"
+    # No provision_time=; meta.ctime matches the template's.
+    printf '{"data":{"name":"gh-runner-500","meta":"creation-qemu=11.0.0,ctime=%s"}}\n' \
+        "$TEMPLATE_CTIME" > "$BIN/.stub-qemu-config"
+
+    output=$(_run_reap --dry-run 2>&1 || true)
+
+    if printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+        echo "  expected fail: reap.sh would destroy VM 500 whose meta.ctime equals the template's" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    fi
+    printf '%s\n' "$output" | grep -qiE 'age unknown|unknown.*age' || {
+        echo "  expected fail: reap.sh did not report unknown-age for VM 500; output was:" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 13: VM with meta.ctime == template's ctime is skipped as unknown-age" \
+  || _fail "Test 13: VM with meta.ctime == template's ctime is skipped as unknown-age"
+
+# ============================================================
+# TEST 14: Positive control — a VM with a DISTINCT meta.ctime is aged
+#          normally and reaped when old enough.
+#
+# If the fix in sp-v6gwy made every meta.ctime VM unknown-age, this test
+# would fail. A VM with a meta.ctime that does NOT match the template's must
+# still be eligible for reaping on age — that is the behaviour the fix
+# preserves, and it is what makes test 13's "kept" verdict meaningful.
+# ============================================================
+echo "--- Test 14: VM with distinct meta.ctime aged normally and reaped"
+(
+    _reap_setup
+    TEMPLATE_CTIME=1000000000
+    OLD_CTIME=500000000    # ancient, distinct from the template's ctime
+    printf '{"data":{"template":1,"meta":"creation-qemu=11.0.0,ctime=%s"}}\n' \
+        "$TEMPLATE_CTIME" > "$BIN/.stub-qemu-config-101"
+    printf '{"data":[{"vmid":500,"name":"gh-runner-500"}]}\n' > "$BIN/.stub-qemu-list"
+    # No provision_time=; meta.ctime differs from the template's and is ancient.
+    printf '{"data":{"name":"gh-runner-500","meta":"creation-qemu=11.0.0,ctime=%s"}}\n' \
+        "$OLD_CTIME" > "$BIN/.stub-qemu-config"
+
+    output=$(_run_reap --dry-run 2>&1 || true)
+
+    if ! printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+        echo "  expected fail: reap.sh did not reap VM 500 whose meta.ctime differs from template's and is old" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    fi
+    printf '%s\n' "$output" | grep -q 'qm-config' || {
+        echo "  expected fail: meta.ctime (qm-config) not used as age source; output was:" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 14: VM with distinct meta.ctime aged normally and reaped" \
+  || _fail "Test 14: VM with distinct meta.ctime aged normally and reaped"
 
 # ============================================================
 # Summary
