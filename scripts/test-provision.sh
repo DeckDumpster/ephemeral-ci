@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# covers: deploy/ephemeral-runner/provision.sh
+# covers: scripts/provision.sh
 #
 # Tests for the cloud-init/API rewrite in db-oh4.
 # No hypervisor required. curl is stubbed on PATH.
@@ -1212,6 +1212,92 @@ fi
 unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_CPUS CURL_TEMPLATE_CPUS
 unset CURL_NODE_ALLOC_MIB CURL_NODE_ALLOC_CPUS CPU_OVERCOMMIT_RATIO
 unset CAPACITY_POLL CAPACITY_TIMEOUT FLEET_SHARE_PER_REPO REPO_SLUG
+
+# ---------------------------------------------------------------------------
+# Test 24 -- per-template boot lock serialises concurrent starts (sp-bmim8)
+#
+# Linked clones from the same template share a base volume. Two booting at
+# once contend on that volume and can both miss the 120s agent window.
+# provision.sh holds a flock(2) from VM start through agent-ready, so only
+# one clone per template boots at a time.
+#
+# (a) flock timeout: when the lock cannot be acquired within BOOT_LOCK_TIMEOUT,
+#     provision exits non-zero and names the template in the error message.
+# (b) happy path: the lock is acquired and released; the provision succeeds
+#     and the lock file is left on disk (flock semantics -- the fd is closed,
+#     not the file).
+# ---------------------------------------------------------------------------
+
+# Stub flock to exit 1 immediately (models lock held by another process).
+cat >"$SCRATCH/bin/flock" <<'SH'
+#!/usr/bin/env bash
+# When FLOCK_FAIL=1 act as if the lock could not be acquired.
+if [ "${FLOCK_FAIL:-0}" = "1" ]; then
+    exit 1
+fi
+# Otherwise delegate to the real flock.
+exec /usr/bin/flock "$@"
+SH
+chmod +x "$SCRATCH/bin/flock"
+
+# (a) lock held by another -- provision must exit non-zero naming the template
+rm -f "$CURL_ARGV_FILE"
+_err24="$SCRATCH/err24a"
+FLOCK_FAIL=1 BOOT_LOCK_TIMEOUT=1 TEMPLATE_VMID=107 bash "$PROVISION" \
+    valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err24" && _rc24a=0 || _rc24a=$?
+
+if [ "$_rc24a" -ne 0 ]; then
+    ok "test-24a: provision exits non-zero when boot lock times out"
+else
+    ko "test-24a: provision succeeded despite boot lock timeout"
+fi
+
+if grep -q '107' "$_err24" 2>/dev/null; then
+    ok "test-24a: error message names the template"
+else
+    ko "test-24a: error message does not name the template (got: $(cat "$_err24"))"
+fi
+
+if ! grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-24a: VM was not cloned while lock was blocked"
+else
+    ko "test-24a: clone happened despite lock timeout"
+fi
+
+# (b) happy path -- lock is acquired, provision completes normally
+rm -f "$CURL_ARGV_FILE"
+TEMPLATE_VMID=107 run_provision valid-label test-token \
+    https://github.com/owner/repo >/dev/null
+_rc24b=$?
+if [ "$_rc24b" -eq 0 ]; then
+    ok "test-24b: provision succeeds when boot lock can be acquired"
+else
+    ko "test-24b: provision failed with real flock (rc=$_rc24b)"
+fi
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-24b: clone proceeded after boot lock acquisition"
+else
+    ko "test-24b: clone did not happen on the happy path"
+fi
+
+# (c) the lock path is per-template -- template 107 and template 101 use
+#     different lock files, so they do not block each other.
+_lock107="/var/lock/pve-clone-107.lock"
+_lock101="/var/lock/pve-clone-101.lock"
+rm -f "$_lock107" "$_lock101"
+TEMPLATE_VMID=107 run_provision valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>/dev/null || true
+TEMPLATE_VMID=101 run_provision valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>/dev/null || true
+if [ -f "$_lock107" ] && [ -f "$_lock101" ]; then
+    ok "test-24c: separate lock files for template 107 and 101"
+else
+    ko "test-24c: lock files not distinct per template (_lock107=$([ -f "$_lock107" ] && echo exists || echo missing) _lock101=$([ -f "$_lock101" ] && echo exists || echo missing))"
+fi
+
+# Restore default TEMPLATE_VMID for any tests that follow.
+export TEMPLATE_VMID=101
 
 # ---------------------------------------------------------------------------
 # Summary
