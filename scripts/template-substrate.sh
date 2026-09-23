@@ -45,11 +45,32 @@ lack() { MISSING+=("$1"); printf 'substrate: MISSING %s -- %s\n' "$1" "$2" >&2; 
 # "rootless ok" AFTER "this machine cannot run the suites", which reads as a
 # contradiction and sends the reader to the wrong half of the script.
 
+# SUDO IS A PREFIX, NOT A PERMISSION FLAG, AND CONFLATING THE TWO MADE THIS
+# SCRIPT INERT.
+#
+# $SUDO is deliberately EMPTY when the caller is already root -- that is what
+# lets every mutating call below read `$SUDO apt-get ...` and work in both
+# cases. The install path then tested `[ -n "$SUDO" ]` as if it meant "I have
+# privilege", so the one caller with FULL privilege was the only one refused.
+# docs/TEMPLATE.md documents exactly that caller:
+#
+#     sudo bash scripts/template-substrate.sh
+#
+# Under sudo, id -u is 0, $SUDO is empty, and the script printed "need root to
+# install" and returned 1 -- while still applying the non-package work, so it
+# reported progress, changed some things, and failed about the rest. No package
+# has ever been installed through the documented invocation. Template 9110 has
+# no podman at all, and CI only survives that because each consuming workflow
+# installs a container runtime per job.
+#
+# CAN_ELEVATE answers the question the install path is actually asking.
 SUDO=""
-if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-        SUDO="sudo -n"
-    fi
+CAN_ELEVATE=0
+if [ "$(id -u)" -eq 0 ]; then
+    CAN_ELEVATE=1
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    SUDO="sudo -n"
+    CAN_ELEVATE=1
 fi
 
 RUNUSER="${SUBSTRATE_USER:-runner}"
@@ -105,7 +126,7 @@ apt_install() {
         fi
     done
     [ ${#want[@]} -gt 0 ] || return 0
-    [ -n "$SUDO" ] || { note "need root to install: ${want[*]}"; return 1; }
+    [ "$CAN_ELEVATE" -eq 1 ] || { note "cannot elevate to install: ${want[*]}"; return 1; }
     if [ "$APT_UPDATED" = 0 ]; then
         # shellcheck disable=SC2086
         $SUDO apt-get update -qq $APT_LOCK_WAIT || true

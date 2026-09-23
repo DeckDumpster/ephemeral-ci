@@ -257,6 +257,46 @@ else
     bad "--check exits non-zero when the substrate is absent" "exited 0 against a stubbed-empty machine"
 fi
 
+# --- the apply path must actually apply when it is root ------------------
+#
+# THE DOCUMENTED INVOCATION IS `sudo bash template-substrate.sh`, and under it
+# id -u is 0 and $SUDO is empty -- empty because $SUDO is a command PREFIX, not
+# a permission flag. The install path tested `[ -n "$SUDO" ]` and so refused
+# the only caller holding full privilege, printing "need root to install" and
+# installing nothing. It applied the non-package work regardless, so it looked
+# like a script that ran and partly failed rather than one that could never
+# install anything at all.
+#
+# Root is simulated with an `id` stub rather than by running the suite as root,
+# which a suite must not require. The assertion is that apt-get is REACHED --
+# the stub records the call and exits 0 -- not that any package is really
+# installed.
+_idstub() {
+    cat > "$STUBS/id" <<'STUB'
+#!/bin/sh
+case " $* " in *" -u "*) echo 0; exit 0 ;; esac
+exec /usr/bin/id "$@"
+STUB
+    chmod +x "$STUBS/id"
+}
+_idstub
+: > "$CALLS"
+_apply_out="$(PATH="$STUBS:$PATH" bash "$SUBSTRATE" 2>&1)"
+if grep -q '^apt-get ' "$CALLS"; then
+    ok "the apply path reaches apt-get when running as root"
+else
+    bad "the apply path reaches apt-get when running as root" \
+        "apt-get was never called; script said: $(printf '%s' "$_apply_out" | grep -i 'root\|elevate' | head -1)"
+fi
+if printf '%s' "$_apply_out" | grep -qi 'need root to install'; then
+    bad "the apply path does not claim it needs root while running as root" \
+        "printed 'need root to install' with id -u = 0"
+else
+    ok "the apply path does not claim it needs root while running as root"
+fi
+rm -f "$STUBS/id"
+: > "$CALLS"
+
 echo
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
