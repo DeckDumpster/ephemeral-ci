@@ -314,6 +314,25 @@ EOF
         continue
     fi
     VM_CONFIG="$PVAPI_BODY"
+
+    # Prefer provision_time= from the VM description (written by provision.sh
+    # at clone time) over meta.ctime. Proxmox copies the meta field verbatim
+    # from the template at clone time, so meta.ctime reflects when the template
+    # was created, not the clone — causing over-estimation of a clone's age and
+    # potentially triggering reaping of a VM that is younger than it appears
+    # (db-e1we). provision_time= is written by provision.sh, so it is always
+    # the actual clone time for VMs provisioned after this change. Fall back to
+    # meta.ctime for older VMs that predate provision_time= in the description.
+    PROVISION_EPOCH="$(python3 - "$VM_CONFIG" <<'EOF'
+import json, re, sys
+try:
+    desc = json.loads(sys.argv[1]).get("data", {}).get("description", "") or ""
+except Exception:
+    desc = ""
+m = re.search(r"provision_time=(\d+)", desc)
+print(m.group(1) if m else "")
+EOF
+)"
     META_EPOCH="$(python3 - "$VM_CONFIG" <<'EOF'
 import json, sys, re
 meta = json.loads(sys.argv[1]).get("data", {}).get("meta", "")
@@ -321,18 +340,21 @@ m = re.search(r"ctime=(\d+)", meta)
 print(m.group(1) if m else "")
 EOF
 )"
-    if [ -n "$META_EPOCH" ] && [[ "$META_EPOCH" =~ ^[0-9]+$ ]]; then
+    if [ -n "$PROVISION_EPOCH" ] && [[ "$PROVISION_EPOCH" =~ ^[0-9]+$ ]]; then
+        VM_EPOCH="$PROVISION_EPOCH"
+        AGE_SOURCE="provision-time"
+    elif [ -n "$META_EPOCH" ] && [[ "$META_EPOCH" =~ ^[0-9]+$ ]]; then
         VM_EPOCH="$META_EPOCH"
         AGE_SOURCE="qm-config"
     else
-        # The Proxmox config cannot give us an age.
+        # Neither provision_time= nor meta.ctime can give us an age.
         # Skipping is the only safe choice. VM_EPOCH=0 would resolve to
         # 1970, making this VM older than any cutoff and authorising
         # destruction with no evidence — which is exactly the defect this
         # replaces. An orphan that survives another hour costs disk; a
         # running build destroyed as an orphan costs a red CI run and an
         # hour of someone's confidence.
-        echo "reap.sh: VM $VMID ($VM_NAME): no ctime in config, age unknown; skipping" >&2
+        echo "reap.sh: VM $VMID ($VM_NAME): no provision_time or ctime in config, age unknown; skipping" >&2
         (( skipped++ )) || true
         (( unknown_age++ )) || true
         continue

@@ -971,6 +971,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 22 -- provision_time= appears in the clone description (db-e1we)
+#
+# provision.sh stamps the clone epoch in the VM description so reap.sh can
+# use it as an authoritative age source instead of meta.ctime, which Proxmox
+# may copy verbatim from the template rather than updating at clone time. The
+# value must be a numeric Unix epoch.
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE"
+run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+
+if grep -qP 'provision_time=\d+' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-22: provision_time=<epoch> in clone description"
+else
+    ko "test-22: provision_time= missing or non-numeric in clone description"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))
