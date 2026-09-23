@@ -521,23 +521,64 @@ echo "--- Test 14: VM description has no vmtoken → rc≠0, no destroy"
 ) && _pass "Test 14" || _fail "Test 14"
 
 # ============================================================
-# TEST 15: VM_TOKEN unset → rc≠0, no API call (db-ogjn)
+# TEST 15: VM_TOKEN unset but VM carries a token → rc≠0, no destroy (db-rzdr)
 #
-# If the caller did not capture the token from provision.sh (misconfigured
-# workflow), teardown must fail before touching the API rather than proceeding
-# with no identity check.
+# A new VM (provisioned with the token feature) carries vmtoken= in its
+# description. If the caller didn't wire vm-token (e.g. unupgraded consumer
+# workflow), VM_TOKEN arrives empty. Teardown must refuse: the caller cannot
+# prove it participated in this specific provision and the recycling window
+# is open. This is the "new-provision / old-teardown" case.
 # ============================================================
-echo "--- Test 15: VM_TOKEN unset → rc≠0, no API call"
+echo "--- Test 15: VM_TOKEN unset, VM HAS token → rc≠0, no destroy (db-rzdr)"
 (
     _setup
     VMID=500
+    # Call 1: GET /config → 200; VM has a token but caller has none
+    _resp 1 200 "$(_config_with_token 500)"
 
     rc=0
     VM_TOKEN="" _run_teardown $VMID >/dev/null 2>&1 || rc=$?
 
-    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero when VM_TOKEN is empty, got 0" >&2; exit 1; }
-    _assert_eq "call count" "$(_call_count)" "0"
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero when VM has token but VM_TOKEN unset, got 0" >&2; exit 1; }
+    _assert_log_not_has "PVAPI:DELETE:"
 ) && _pass "Test 15" || _fail "Test 15"
+
+# ============================================================
+# TEST 16: VM_TOKEN unset AND VM has no token → rc=0 (degraded path) (db-rzdr)
+#
+# A VM provisioned before the token feature was deployed has no vmtoken= in
+# its description, and a consumer that has not yet wired vm-token passes an
+# empty VM_TOKEN. Neither side has a token: this is the pre-feature case.
+# Teardown must degrade to the name-only ownership check and succeed, so that
+# the action remains a drop-in on @v1 for existing consumers.
+# ============================================================
+echo "--- Test 16: VM_TOKEN unset, VM has no token → rc=0, VM destroyed (degraded, db-rzdr)"
+(
+    _setup
+    VMID=500
+    # Call 1: GET /config → 200; correct name, NO vmtoken in description
+    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2,"description":"runner=test-runner"}}'
+    # Call 2: GET /pools/<pool> → 200, VMID is a member
+    _resp 2 200 "$(_pool_with $VMID)"
+    # Call 3: POST /agent/exec → 200 (journal capture)
+    _resp 3 200 '{"data":{"pid":9876}}'
+    # Call 4: GET /agent/exec-status → 200, exited
+    _resp 4 200 '{"data":{"exited":1,"out-data":"","exitcode":0}}'
+    # Call 5: POST /status/stop → 200
+    _resp 5 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:500:root@pam:"}'
+    # Call 6: GET /tasks/.../status → stopped/OK
+    _resp 6 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
+    # Call 7: GET /status/current → stopped
+    _resp 7 200 '{"data":{"status":"stopped"}}'
+    # Call 8: DELETE → 200
+    _resp 8 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:500:root@pam:"}'
+
+    rc=0
+    VM_TOKEN="" _run_teardown $VMID >/dev/null 2>&1 || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && _assert_log_has "PVAPI:DELETE:"
+) && _pass "Test 16" || _fail "Test 16"
 
 # ============================================================
 # Summary

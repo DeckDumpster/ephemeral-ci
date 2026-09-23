@@ -50,8 +50,12 @@
 #   PVE_NODE               — Proxmox node name (required)
 #   PVE_TOKEN_ID           — API token id, e.g. gh-runner@pve!teardown (required)
 #   PVE_TOKEN_SECRET       — API token secret UUID (required)
-#   VM_TOKEN               — ownership token emitted by provision.sh (required);
-#                            must match vmtoken= in the VM description (guard 4b)
+#   VM_TOKEN               — ownership token emitted by provision.sh (optional);
+#                            when set, must match vmtoken= in the VM description
+#                            (guard 4b). When unset and the VM carries no token,
+#                            degrades to name-only check with a loud warning
+#                            (db-rzdr). When unset but the VM carries a token,
+#                            refuses — a new-provision/old-teardown pair.
 #   PVE_API_HOST           — Proxmox API hostname or IP (default: localhost)
 #   PVE_API_PORT           — Proxmox API port (default: 8006)
 #   STOP_TIMEOUT           — seconds to wait for orderly stop before escalating
@@ -102,7 +106,7 @@ _require_env() {
         exit 1
     fi
 }
-for _v in PVE_NODE PVE_TOKEN_ID PVE_TOKEN_SECRET VM_TOKEN; do
+for _v in PVE_NODE PVE_TOKEN_ID PVE_TOKEN_SECRET; do
     _require_env "$_v"
 done
 
@@ -256,15 +260,30 @@ fi
 # the cancelled run passes trivially. The token is a random hex value written
 # into the VM description at provision time; teardown must hold the same token
 # to prove it participated in that specific clone (db-ogjn).
+#
+# Degradation (db-rzdr): VM_TOKEN is optional at the action level so that the
+# action remains a drop-in on @v1 for consumers that have not yet wired the
+# new output. Three cases:
+#   • VM_TOKEN set and matches STORED_TOKEN → allow.
+#   • VM_TOKEN set, doesn't match (or VM has no token) → refuse.
+#   • VM_TOKEN unset, VM HAS a token → refuse: new VM, unupgraded caller.
+#   • VM_TOKEN unset, VM has no token → degrade to name-only check, warn loudly.
 STORED_TOKEN=$(printf '%s' "$CONFIG_BODY" | python3 -c "
 import json, re, sys
 desc = json.load(sys.stdin).get('data', {}).get('description', '')
 m = re.search(r'vmtoken=([a-f0-9]+)', desc)
 print(m.group(1) if m else '')
 " 2>/dev/null || true)
-if [ -z "$STORED_TOKEN" ] || [ "$STORED_TOKEN" != "$VM_TOKEN" ]; then
-    echo "teardown.sh: VM $VMID ownership token does not match — refusing" >&2
+if [ -n "${VM_TOKEN:-}" ]; then
+    if [ "$STORED_TOKEN" != "$VM_TOKEN" ]; then
+        echo "teardown.sh: VM $VMID ownership token does not match — refusing" >&2
+        exit 1
+    fi
+elif [ -n "$STORED_TOKEN" ]; then
+    echo "teardown.sh: VM $VMID carries an ownership token but VM_TOKEN is unset — refusing (db-rzdr)" >&2
     exit 1
+else
+    echo "teardown.sh: WARNING: no ownership token on VM $VMID or in caller; falling back to name-only check. Wire vm-token from provision to teardown to enable full ownership verification (db-rzdr)." >&2
 fi
 
 # Guard 5: pool membership, read from the hypervisor.
