@@ -80,21 +80,42 @@ jobs:
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           exit "$rc"
 
-      # REAPING SOMETHING IS NOT A SUCCESS. An orphan means a teardown failed
-      # for a run GitHub already reported green. A silent hourly job that
-      # quietly cleans up after a broken teardown is how the broken teardown
-      # stays broken, so this turns a reap into a red run someone has to look
-      # at. Runs after the step above under `if: always()` so it also fires when
-      # reap.sh itself exited non-zero on an unknown age.
-      - name: An orphan means a teardown failed
+      # AN ORPHAN IS A FINDING. A BROKEN REAPER IS A FAULT. THEY ARE NOT THE
+      # SAME RUN STATE.
+      #
+      # This step used to exit 1 after a SUCCESSFUL reap, on the reasoning that
+      # an orphan means some teardown failed and somebody should look. The
+      # reasoning is right and the mechanism was wrong: it made "the reaper did
+      # its job" and "the reaper is broken" render identically in `gh run list`,
+      # as a red run. On 2026-09-18 that produced sp-wy2yl — "the VM reaper has
+      # failed on every run for three days — no reaper is running on the
+      # ephemeral-ci fleet" — filed against a reaper that had destroyed an
+      # orphan on every one of those runs. The alarm did not just cost a false
+      # bead; it consumed the attention that a real reaper outage would have
+      # needed, which is the failure mode law-alerts-must-be-actionable names.
+      #
+      # So: one check per failure mode. A red run now means the reaper itself
+      # failed, which is the condition nobody can see any other way. An orphan
+      # is surfaced as a warning annotation and in the job summary, where it is
+      # just as visible to a human and does not overload the run's colour.
+      - name: Report orphans found
         if: always() && steps.reap.outcome != 'skipped'
         run: |
           log="$RUNNER_TEMP/reap.log"
           [ -f "$log" ] || exit 0
           n=$(sed -n 's/.*destroyed \([0-9]\+\) VM(s).*/\1/p' "$log" | tail -1)
           if [ -n "$n" ] && [ "$n" -gt 0 ]; then
-            echo "::error::reaped $n orphaned VM(s) — a teardown failed for a run that reported green"
+            echo "::warning::reaped $n orphaned VM(s) — a teardown failed for a run that reported green"
+            {
+              echo "### Reaped $n orphaned VM(s)"
+              echo
+              echo 'A teardown failed for a run that GitHub reported green.'
+              echo
+              echo '```'
+              cat "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             sed 's/^/  /' "$log"
-            exit 1
+            exit 0
           fi
           echo "no orphans"

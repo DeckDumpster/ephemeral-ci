@@ -47,6 +47,9 @@
 # Optional:
 #   PVE_API_HOST  — Proxmox API host (default: localhost)
 #   PVE_API_PORT  — Proxmox API port (default: 8006)
+#   GH_RUN_GRACE  — seconds a run must have been finished before its VM is
+#                   eligible for early collection (default: 300). Keeps the
+#                   reaper behind the consuming workflow's own teardown.
 #   TEMPLATE_VMID — source VM template id (default: 101); never reaped
 #   CRED_FILE     — credential file to source (default:
 #                   /etc/gh-ephemeral-runner/token); sourced before the
@@ -66,6 +69,7 @@ if [ -f "$CRED_FILE" ]; then
 fi
 
 TEMPLATE_VMID="${TEMPLATE_VMID:-101}"
+GH_RUN_GRACE="${GH_RUN_GRACE:-300}"
 SNIPPETS_DIR="${SNIPPETS_DIR:-/var/lib/vz/snippets}"
 PVE_NODE="${PVE_NODE:-}"
 PVE_API_HOST="${PVE_API_HOST:-localhost}"
@@ -174,6 +178,69 @@ except Exception as e:
     print(f"reap.sh: WARNING: could not parse GitHub response: {e}", file=sys.stderr)
 sys.exit(1)
 EOF
+}
+
+# ---------------------------------------------------------------------------
+# Owning-run check
+#
+# Returns 0 (true) when the run that provisioned this VM reached a terminal
+# state at least GH_RUN_GRACE seconds ago. Returns 1 when the run is still
+# going, when the label cannot be parsed, or when the answer cannot be
+# obtained -- every uncertainty keeps the VM.
+#
+# WHY THIS EXISTS. Age was the only licence to destroy, and MAX_AGE_HOURS is 8
+# -- the 6 h GitHub job ceiling plus a buffer -- because age cannot tell a
+# running job from an abandoned clone. So a VM leaked by a run that failed at
+# 04:08 was ineligible for collection until 12:08, and meanwhile held 12 GiB
+# and 16 vCPUs on a node whose capacity gate then made every later provision
+# wait. Not hypothetical: on 2026-09-23 two such clones stalled CI for the
+# better part of an hour, and the operator freed the node by hand.
+#
+# The run id is a better signal than age, and it was already on the VM:
+# provision.sh writes `runner=ci-<repo>-<run_id>-<attempt>` into the
+# description. A terminal run cannot acquire a new job, so its VM is garbage
+# the moment the run ends, whatever the clock says.
+#
+# THE GRACE PERIOD IS NOT DECORATION. A run reports "completed" before its
+# `if: always()` teardown job has necessarily finished destroying the VM.
+# Reaping inside that window races teardown, and both would then report a
+# failure for what is really a success. GH_RUN_GRACE keeps the reaper behind
+# teardown on the happy path, so it only ever acts where teardown truly did
+# not happen.
+# ---------------------------------------------------------------------------
+owning_run_finished() {
+    local label="$1" repo run_id response
+    [ -n "$GITHUB_TOKEN" ] && [ -n "$GH_ORG" ] || return 1
+    [[ "$label" =~ ^ci-(.+)-([0-9]+)-[0-9]+$ ]] || return 1
+    repo="${BASH_REMATCH[1]}"
+    run_id="${BASH_REMATCH[2]}"
+    if ! response="$(
+        curl --silent --fail --show-error \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GH_ORG}/${repo}/actions/runs/${run_id}" 2>&1
+    )"; then
+        echo "reap.sh: WARNING: could not read run $run_id in ${GH_ORG}/${repo}; keeping VM" >&2
+        return 1
+    fi
+    python3 - "$response" "$GH_RUN_GRACE" <<'PYRUN'
+import calendar, json, sys, time
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+if d.get("status") != "completed":
+    sys.exit(1)
+stamp = d.get("updated_at") or d.get("run_started_at")
+if not stamp:
+    sys.exit(1)
+try:
+    ended = calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ"))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if time.time() - ended >= int(sys.argv[2]) else 1)
+PYRUN
 }
 
 # ---------------------------------------------------------------------------
@@ -401,8 +468,18 @@ EOF
         continue
     fi
 
+    # --- Owning-run check ---
+    # The only path that destroys a VM younger than MAX_AGE_HOURS, and it
+    # needs BOTH confirmations: the runner is not busy (checked above) and the
+    # owning run has been terminal for GH_RUN_GRACE seconds.
+    ORPHAN_BY_RUN=0
+    if [ "$VM_EPOCH" -gt "$CUTOFF" ] && owning_run_finished "$RUNNER_NAME"; then
+        echo "reap.sh: VM $VMID ($VM_NAME, runner $RUNNER_NAME, ${AGE_HOURS}h old): owning run is finished — reaping without waiting for the age cutoff" >&2
+        ORPHAN_BY_RUN=1
+    fi
+
     # --- Age check ---
-    if [ "$VM_EPOCH" -gt "$CUTOFF" ]; then
+    if [ "$VM_EPOCH" -gt "$CUTOFF" ] && [ "$ORPHAN_BY_RUN" -eq 0 ]; then
         echo "reap.sh: VM $VMID ($VM_NAME, $AGE_SOURCE) is ${AGE_HOURS}h old — keeping" >&2
         (( skipped++ )) || true
         continue

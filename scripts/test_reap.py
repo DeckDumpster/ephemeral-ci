@@ -84,6 +84,16 @@ def respond(data, status=0):
         print(data)
     sys.exit(status)
 
+# GitHub workflow-run API (owning-run check). Must precede the runners route:
+# both live on api.github.com and the runners route is a catch-all.
+m = re.search(r"/repos/[^/]+/([^/]+)/actions/runs/(\d+)$", url)
+if m:
+    key = f"STUB_RUN_{m.group(2)}"
+    if key in os.environ:
+        respond(os.environ[key])
+    print("curl: (22) not found", file=sys.stderr)
+    sys.exit(22)
+
 # GitHub runners API
 if "api.github.com" in url:
     respond(os.environ.get("STUB_RUNNERS", '{"runners": []}'))
@@ -403,3 +413,95 @@ def test_template_never_reaped(host):
 
     assert result.returncode == 0
     assert str(template_vmid) not in _reaped(destroyed)
+
+
+# ---------------------------------------------------------------------------
+# Scenario 8: a young VM whose owning run has finished → reaped early
+#
+# Age alone cannot tell an abandoned clone from a running job, so the age
+# cutoff has to sit above the GitHub job ceiling. That left a VM leaked by a
+# failed run holding a node's memory for hours. The run id is on the VM, and a
+# terminal run cannot acquire another job.
+# ---------------------------------------------------------------------------
+def test_young_vm_with_finished_run_is_reaped(host):
+    env, destroyed = host
+    now = int(time.time())
+
+    vmid_orphan = 300   # young, owning run finished an hour ago
+    vmid_live = 301     # young, owning run still going
+
+    for vmid, run_id in ((vmid_orphan, "900001"), (vmid_live, "900002")):
+        env[f"STUB_VM_{vmid}_CONFIG"] = json.dumps({
+            "data": {
+                "name": f"gh-runner-{vmid}",
+                "meta": f"creation-qemu=11.0.0,ctime={now - 600}",
+                "description": f"runner=ci-spira-{run_id}-1 provision_time={now - 600}",
+            }
+        })
+
+    finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3600))
+    env["STUB_RUN_900001"] = json.dumps({"status": "completed", "updated_at": finished})
+    env["STUB_RUN_900002"] = json.dumps({"status": "in_progress", "updated_at": finished})
+    env["GH_ORG"] = "DeckDumpster"
+    env["STUB_VM_LIST"] = _make_vm_list((vmid_orphan, f"gh-runner-{vmid_orphan}"),
+                                         (vmid_live, f"gh-runner-{vmid_live}"))
+
+    result = _run(env, max_age_hours=8)
+
+    assert result.returncode == 0, result.stderr
+    reaped = _reaped(destroyed)
+    assert str(vmid_orphan) in reaped, "a young VM whose run has finished must be reaped"
+    assert str(vmid_live) not in reaped, "a young VM whose run is live must be kept"
+
+
+# ---------------------------------------------------------------------------
+# Scenario 9: the grace period keeps the reaper behind teardown
+#
+# A run reports completed before its `if: always()` teardown has finished.
+# Reaping inside that window races teardown and both report a failure for what
+# is really a success.
+# ---------------------------------------------------------------------------
+def test_run_finished_inside_grace_is_kept(host):
+    env, destroyed = host
+    now = int(time.time())
+
+    vmid_fresh = 310    # run finished 10 s ago — inside the grace window
+    vmid_reap = 311     # past the age cutoff, proving the reaper ran
+
+    env[f"STUB_VM_{vmid_fresh}_CONFIG"] = json.dumps({
+        "data": {
+            "name": f"gh-runner-{vmid_fresh}",
+            "meta": f"creation-qemu=11.0.0,ctime={now - 300}",
+            "description": f"runner=ci-spira-900003-1 provision_time={now - 300}",
+        }
+    })
+    _set_age(env, vmid_reap, now - 9 * 3600)
+
+    env["STUB_RUN_900003"] = json.dumps({
+        "status": "completed",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 10)),
+    })
+    env["GH_ORG"] = "DeckDumpster"
+    env["STUB_VM_LIST"] = _make_vm_list((vmid_fresh, f"gh-runner-{vmid_fresh}"),
+                                         (vmid_reap, f"gh-runner-{vmid_reap}"))
+
+    # With the default grace, the freshly-finished VM is kept.
+    env["GH_RUN_GRACE"] = "300"
+    result = _run(env, max_age_hours=8)
+    assert result.returncode == 0, result.stderr
+    reaped = _reaped(destroyed)
+    assert str(vmid_fresh) not in reaped, "a run that just finished must stay inside the grace window"
+    assert str(vmid_reap) in reaped, "positive control: the aged VM must still be reaped"
+
+    # THE CONTROL THAT MAKES THE ASSERTION ABOVE MEAN SOMETHING. A reaper that
+    # ignores the owning run entirely also keeps this VM, for the wrong reason
+    # — it is young. Collapsing the grace to zero must flip the verdict; if it
+    # does not, the keep above was age doing the work and this test proves
+    # nothing about the grace window (law-absence-needs-a-positive-control).
+    destroyed.unlink(missing_ok=True)
+    env["GH_RUN_GRACE"] = "0"
+    result = _run(env, max_age_hours=8)
+    assert result.returncode == 0, result.stderr
+    reaped = _reaped(destroyed)
+    assert str(vmid_fresh) in reaped, \
+        "with the grace window closed the finished run must license the reap"
