@@ -54,6 +54,17 @@ inputs:
       (vars.PVE_CA_CERT). Without this the connection fails loudly — there
       is no insecure fallback.
     required: true
+  vm-token:
+    description: >-
+      Ownership token emitted by the provision action (outputs.vm-token).
+      teardown.sh Guard 4b verifies that the VM description carries this exact
+      token before destroying. When absent, Guard 4b degrades: a VM that also
+      carries no token is allowed through with a warning; a VM that DOES carry
+      a token is refused — so a new-provision/old-teardown pair still refuses
+      correctly. Pass it when wiring provision and teardown in the same
+      workflow to get the full recycled-VMID protection (db-ogjn, db-rzdr).
+    required: false
+    default: ''
   consumer-result:
     description: >-
       Result of the job that ran on this runner: success, failure, or
@@ -110,6 +121,7 @@ runs:
         PVE_NODE: ${{ inputs.pve-node }}
         PVE_TOKEN_ID: ${{ inputs.pve-token-id }}
         PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
+        VM_TOKEN: ${{ inputs.vm-token }}
         CRED_FILE: /dev/null
       run: bash "${{ github.action_path }}/../scripts/teardown.sh" "${{ inputs.vmid }}"
 

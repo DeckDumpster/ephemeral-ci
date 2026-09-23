@@ -68,6 +68,34 @@ jobs:
             echo "v1 is already at the latest green commit. Nothing to do."
           fi
 
+      - name: Check for action interface changes since v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          target="${{ steps.find-green.outputs.target }}"
+          if ! git rev-parse --verify refs/tags/v1 >/dev/null 2>&1; then
+            echo "No v1 tag yet — skipping interface check."
+            exit 0
+          fi
+          # Detect additions or removals in the inputs: or outputs: sections of
+          # either action file. A line changed under those sections means the
+          # public contract shifted and consumers must update before this advance
+          # is safe. Cut a new major version (v2) instead.
+          #
+          # Pattern: any added/removed line that is either the inputs:/outputs:
+          # top-level key itself, or a 2-space-indented first-level YAML entry
+          # (the input/output names and their direct properties).
+          if git diff "refs/tags/v1" "$target" -- \
+               provision/action.yml teardown/action.yml \
+             | grep -E '^[+-][^+-]' \
+             | grep -qE '^[+-](inputs:|outputs:|  [a-z][a-z0-9-]*:)'; then
+            echo "::error::This commit changes action inputs or outputs in provision/action.yml or teardown/action.yml relative to v1."
+            echo "::error::Advancing v1 will silently break consumers that have not updated their workflows to pass or receive the changed fields."
+            echo "::error::Either cut a new major version (v2) and coordinate the consumer updates, or verify that all consumers (deckdumpster, pokedumpster) have already been updated."
+            exit 1
+          fi
+          echo "No action interface changes since v1."
+
       - name: Advance v1 tag
         if: inputs.dry-run == false
         run: |

@@ -107,6 +107,12 @@ outputs:
   label:
     description: The unique runner label to put in the test job's `runs-on`.
     value: ${{ steps.label.outputs.label }}
+  vm-token:
+    description: >-
+      Ownership token stamped into the VM description at clone time. Pass this
+      to the teardown action's vm-token input so Guard 4b can verify the
+      teardown caller participated in this specific provision.
+    value: ${{ steps.provision.outputs.vm-token }}
 
 runs:
   using: composite
@@ -176,6 +182,8 @@ runs:
         set -e
         VMID=$(printf '%s\n' "$OUT" | sed -n 's/^vmid=\([0-9]\+\)$/\1/p' | head -1)
         [ -n "$VMID" ] && echo "vmid=$VMID" >> "$GITHUB_OUTPUT"
+        VMTOKEN=$(printf '%s\n' "$OUT" | sed -n 's/^vmtoken=\([a-f0-9]*\)$/\1/p' | head -1)
+        [ -n "$VMTOKEN" ] && echo "vm-token=$VMTOKEN" >> "$GITHUB_OUTPUT"
         exit "$RC"
 
     # WRITING THE FILE IS NOT PROOF OF REGISTRATION. agent/file-write returns

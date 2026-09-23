@@ -23,8 +23,9 @@ jobs:
   provision:
     runs-on: ubuntu-latest
     outputs:
-      vmid:  ${{ steps.vm.outputs.vmid }}
-      label: ${{ steps.vm.outputs.label }}
+      vmid:     ${{ steps.vm.outputs.vmid }}
+      label:    ${{ steps.vm.outputs.label }}
+      vm-token: ${{ steps.vm.outputs.vm-token }}
     steps:
       - uses: DeckDumpster/ephemeral-ci/provision@v1
         id: vm
@@ -55,8 +56,9 @@ jobs:
     steps:
       - uses: DeckDumpster/ephemeral-ci/teardown@v1
         with:
-          vmid:  ${{ needs.provision.outputs.vmid }}
-          label: ${{ needs.provision.outputs.label }}
+          vmid:     ${{ needs.provision.outputs.vmid }}
+          label:    ${{ needs.provision.outputs.label }}
+          vm-token: ${{ needs.provision.outputs.vm-token }}
           consumer-result:    ${{ needs.test.result }}
           runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
           ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
