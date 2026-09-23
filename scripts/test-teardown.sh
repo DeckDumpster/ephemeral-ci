@@ -16,6 +16,10 @@ TEARDOWN="$SCRIPT_DIR/teardown.sh"
 PASS=0
 FAIL=0
 
+# Fixed token used by all tests that expect teardown to pass Guard 4b.
+# Tests that check token-mismatch behaviour set VM_TOKEN to a different value.
+TEST_VM_TOKEN="aabbccdd11223344aabbccdd11223344"
+
 _die() { echo "FATAL: $*" >&2; exit 1; }
 
 # --- Test infrastructure ---
@@ -75,6 +79,14 @@ _resp() {
 _pool_with()    { printf '{"data":{"members":[{"vmid":%s,"type":"qemu"}]}}' "$1"; }
 _pool_without() { printf '{"data":{"members":[{"vmid":999,"type":"qemu"}]}}'; }
 
+# Config response body with the test token embedded in the description.
+# Guard 4b reads .data.description and extracts vmtoken=.
+_config_with_token() {
+    local vmid="$1" token="${2:-$TEST_VM_TOKEN}"
+    printf '{"data":{"name":"gh-runner-%s","cores":2,"description":"runner=test-runner vmtoken=%s"}}' \
+        "$vmid" "$token"
+}
+
 
 _call_count() {
     cat "$PVAPI_CALL_FILE"
@@ -98,6 +110,8 @@ _run_teardown() {
     # Run teardown.sh with the current test fixtures; returns its exit code.
     # All API env vars are set; STOP_TIMEOUT/POLL/WAIT are minimised so
     # timeout tests do not take seconds.
+    # VM_TOKEN defaults to TEST_VM_TOKEN; tests that check mismatch behaviour
+    # set VM_TOKEN explicitly before calling _run_teardown.
     PVAPI_SH="$PVAPI_SH" \
     PVAPI_LOG="$PVAPI_LOG" \
     PVAPI_CALL_FILE="$PVAPI_CALL_FILE" \
@@ -108,6 +122,7 @@ _run_teardown() {
     PVE_NODE=pve \
     PVE_TOKEN_ID=test@pve!tok \
     PVE_TOKEN_SECRET=00000000-0000-0000-0000-000000000000 \
+    VM_TOKEN="${VM_TOKEN-$TEST_VM_TOKEN}" \
     STOP_TIMEOUT="${STOP_TIMEOUT:-1}" \
     STOP_POLL_INTERVAL=0 \
     FORCE_STOP_WAIT=0 \
@@ -145,8 +160,8 @@ echo "--- Test 1: live VM in pool → rc=0, VM destroyed"
 (
     _setup
     VMID=500
-    # Call 1: GET /config → 200, VM exists with correct name
-    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    # Call 1: GET /config → 200, VM exists with correct name and token
+    _resp 1 200 "$(_config_with_token 500)"
     # Call 2: GET /pools/<pool> → 200, VMID is a member
     _resp 2 200 "$(_pool_with $VMID)"
     # Call 3: POST /agent/exec → 200, journal pid (journal capture)
@@ -201,8 +216,8 @@ echo "--- Test 3: VM exists but is not in the pool → rc≠0, no destroy"
 (
     _setup
     VMID=500
-    # Call 1: GET /config → 200 (VM exists, correct name)
-    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    # Call 1: GET /config → 200 (VM exists, correct name and token)
+    _resp 1 200 "$(_config_with_token 500)"
     # Call 2: GET /pools/<pool> → 200, but this VMID is not a member
     _resp 2 200 "$(_pool_without)"
 
@@ -230,8 +245,8 @@ echo "--- Test 4: stop leaves VM running → no destroy, reports it"
 (
     _setup
     VMID=500
-    # Call 1: GET /config → 200
-    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    # Call 1: GET /config → 200 (correct name and token)
+    _resp 1 200 "$(_config_with_token 500)"
     # Call 2: GET /pools/<pool> → 200, VMID is a member
     _resp 2 200 "$(_pool_with $VMID)"
     # Call 3: POST /agent/exec → 200, journal pid (journal capture)
@@ -279,8 +294,9 @@ echo "--- Test 6a: VM named 'Agent-Swarm' → rc≠0, no destroy"
 (
     _setup
     VMID=500
-    # Guard 4 (name) runs before the pool call, so no pool response is needed.
-    _resp 1 200 '{"data":{"name":"Agent-Swarm","cores":8}}'
+    # Guard 4 (name) runs before the token and pool checks, so a wrong name
+    # rejects before we ever read the token.
+    _resp 1 200 '{"data":{"name":"Agent-Swarm","cores":8,"description":"runner=test-runner vmtoken=aabbccdd11223344aabbccdd11223344"}}'
 
     rc=0
     _run_teardown $VMID >/dev/null 2>&1 || rc=$?
@@ -293,7 +309,7 @@ echo "--- Test 6b: VM named 'Prod-Services' → rc≠0, no destroy"
 (
     _setup
     VMID=500
-    _resp 1 200 '{"data":{"name":"Prod-Services","cores":8}}'
+    _resp 1 200 '{"data":{"name":"Prod-Services","cores":8,"description":"runner=test-runner vmtoken=aabbccdd11223344aabbccdd11223344"}}'
 
     rc=0
     _run_teardown $VMID >/dev/null 2>&1 || rc=$?
@@ -352,7 +368,7 @@ echo "--- Test 9: journal output appears in teardown stderr"
 (
     _setup
     VMID=500
-    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 1 200 "$(_config_with_token 500)"
     _resp 2 200 "$(_pool_with $VMID)"
     # Call 3: POST /agent/exec → 200, pid
     _resp 3 200 '{"data":{"pid":9876}}'
@@ -382,7 +398,7 @@ echo "--- Test 10: agent exec HTTP error → unavailable, teardown still complet
 (
     _setup
     VMID=500
-    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 1 200 "$(_config_with_token 500)"
     _resp 2 200 "$(_pool_with $VMID)"
     # Call 3: POST /agent/exec → 500 (agent not available)
     _resp 3 500 '{"errors":"qemu agent is not running"}'
@@ -411,7 +427,7 @@ echo "--- Test 11: agent exec returns no pid → unavailable, teardown still com
 (
     _setup
     VMID=500
-    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 1 200 "$(_config_with_token 500)"
     _resp 2 200 "$(_pool_with $VMID)"
     # Call 3: POST /agent/exec → 200 but body has no pid
     _resp 3 200 '{"data":{}}'
@@ -440,7 +456,7 @@ echo "--- Test 12: agent exec-status never exits → timeout, teardown still com
 (
     _setup
     VMID=500
-    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2}}'
+    _resp 1 200 "$(_config_with_token 500)"
     _resp 2 200 "$(_pool_with $VMID)"
     # Call 3: POST /agent/exec → 200, pid returned
     _resp 3 200 '{"data":{"pid":9876}}'
@@ -460,6 +476,68 @@ echo "--- Test 12: agent exec-status never exits → timeout, teardown still com
         || { echo "  FAIL: 'journal unavailable' not found in output" >&2; exit 1; } \
     && _assert_log_has "PVAPI:DELETE:"
 ) && _pass "Test 12" || _fail "Test 12"
+
+# ============================================================
+# TEST 13: token mismatch → rc≠0, no destroy (db-ogjn)
+#
+# This is the primary fix for the recycled-VMID vulnerability. The VM exists
+# and has the right name (trivially, since name is derived from the VMID), but
+# the caller holds a stale token from the previous provision of that VMID. The
+# current VM's description carries a different token, so teardown must refuse.
+# ============================================================
+echo "--- Test 13: VM token in description does not match VM_TOKEN → rc≠0, no destroy"
+(
+    _setup
+    VMID=500
+    # Call 1: GET /config → 200; description has a DIFFERENT token than VM_TOKEN
+    _resp 1 200 "$(_config_with_token 500 "deadbeef00000000deadbeef00000000")"
+
+    rc=0
+    VM_TOKEN="aabbccdd11223344aabbccdd11223344" _run_teardown $VMID >/dev/null 2>&1 || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero on token mismatch, got 0" >&2; exit 1; }
+    _assert_log_not_has "PVAPI:DELETE:"
+) && _pass "Test 13" || _fail "Test 13"
+
+# ============================================================
+# TEST 14: no vmtoken in description → rc≠0, no destroy (db-ogjn)
+#
+# A VM provisioned before the token feature was deployed has no vmtoken= in its
+# description. Teardown must refuse: allowing it would mean the recycling window
+# is open for any VM that predates the fix.
+# ============================================================
+echo "--- Test 14: VM description has no vmtoken → rc≠0, no destroy"
+(
+    _setup
+    VMID=500
+    # Call 1: GET /config → 200; correct name, but no vmtoken in description
+    _resp 1 200 '{"data":{"name":"gh-runner-500","cores":2,"description":"runner=test-runner"}}'
+
+    rc=0
+    _run_teardown $VMID >/dev/null 2>&1 || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero when description has no vmtoken, got 0" >&2; exit 1; }
+    _assert_log_not_has "PVAPI:DELETE:"
+) && _pass "Test 14" || _fail "Test 14"
+
+# ============================================================
+# TEST 15: VM_TOKEN unset → rc≠0, no API call (db-ogjn)
+#
+# If the caller did not capture the token from provision.sh (misconfigured
+# workflow), teardown must fail before touching the API rather than proceeding
+# with no identity check.
+# ============================================================
+echo "--- Test 15: VM_TOKEN unset → rc≠0, no API call"
+(
+    _setup
+    VMID=500
+
+    rc=0
+    VM_TOKEN="" _run_teardown $VMID >/dev/null 2>&1 || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero when VM_TOKEN is empty, got 0" >&2; exit 1; }
+    _assert_eq "call count" "$(_call_count)" "0"
+) && _pass "Test 15" || _fail "Test 15"
 
 # ============================================================
 # Summary
