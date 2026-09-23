@@ -201,6 +201,7 @@ fi
 # The check must test BOTH bounds (under-provisioned and over-provisioned).
 # A one-sided check misses the case this bead was filed for: a template
 # inherited from a hand-built 12288 MiB VM that nobody ever measured.
+# shellcheck disable=SC2016  # the single quotes are the point: this greps for the literal text
 if has '\$memtotal_mib.*-lt.*\$lo' && has '\$memtotal_mib.*-gt.*\$hi'; then
     ok "both bounds are checked (under- and over-provisioned)"
 else
