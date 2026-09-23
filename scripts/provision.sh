@@ -3,15 +3,19 @@
 # Provision an ephemeral GitHub Actions runner on Proxmox via the HTTP API.
 #
 # Output contract (stdout):
-#   Exactly one line of the form  vmid=<n>  is written to stdout immediately
-#   after the clone and before any step that can fail post-clone. Callers MUST
-#   capture stdout and parse the vmid= line BEFORE checking the exit status,
-#   because a failure in a later step (agent delivery, start) still exits
-#   non-zero while the VMID has already been emitted. A caller written as
+#   Two lines are written to stdout after the clone and before any step that
+#   can fail post-clone:
+#     vmid=<n>        — VMID of the cloned VM
+#     vmtoken=<hex>   — 32-char hex ownership token stamped into the VM
+#                       description; teardown.sh requires it (db-ogjn)
+#   Callers MUST capture stdout and parse BEFORE checking exit status, because
+#   a failure in a later step (agent delivery, start) still exits non-zero
+#   while the VMID has already been emitted. A caller written as
 #     VMID=$(ssh proxmox provision.sh ...)
 #   loses the VMID on any non-zero exit. Use instead:
 #     OUT=$(ssh proxmox provision.sh ...); rc=$?
 #     VMID=$(printf '%s\n' "$OUT" | grep -oP 'vmid=\K[0-9]+')
+#     VMTOKEN=$(printf '%s\n' "$OUT" | grep -oP 'vmtoken=\K[a-f0-9]+')
 #   Everything else (progress, errors) goes to stderr.
 #
 # Usage:
@@ -454,6 +458,14 @@ wait_for_capacity() {
 
 wait_for_capacity || exit 1
 
+# --- Generate an ownership token ---
+#
+# A random hex token stamped into the VM description at clone time.  Teardown
+# refuses to destroy unless the caller presents the same token (db-ogjn).
+# Using Python avoids the SIGPIPE that `tr ... | head` triggers under
+# set -euo pipefail when head closes the pipe early.
+VM_TOKEN=$(python3 -c 'import os,binascii; print(binascii.hexlify(os.urandom(16)).decode())')
+
 # --- Pick a VMID ---
 VMID="$(pick_vmid)" || exit 1
 
@@ -491,7 +503,7 @@ for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
     if clone_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${TEMPLATE_VMID}/clone" \
         --data-urlencode "newid=${VMID}" \
         --data-urlencode "name=gh-runner-${VMID}" \
-        --data-urlencode "description=runner=${LABEL}" \
+        --data-urlencode "description=runner=${LABEL} vmtoken=${VM_TOKEN}" \
         --data-urlencode "full=0" \
         --data-urlencode "pool=ephemeral-ci")"; then
         clone_upid="$(printf '%s\n' "$clone_body" | python3 -c \
@@ -513,14 +525,18 @@ fi
 # server; do not proceed to start the VM.
 poll_task "$clone_upid" || exit 1
 
-# Emit the VMID now -- before any step that can fail -- so callers can tear
-# down even if we die later. See the output contract at the top.
+# Emit the VMID and ownership token now -- before any step that can fail --
+# so callers can tear down even if we die later. See the output contract at
+# the top. The token is emitted here because it has already been stamped into
+# the VM description; any post-clone failure still leaves a VM that the caller
+# can identify and destroy with the right token.
 #
 # There is deliberately no ledger write here. A file on this machine's disk
 # cannot be read by teardown.sh, which runs in a different job on a different
 # ephemeral runner. Ownership is established from the hypervisor instead: the
-# VM's name, its pool membership, and its template flag.
+# VM's name, its pool membership, its template flag, and the token.
 printf 'vmid=%s\n' "$VMID"
+printf 'vmtoken=%s\n' "$VM_TOKEN"
 
 # --- Start ---
 printf 'provision.sh: starting VM %s\n' "$VMID" >&2

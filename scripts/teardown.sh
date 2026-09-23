@@ -27,6 +27,12 @@
 #      failed and left the id pointing at an unrelated VM must not be purged.
 #      Name is read from the API config JSON fetched in guard 3, not by parsing
 #      qm output, and needs no extra API call — so it runs before guard 5.
+#   4b. VM description does not contain the ownership token ($VM_TOKEN) stamped
+#      at provision time → exit non-zero (db-ogjn). The name guard above is
+#      vacuous for recycled VMIDs: both the stale and the current VM are named
+#      gh-runner-<vmid>, so name alone passes trivially. The token is unique per
+#      provision and unknown to any caller that did not participate in that
+#      specific clone, closing the recycling window regardless of VMID reuse.
 #   5. VM is not a member of PVE_POOL → exit non-zero. Read from the hypervisor
 #      via GET /pools/<pool>. This replaced a ledger file on the local
 #      filesystem, which could not work once provision and teardown became
@@ -44,6 +50,8 @@
 #   PVE_NODE               — Proxmox node name (required)
 #   PVE_TOKEN_ID           — API token id, e.g. gh-runner@pve!teardown (required)
 #   PVE_TOKEN_SECRET       — API token secret UUID (required)
+#   VM_TOKEN               — ownership token emitted by provision.sh (required);
+#                            must match vmtoken= in the VM description (guard 4b)
 #   PVE_API_HOST           — Proxmox API hostname or IP (default: localhost)
 #   PVE_API_PORT           — Proxmox API port (default: 8006)
 #   STOP_TIMEOUT           — seconds to wait for orderly stop before escalating
@@ -94,7 +102,7 @@ _require_env() {
         exit 1
     fi
 }
-for _v in PVE_NODE PVE_TOKEN_ID PVE_TOKEN_SECRET; do
+for _v in PVE_NODE PVE_TOKEN_ID PVE_TOKEN_SECRET VM_TOKEN; do
     _require_env "$_v"
 done
 
@@ -237,6 +245,25 @@ print(json.load(sys.stdin).get('data', {}).get('name', ''))
 " 2>/dev/null || true)
 if [ "$ACTUAL_NAME" != "$EXPECTED_NAME" ]; then
     echo "teardown.sh: VM $VMID name is '$ACTUAL_NAME', expected '$EXPECTED_NAME' — refusing" >&2
+    exit 1
+fi
+
+# Guard 4b: ownership token in the VM description must match $VM_TOKEN.
+#
+# The name check above is vacuous for a recycled VMID: Proxmox allocates the
+# lowest free id, so a VM freed by the reaper and reallocated to a new run gets
+# the same name as the old one (gh-runner-<vmid>), and the stale teardown from
+# the cancelled run passes trivially. The token is a random hex value written
+# into the VM description at provision time; teardown must hold the same token
+# to prove it participated in that specific clone (db-ogjn).
+STORED_TOKEN=$(printf '%s' "$CONFIG_BODY" | python3 -c "
+import json, re, sys
+desc = json.load(sys.stdin).get('data', {}).get('description', '')
+m = re.search(r'vmtoken=([a-f0-9]+)', desc)
+print(m.group(1) if m else '')
+" 2>/dev/null || true)
+if [ -z "$STORED_TOKEN" ] || [ "$STORED_TOKEN" != "$VM_TOKEN" ]; then
+    echo "teardown.sh: VM $VMID ownership token does not match — refusing" >&2
     exit 1
 fi
 

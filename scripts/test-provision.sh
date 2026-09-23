@@ -915,6 +915,62 @@ unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_CPUS CURL_TEMPLATE_CPUS
 unset CPU_OVERCOMMIT_RATIO CAPACITY_POLL CAPACITY_TIMEOUT
 
 # ---------------------------------------------------------------------------
+# Test 20 -- vmtoken= appears on stdout alongside vmid= (db-ogjn)
+#
+# provision.sh stamps a random hex token into the VM description and emits it
+# on stdout so callers can pass it to teardown.sh. Both lines must appear in
+# a single successful provision run.
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE"
+OUT20=$(run_provision valid-label test-token https://github.com/owner/repo 2>/dev/null)
+_rc20=$?
+
+if [ "$_rc20" -eq 0 ]; then
+    ok "test-20: provision exits 0 (sanity)"
+else
+    ko "test-20: provision exited non-zero ($_rc20) — cannot check vmtoken"
+fi
+
+if printf '%s\n' "$OUT20" | grep -qE '^vmtoken=[a-f0-9]{32}$'; then
+    ok "test-20: vmtoken=<32 hex chars> appears on stdout"
+else
+    ko "test-20: vmtoken= line missing or not 32 hex chars (got: $(printf '%s\n' "$OUT20" | grep vmtoken || echo '<nothing>'))"
+fi
+
+if printf '%s\n' "$OUT20" | grep -qE '^vmid=[0-9]+$'; then
+    ok "test-20: vmid= still present on stdout alongside vmtoken"
+else
+    ko "test-20: vmid= missing from stdout"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 21 -- the token in the description matches what is on stdout (db-ogjn)
+#
+# The clone POST carries description=runner=<label> vmtoken=<token>.  The token
+# in that description must be the same value emitted on stdout, otherwise a
+# caller that captures the stdout token cannot verify it against the VM.
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE"
+OUT21=$(run_provision valid-label test-token https://github.com/owner/repo 2>/dev/null)
+
+_stdout_token=$(printf '%s\n' "$OUT21" | grep -oE 'vmtoken=[a-f0-9]+' | cut -d= -f2 || true)
+_desc_token=$(grep -oE 'vmtoken=[a-f0-9]+' "$CURL_ARGV_FILE" 2>/dev/null | head -1 | cut -d= -f2 || true)
+
+if [ -n "$_stdout_token" ] && [ -n "$_desc_token" ] && [ "$_stdout_token" = "$_desc_token" ]; then
+    ok "test-21: vmtoken on stdout matches vmtoken in clone description"
+else
+    ko "test-21: token mismatch or missing (stdout='$_stdout_token', description='$_desc_token')"
+fi
+
+# The description field must appear in the clone POST argv (not in a task or
+# status poll), proving the token is part of the creation call itself.
+if grep -qF 'vmtoken=' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-21: vmtoken= carried in a curl argv (recorded in the clone call)"
+else
+    ko "test-21: vmtoken= never appeared in any curl argv"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))
