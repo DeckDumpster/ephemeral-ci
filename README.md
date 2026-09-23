@@ -57,6 +57,7 @@ jobs:
         with:
           vmid:  ${{ needs.provision.outputs.vmid }}
           label: ${{ needs.provision.outputs.label }}
+          consumer-result:    ${{ needs.test.result }}
           runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
           ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
@@ -143,6 +144,22 @@ repository deletion, collaborator management and branch-protection changes — f
 more than a CI job should hold on a repo whose required status checks are the
 thing stopping unreviewed work from landing. Registering at the org level needs
 only the runner permission; the restricted group is what confines the runner.
+
+**`gh run rerun <id> --failed` hangs when the runner died mid-job.** If the VM
+died after `provision` succeeded, `--failed` does not re-run `provision` — it
+was not the step that failed. Only `test` is re-queued, against
+`runs-on: [self-hosted, <label>]` for a runner that `teardown` already
+destroyed. The job sits queued indefinitely looking exactly like a runner that
+has not been picked up yet. A full re-run is refused too: GitHub refuses to
+rerun a workflow whose runner connection was lost.
+
+The working recovery is a new run:
+
+```sh
+gh workflow run CI --ref <branch>
+```
+
+Or close and reopen the pull request.
 
 **`if: always()` on teardown is load-bearing.** A cancelled or failed run
 otherwise leaves the VM alive and the hourly reaper becomes the only thing that

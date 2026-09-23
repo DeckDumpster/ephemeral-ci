@@ -75,9 +75,20 @@ _guest "units" \
     /bin/sh -c 'systemctl is-active ephemeral-runner.path 2>&1; systemctl is-enabled ephemeral-runner.path 2>&1; systemctl is-active ephemeral-runner.service 2>&1'
 
 _guest "runner journal" \
-    /bin/sh -c 'journalctl -u ephemeral-runner --no-pager -n 60 2>&1'
+    /bin/sh -c 'journalctl -u ephemeral-runner --no-pager -n 100 2>&1'
 
 _guest "network" \
     /bin/sh -c 'ip -4 -br a 2>&1; echo "---"; getent hosts github.com 2>&1 || echo "DNS FAILED"'
+
+# dmesg captures OOM kills (Out of memory: Killed process ...) and other kernel
+# events that would explain a runner dying without a clean exit. -T adds wall
+# clock timestamps; fall back to raw dmesg if the flag is unsupported.
+_guest "dmesg (last 100 lines)" \
+    /bin/sh -c 'dmesg -T 2>/dev/null | tail -100 || dmesg | tail -100'
+
+# Point-in-time memory and load at the moment teardown calls this -- after a
+# mid-job death the guest is still running and these numbers show what it saw.
+_guest "memory and load" \
+    /bin/sh -c 'free -m 2>&1; echo "---"; cat /proc/loadavg 2>&1'
 
 printf '\nguest-diag: done\n'
