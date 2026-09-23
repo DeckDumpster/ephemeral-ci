@@ -469,6 +469,12 @@ VM_TOKEN=$(python3 -c 'import os,binascii; print(binascii.hexlify(os.urandom(16)
 # --- Pick a VMID ---
 VMID="$(pick_vmid)" || exit 1
 
+# Capture the wall-clock epoch once before the clone loop. provision_time is
+# written into the VM description so reap.sh can use it as the authoritative
+# age source rather than meta.ctime, which Proxmox may copy verbatim from the
+# template instead of updating at clone time (db-e1we).
+PROVISION_TIMESTAMP="$(date +%s)"
+
 # --- Clone ---
 #
 # THE DESCRIPTION CARRIES THE RUNNER NAME, AND IT IS LOAD-BEARING.
@@ -503,7 +509,7 @@ for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
     if clone_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${TEMPLATE_VMID}/clone" \
         --data-urlencode "newid=${VMID}" \
         --data-urlencode "name=gh-runner-${VMID}" \
-        --data-urlencode "description=runner=${LABEL} vmtoken=${VM_TOKEN}" \
+        --data-urlencode "description=runner=${LABEL} vmtoken=${VM_TOKEN} provision_time=${PROVISION_TIMESTAMP}" \
         --data-urlencode "full=0" \
         --data-urlencode "pool=ephemeral-ci")"; then
         clone_upid="$(printf '%s\n' "$clone_body" | python3 -c \

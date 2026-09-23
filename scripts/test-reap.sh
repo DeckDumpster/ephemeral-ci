@@ -638,6 +638,75 @@ echo "--- Test 10: PVE_API_HOSTNAME routes URL through hostname with --resolve"
   || _fail "Test 10: PVE_API_HOSTNAME routes URL through hostname with --resolve"
 
 # ============================================================
+# TEST 11: provision_time= in description overrides meta.ctime —
+#          a VM that meta.ctime says is ancient is kept because
+#          provision_time= says it is less than MAX_AGE_HOURS old.
+#
+# Proxmox copies meta.ctime verbatim from the template at clone time on some
+# versions, so meta.ctime can reflect the template's creation epoch rather
+# than the clone's. A reaper relying solely on meta.ctime would treat every
+# clone as being as old as the template and reap live VMs (db-e1we). The
+# provision_time= written by provision.sh is always the clone epoch; when
+# present it must win over meta.ctime.
+# ============================================================
+echo "--- Test 11: provision_time= overrides meta.ctime — recent VM not reaped"
+(
+    _reap_setup
+    RECENT=$(( $(date +%s) - 3600 ))
+    printf '{"data":[{"vmid":500,"name":"gh-runner-500"}]}\n' > "$BIN/.stub-qemu-list"
+    printf '{"data":{"name":"gh-runner-500","description":"runner=ci-test provision_time=%s vmtoken=aabbccdd","meta":"creation-qemu=11.0.0,ctime=1000000000"}}\n' \
+        "$RECENT" > "$BIN/.stub-qemu-config"
+
+    output=$(_run_reap --dry-run 2>&1 || true)
+
+    if printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+        echo "  expected fail: reap.sh would destroy VM 500 despite recent provision_time= (meta.ctime is old)" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    fi
+    printf '%s\n' "$output" | grep -q 'provision-time' || {
+        echo "  expected fail: provision_time= not used as age source; output was:" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 11: provision_time= overrides meta.ctime (recent VM not reaped)" \
+  || _fail "Test 11: provision_time= overrides meta.ctime (recent VM not reaped)"
+
+# ============================================================
+# TEST 12: provision_time= in description overrides meta.ctime —
+#          a VM that meta.ctime says is recent IS reaped because
+#          provision_time= says it is past MAX_AGE_HOURS old.
+#
+# This is the positive-control complement to Test 11: it confirms that
+# provision_time= wins over meta.ctime in both directions, not just when
+# doing so prevents destruction. Without this test, an implementation that
+# returns "age unknown" for any VM with provision_time= could pass Test 11
+# by accident (skipping is not the same as keeping).
+# ============================================================
+echo "--- Test 12: provision_time= overrides meta.ctime — old VM IS reaped"
+(
+    _reap_setup
+    RECENT=$(( $(date +%s) - 3600 ))
+    printf '{"data":[{"vmid":500,"name":"gh-runner-500"}]}\n' > "$BIN/.stub-qemu-list"
+    printf '{"data":{"name":"gh-runner-500","description":"runner=ci-test provision_time=1000000000 vmtoken=aabbccdd","meta":"creation-qemu=11.0.0,ctime=%s"}}\n' \
+        "$RECENT" > "$BIN/.stub-qemu-config"
+
+    output=$(_run_reap --dry-run 2>&1 || true)
+
+    if ! printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+        echo "  expected fail: reap.sh kept VM 500 despite old provision_time= (meta.ctime is recent)" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    fi
+    printf '%s\n' "$output" | grep -q 'provision-time' || {
+        echo "  expected fail: provision_time= not used as age source; output was:" >&2
+        printf '%s\n' "$output" | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 12: provision_time= overrides meta.ctime (old VM reaped)" \
+  || _fail "Test 12: provision_time= overrides meta.ctime (old VM reaped)"
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
