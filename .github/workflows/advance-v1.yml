@@ -16,6 +16,14 @@ on:
         description: Print the target commit but do not move the tag.
         type: boolean
         default: false
+      consumers-updated:
+        description: >-
+          Evidence that every consumer already passes the changed action
+          inputs — PR or commit links, one per consumer. Required only when
+          the action interface has changed since v1; the run refuses without
+          it and records whatever is given as the audit trail.
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -89,10 +97,34 @@ jobs:
                provision/action.yml teardown/action.yml \
              | grep -E '^[+-][^+-]' \
              | grep -qE '^[+-](inputs:|outputs:|  [a-z][a-z0-9-]*:)'; then
-            echo "::error::This commit changes action inputs or outputs in provision/action.yml or teardown/action.yml relative to v1."
-            echo "::error::Advancing v1 will silently break consumers that have not updated their workflows to pass or receive the changed fields."
-            echo "::error::Either cut a new major version (v2) and coordinate the consumer updates, or verify that all consumers (deckdumpster, pokedumpster) have already been updated."
-            exit 1
+            # A FENCE IS A REFUSAL, NOT A WALL, AND THIS ONE HAD NO DOOR.
+            #
+            # The check is right: advancing v1 across an interface change
+            # breaks every consumer that has not been updated. But it can only
+            # see THIS repository, so once the consumers genuinely have been
+            # updated it goes on refusing, and the only ways past it are
+            # cutting a v2 nobody wants or moving the tag by hand — which
+            # disarms the check silently and leaves no record that anyone
+            # thought about it (law-never-disarm-a-check-to-proceed).
+            #
+            # consumers-updated is the door. It does not weaken the check: the
+            # refusal still fires by default, and passing it requires naming
+            # the evidence, which lands in the log and the job summary where
+            # the next person can audit the claim.
+            if [ -z "${{ inputs.consumers-updated }}" ]; then
+              echo "::error::This commit changes action inputs or outputs in provision/action.yml or teardown/action.yml relative to v1."
+              echo "::error::Advancing v1 will silently break consumers that have not updated their workflows to pass or receive the changed fields."
+              echo "::error::Either cut a new major version (v2) and coordinate the consumer updates, or re-run with consumers-updated naming the PRs that updated every consumer."
+              exit 1
+            fi
+            echo "::warning::Interface changed since v1; proceeding on the operator's evidence."
+            {
+              echo "### v1 advanced across an action interface change"
+              echo
+              echo 'Consumers reported updated:'
+              echo
+              echo '${{ inputs.consumers-updated }}'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "No action interface changes since v1."
 
