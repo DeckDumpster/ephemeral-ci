@@ -534,11 +534,6 @@ PROVISION_TIMESTAMP="$(date +%s)"
 # lacks -- unlike probing the id first, which a pool-scoped token cannot do
 # (see pick_vmid). On refusal, ask nextid again: if the id was taken by a
 # concurrent provision, nextid has moved past it.
-# Build optional per-repo tag arg. Tags are semicolon-separated in Proxmox;
-# we emit a single tag derived from REPO_SLUG. When REPO_TAG is empty the
-# clone POST omits the tags parameter entirely.
-_clone_tag_args=()
-[ -n "${REPO_TAG:-}" ] && _clone_tag_args=("--data-urlencode" "tags=${REPO_TAG}")
 
 clone_upid=""
 for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
@@ -549,8 +544,7 @@ for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
         --data-urlencode "name=gh-runner-${VMID}" \
         --data-urlencode "description=runner=${LABEL} vmtoken=${VM_TOKEN} provision_time=${PROVISION_TIMESTAMP}" \
         --data-urlencode "full=0" \
-        --data-urlencode "pool=ephemeral-ci" \
-        "${_clone_tag_args[@]+"${_clone_tag_args[@]}"}")"; then
+        --data-urlencode "pool=ephemeral-ci")"; then
         clone_upid="$(printf '%s\n' "$clone_body" | python3 -c \
             'import json,sys; print(json.load(sys.stdin).get("data",""))')"
         [ -n "$clone_upid" ] && break
@@ -569,6 +563,39 @@ fi
 # Poll the clone task. A non-OK exitstatus means the clone failed on the
 # server; do not proceed to start the VM.
 poll_task "$clone_upid" || exit 1
+
+# --- Per-repo tag, set on the CONFIG, never on the clone ---
+#
+# THE CLONE ENDPOINT HAS NO tags PROPERTY. Proxmox 9.2.2 answers a clone POST
+# carrying one with HTTP 400 and refuses the whole request:
+#
+#   {"errors":{"tags":"property is not defined in schema and the schema does
+#    not allow additional properties"}}
+#
+# and since the clone is also the VMID collision check, all CLONE_RETRIES
+# attempts fail identically and provisioning stops dead. That is what happened
+# on 2026-09-23 when v1 moved onto the commit that added the parameter: every
+# consumer pinned to @v1 lost CI until the tag was moved again.
+#
+# tags IS accepted on PUT .../config, and the qemu LIST endpoint returns it —
+# which is the only thing the per-repo cap needs, since it counts from the
+# list (see the repo_count expression above). Verified against the live
+# hypervisor, Proxmox 9.2.2, before this change was written.
+#
+# SET AFTER THE CLONE TASK COMPLETES, not before the VM exists, and treated as
+# NON-FATAL. An untagged runner makes the per-repo cap undercount by one for
+# this VM's lifetime, which costs a little fairness; refusing to provision
+# because a label did not stick would cost the whole job. The failure is
+# logged loudly so an undercount is never silent.
+if [ -n "${REPO_TAG:-}" ]; then
+    if pvapi PUT "/nodes/${PVE_NODE}/qemu/${VMID}/config" \
+        --data-urlencode "tags=${REPO_TAG}" >/dev/null; then
+        printf 'provision.sh: tagged VM %s with %s\n' "$VMID" "$REPO_TAG" >&2
+    else
+        printf 'provision.sh: WARNING could not tag VM %s with %s — the per-repo cap will undercount this runner\n' \
+            "$VMID" "$REPO_TAG" >&2
+    fi
+fi
 
 # Emit the VMID and ownership token now -- before any step that can fail --
 # so callers can tear down even if we die later. See the output contract at

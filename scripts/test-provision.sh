@@ -254,7 +254,10 @@ run_provision() {
 # Test 1 -- clone POST must carry pool=ephemeral-ci
 # ---------------------------------------------------------------------------
 rm -f "$CURL_ARGV_FILE"
-run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+# REPO_SLUG is set for this case only, so the tag assertions below have a tag to
+# find. provision.sh derives REPO_TAG="repo-owner-repo" from it; every later test
+# in this file runs without it, as before.
+REPO_SLUG="owner/repo" run_provision valid-label test-token https://github.com/owner/repo >/dev/null
 
 if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
     ok "test-1: clone POST carries pool=ephemeral-ci"
@@ -267,6 +270,48 @@ if grep -q '/clone' "$CURL_ARGV_FILE" 2>/dev/null; then
     ok "test-1: clone endpoint URL recorded in curl argv"
 else
     ko "test-1: clone URL missing from curl argv (stub may not have been called)"
+fi
+
+# PER-CALL, NOT PER-FILE. The stub appends every invocation to one file with a
+# "---" terminator, so a bare grep over the whole file cannot tell the clone POST
+# from the config PUT that legitimately carries the tag. This reads one record at
+# a time and asks each question of the call it belongs to.
+_argv_record_has() {   # _argv_record_has <url-substr> <exact-arg>  -> 0 if found together
+    awk -v u="$1" -v a="$2" '
+        /^---$/ { if (hasu && hasa) { found = 1 }; hasu = 0; hasa = 0; next }
+        index($0, u) { hasu = 1 }
+        $0 == a      { hasa = 1 }
+        END { exit(found ? 0 : 1) }' "$CURL_ARGV_FILE" 2>/dev/null
+}
+_argv_record_any() {   # _argv_record_any <url-substr> -> 0 if any record hits that url
+    awk -v u="$1" 'index($0, u) { found = 1 } END { exit(found ? 0 : 1) }' \
+        "$CURL_ARGV_FILE" 2>/dev/null
+}
+_argv_clone_has_tags() {
+    awk '
+        /^---$/ { if (isclone && hastag) { found = 1 }; isclone = 0; hastag = 0; next }
+        index($0, "/clone") { isclone = 1 }
+        /^tags=/            { hastag = 1 }
+        END { exit(found ? 0 : 1) }' "$CURL_ARGV_FILE" 2>/dev/null
+}
+
+# THE CLONE POST MUST NOT CARRY tags. Proxmox 9.2.2's clone endpoint has no such
+# property and answers HTTP 400 for the whole request; because the clone is also
+# the VMID collision check, every retry fails identically and provisioning stops
+# dead. On 2026-09-23 that took CI down on every consumer pinned to @v1.
+if _argv_clone_has_tags; then
+    ko "test-1: clone POST carries a tags parameter — Proxmox rejects the whole request"
+else
+    ok "test-1: clone POST carries no tags parameter"
+fi
+
+# AND THE TAG MUST STILL BE SET, on the config, or the per-repo cap undercounts
+# every runner. Asserting only the absence above would pass just as well if the
+# tag had been dropped entirely (law-absence-needs-a-positive-control).
+if _argv_record_has "/config" "tags=repo-owner-repo"; then
+    ok "test-1: the repo tag is set on the VM config instead"
+else
+    ko "test-1: no config call carrying the repo tag — the per-repo cap will undercount"
 fi
 
 # ---------------------------------------------------------------------------
