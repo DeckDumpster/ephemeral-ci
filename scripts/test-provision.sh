@@ -1188,6 +1188,27 @@ else
     ko "test-23g: tags= in clone POST despite REPO_SLUG being unset"
 fi
 
+# (h) THE DEFAULT IS OFF. FLEET_SHARE_PER_REPO unset, five runners already carry this
+# repo's tag, and the node has room -> provision proceeds. Shipped at 1, the default held
+# spira to a single runner with ~34 GiB free on the node (2026-09-23). The action input
+# must default to 0 too: it is always passed, so its default is the one consumers get.
+export REPO_SLUG="owner/repo"
+unset FLEET_SHARE_PER_REPO
+rm -f "$CURL_ARGV_FILE"
+CURL_REPO_RUNNER_COUNT=5 CURL_NODE_REPO_TAG="repo-owner-repo" \
+    run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23h: with FLEET_SHARE_PER_REPO unset the per-repo cap is off"
+else
+    ko "test-23h: per-repo cap enforced by default"
+fi
+_share_default="$(awk '/^  fleet-share-per-repo:/{f=1;next} f&&/^  [a-z]/{exit} f&&/^ *default:/{gsub(/[^0-9]/,"");print;exit}' "$SCRIPT_DIR/../provision/action.yml")"
+if [ "$_share_default" = "0" ]; then
+    ok "test-23h: provision action's fleet-share-per-repo defaults to 0"
+else
+    ko "test-23h: provision action's fleet-share-per-repo default is [${_share_default}], want 0"
+fi
+
 unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_CPUS CURL_TEMPLATE_CPUS
 unset CURL_NODE_ALLOC_MIB CURL_NODE_ALLOC_CPUS CPU_OVERCOMMIT_RATIO
 unset CAPACITY_POLL CAPACITY_TIMEOUT FLEET_SHARE_PER_REPO REPO_SLUG

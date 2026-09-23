@@ -104,10 +104,10 @@ inputs:
       Maximum concurrent runner VMs allowed from this repository. Counts ALL
       gh-runner VMs tagged with this repo's slug (any state, including stopped
       VMs still being initialised) before cloning; if at or above this ceiling,
-      waits. 0 disables. Default 1: a single repo cannot take the whole fleet
-      while another install is waiting for a slot.
+      waits. 0 disables, and 0 is the default: each repo counts only itself, so a
+      per-repo share cannot enforce fairness across the fleet (2026-09-23).
     required: false
-    default: '1'
+    default: '0'
 
 outputs:
   vmid:

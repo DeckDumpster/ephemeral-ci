@@ -367,7 +367,12 @@ CPU_OVERCOMMIT_RATIO="${CPU_OVERCOMMIT_RATIO:-4}"
 NODE_CPU_RESERVE_VCPUS="${NODE_CPU_RESERVE_VCPUS:-0}"
 # Per-repo admission cap. REPO_SLUG must be set to enable it; derive a
 # Proxmox tag by lowercasing and replacing non-alphanumeric chars with '-'.
-FLEET_SHARE_PER_REPO="${FLEET_SHARE_PER_REPO:-1}"
+# OFF BY DEFAULT (per Ryan, 2026-09-23). A per-repo share enforced by each repo's own
+# provision counts only itself; no consumer sees the whole fleet, so fairness cannot be
+# enforced this way. Shipped at 1, it held spira to one runner with ~34 GiB free on the
+# node and four runs queued behind it. The node-wide memory and vCPU gate above is the limit
+# that protects the hypervisor; burst beyond it is the EC2 spill design's job.
+FLEET_SHARE_PER_REPO="${FLEET_SHARE_PER_REPO:-0}"
 REPO_TAG=""
 if [ -n "${REPO_SLUG:-}" ]; then
     _slug_sanitized="$(printf '%s' "${REPO_SLUG}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
