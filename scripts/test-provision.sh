@@ -1169,23 +1169,39 @@ else
     ko "test-23f: per-repo cap enforced despite REPO_SLUG being unset"
 fi
 
-# (g) clone POST carries the repo tag when REPO_SLUG is set
+# (g) tag goes on config PUT, not clone POST, when REPO_SLUG is set
+#
+# The clone endpoint (Proxmox 9.2.2) has no tags property and rejects
+# the whole request with HTTP 400. The tag is set via PUT .../config
+# after the clone task completes. The per-repo count comes from the qemu
+# LIST endpoint, which returns tags however they were set.
+#
+# The pre-fix version of this sub-test used a bare grep over the whole
+# argv file and was labelled "clone POST carries the repo tag". It passed
+# only because the config PUT carried the tag — the grep found tags
+# anywhere in the file, not specifically in the clone record. Using the
+# per-call helpers added in sp-s0wdr makes the distinction explicit.
 export REPO_SLUG="owner/repo"
 rm -f "$CURL_ARGV_FILE"
 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
-if grep -qF 'tags=repo-owner-repo' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-23g: clone POST carries the repo tag derived from REPO_SLUG"
+if _argv_clone_has_tags; then
+    ko "test-23g: clone POST carries tags= — Proxmox 9.2.2 rejects the whole request"
 else
-    ko "test-23g: repo tag missing from clone POST argv"
+    ok "test-23g: clone POST carries no tags= when REPO_SLUG is set"
 fi
-# Positive control: without REPO_SLUG no tags arg is sent
+if _argv_record_has "/config" "tags=repo-owner-repo"; then
+    ok "test-23g: the repo tag is set on the config PUT instead"
+else
+    ko "test-23g: repo tag missing from the config PUT"
+fi
+# Positive control: without REPO_SLUG neither call carries tags
 unset REPO_SLUG
 rm -f "$CURL_ARGV_FILE"
 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
 if ! grep -qF 'tags=' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-23g: no tags arg in clone POST when REPO_SLUG is unset"
+    ok "test-23g: no tags= anywhere when REPO_SLUG is unset"
 else
-    ko "test-23g: tags= in clone POST despite REPO_SLUG being unset"
+    ko "test-23g: tags= appeared despite REPO_SLUG being unset"
 fi
 
 # (h) THE DEFAULT IS OFF. FLEET_SHARE_PER_REPO unset, five runners already carry this
