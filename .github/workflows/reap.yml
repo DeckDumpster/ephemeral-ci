@@ -25,6 +25,14 @@ on:
         description: Print what would be destroyed and touch nothing.
         type: boolean
         default: true
+      max-age-hours:
+        description: >
+          Destroy VMs older than this. Lower it only to sweep a known fresh
+          orphan, and DRY RUN FIRST -- a low value will destroy a VM whose
+          provision is still in flight, because a VM with no runner
+          registration is indistinguishable from one.
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -69,6 +77,10 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
              && [ "${{ inputs.dry-run }}" = "true" ]; then
             args+=(--dry-run)
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ -n "${{ inputs.max-age-hours }}" ]; then
+            args+=(--max-age-hours "${{ inputs.max-age-hours }}")
           fi
           # reap.sh writes its report to stderr and exits non-zero only when a
           # VM's age could not be determined. Capture both so the step below can
