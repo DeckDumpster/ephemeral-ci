@@ -292,6 +292,33 @@ check_unattended() {
     return 0
 }
 
+# THE DECLARED RUNNER ALLOCATION. A template with a different size silently caps
+# the runner fleet: every concurrent run holds its full allocation for the length
+# of the run, so node_capacity / per_runner_allocation IS the fleet ceiling. Six
+# consecutive full-corpus gate runs measured a cgroup high-water of ~1.5 GiB with
+# ~1.7 GiB held by the OS and runner process before any suite starts, for a
+# total of ~3.3 GiB. 6144 MiB provides 2x headroom and allows six concurrent
+# runners on this node (vs two at 12288 MiB). See docs/TEMPLATE.md for the
+# measurement table and the fleet concurrency math.
+#
+# The check reads MemTotal from /proc/meminfo (which is 1-5% below the allocation
+# due to reserved memory) and fails outside a ±20% window: floor=4915, ceil=7372.
+RUNNER_MEM_MIB=6144
+
+check_mem_size() {
+    local memtotal_mib lo hi
+    [ -r /proc/meminfo ] || return 0
+    memtotal_mib="$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)"
+    [ -n "$memtotal_mib" ] || return 0
+    lo=$(( RUNNER_MEM_MIB * 4 / 5 ))
+    hi=$(( RUNNER_MEM_MIB * 6 / 5 ))
+    if [ "$memtotal_mib" -lt "$lo" ] || [ "$memtotal_mib" -gt "$hi" ]; then
+        lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; declared ${RUNNER_MEM_MIB}MiB (±20% window ${lo}–${hi}MiB); resize with: qm set <VMID> --memory ${RUNNER_MEM_MIB}"
+        return 1
+    fi
+    note "mem ${memtotal_mib}MiB (declared ${RUNNER_MEM_MIB}MiB)"
+}
+
 # /tmp MUST NOT BE A RAM DISK. Ubuntu mounts /tmp as a tmpfs sized at half of RAM,
 # so a suite with a disk floor measures 3.7G free on a VM whose root filesystem has
 # 79G. It is not a disk problem with the machine and it does not look like a
@@ -315,6 +342,7 @@ run_checks() {
     check_userns
     check_unattended
     check_tmp_backing
+    check_mem_size
 }
 
 if [ "$MODE" = check ]; then

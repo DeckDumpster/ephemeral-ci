@@ -136,11 +136,58 @@ inherit the template's config wholesale, so the size a CI run gets is decided
 once, here, and **nothing downstream will ever tell you it was decided wrong.**
 
 ```bash
-qm set <TEMPLATE_VMID> --cores 4 --memory 8192
+qm set <TEMPLATE_VMID> --cores 4 --memory 6144
 ```
 
-That is a starting point, not a recommendation for every suite. Size it against
-the work, then verify by measurement rather than by feel:
+**6144 MiB is a measured decision, not a default.** Five consecutive gate runs
+against the full 455-suite corpus on a 16-slot runner show:
+
+| run ID        | suites | maxpar | cgroup peak | per slot |
+|---------------|--------|--------|-------------|----------|
+| 35868983384   | 21     | 16     | 521 MiB     | 32 MiB   |
+| 35847232242   | 121    | 16     | 973 MiB     | 60 MiB   |
+| 35848382629   | 455    | 16     | 1400 MiB    | 87 MiB   |
+| 35859231480   | 455    | 16     | 1479 MiB    | 92 MiB   |
+| 35842904573   | 455    | 16     | 1541 MiB    | 96 MiB   |
+
+The OS, Actions runner, and container engine hold about 1.7 GiB before any suite
+runs; the suites themselves peak at about 1.5 GiB; total high-water is about
+3.3 GiB. Every run reports "cpu-bound: cpu=16" — memory has never been the
+binding resource. 12288 MiB was the template default, not a decision.
+
+**Why 6144 MiB and not smaller.** The hypervisor provides 46623 MiB for
+runners. `CAPACITY_SLACK_RUNNERS=1` means a new runner needs room for one
+more, so the practical fleet ceiling is `floor(avail / (2 × allocation))`:
+
+| allocation | concurrent runners |
+|------------|-------------------|
+| 12288 MiB  | 2 (before)         |
+|  8192 MiB  | 5                  |
+|  6144 MiB  | 6                  |
+|  4096 MiB  | 10                 |
+
+6144 MiB triples the fleet and still leaves roughly 2× headroom over the
+measured 3.3 GiB high-water mark.
+
+**The trap: `maxpar` drops when you resize without calibrating the per-suite
+budget.** `testenv-batch.sh` derives `maxpar` as
+`min(nproc, floor((MemAvailable − reserve) / per_suite))`. At 6144 MiB,
+MemAvailable is about 4600 MiB. With the default `SPIRA_BATCH_MEM_PER_SUITE_MIB=512`,
+the memory bound is `floor((4600 − 1024) / 512) = 6`, dropping `maxpar` from
+16 to 6 and roughly tripling gate wall-clock.
+
+The measured per-slot peak is ~91 MiB. Set `SPIRA_BATCH_MEM_PER_SUITE_MIB=192`
+(a 2× margin) in the harness `spira.conf` **alongside** the resize. At
+192 MiB/suite the memory bound becomes `floor(3576 / 192) = 18`, which exceeds
+`nproc=16`, so `maxpar` stays 16 and gate latency is unchanged.
+
+**`template-substrate.sh --check` asserts the memory size** declared here.
+Running it against a template with a different allocation reports the
+discrepancy before a clone is made. The check reads MemTotal from
+`/proc/meminfo` and fails if it is outside a ±20% window around the declared
+6144 MiB (floor 4915 MiB, ceiling 7372 MiB).
+
+Size it against the work, then verify by measurement rather than by feel:
 
 **Make the run report the machine it ran on.** This is the part that is easy to
 skip and expensive to have skipped. A consuming repository's timing constants —
@@ -595,9 +642,9 @@ from inside the template before converting it.
 
 ## Verification checklist
 
-The checklist has two parts. **Host-side checks** (H1–H5) run from the
+The checklist has two parts. **Host-side checks** (H1–H6) run from the
 Proxmox hypervisor; H1–H3 run against the template config (VM does not
-need to be booted); H4–H5 require a **booted clone** (templates cannot boot).
+need to be booted); H4–H6 require a **booted clone** (templates cannot boot).
 **Guest-side checks** (1–12) run inside the template VM as the `runner` user.
 Both parts must pass before you convert. Each step proves the thing the next
 one depends on. The last step is the real workload — a template validated by
@@ -645,6 +692,14 @@ qm guest cmd <CLONE_VMID> ping \
 # H5. Serial console opens (proves console=ttyS0 is on the kernel cmdline).
 #     This opens an interactive session; press Ctrl+O to exit.
 qm terminal <CLONE_VMID>
+
+# H6. Memory size matches the declared 6144 MiB allocation. Run against the
+#     booted clone as root (or as the runner user via the guest agent). Also
+#     verifiable by running template-substrate.sh --check inside the guest.
+qm guest exec <CLONE_VMID> -- bash -c \
+    "awk '/^MemTotal:/{printf \"%d MiB\n\", \$2/1024}' /proc/meminfo" \
+    && echo "PASS: confirm MemTotal is ~5800-6100 MiB (within ±20% of 6144)" \
+    || echo "FAIL: could not read MemTotal"
 ```
 
 ### Inside the template VM (as the `runner` user)

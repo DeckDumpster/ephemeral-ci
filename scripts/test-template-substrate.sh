@@ -179,6 +179,35 @@ else
 fi
 
 echo
+echo "the declared runner memory size is asserted:"
+
+# RUNNER_MEM_MIB=6144 must appear in the code, not just in comments. The test
+# for the boundary: if the constant is only in a comment, `has` matches the
+# comment text and the check below still passes while the actual guard is absent.
+if has 'RUNNER_MEM_MIB=6144'; then
+    ok "RUNNER_MEM_MIB=6144 is declared"
+else
+    bad "RUNNER_MEM_MIB=6144 is declared" "the declared allocation is the single source of truth for the range check"
+fi
+
+# The check must read the actual RAM from /proc/meminfo, not infer it from the
+# template VMID or from anything set at provision time.
+if has 'MemTotal'; then
+    ok "MemTotal is read from /proc/meminfo to verify the allocation"
+else
+    bad "MemTotal is read from /proc/meminfo to verify the allocation" "the check cannot enforce the declared size without reading the actual RAM"
+fi
+
+# The check must test BOTH bounds (under-provisioned and over-provisioned).
+# A one-sided check misses the case this bead was filed for: a template
+# inherited from a hand-built 12288 MiB VM that nobody ever measured.
+if has '\$memtotal_mib.*-lt.*\$lo' && has '\$memtotal_mib.*-gt.*\$hi'; then
+    ok "both bounds are checked (under- and over-provisioned)"
+else
+    bad "both bounds are checked (under- and over-provisioned)" "a one-sided check misses template drift in either direction"
+fi
+
+echo
 echo "--check is safe and says what it found:"
 
 # THE WHOLE POINT OF --check IS THAT IT TOUCHES NOTHING. Verified by running it
