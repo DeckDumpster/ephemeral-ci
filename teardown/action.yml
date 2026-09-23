@@ -54,6 +54,16 @@ inputs:
       (vars.PVE_CA_CERT). Without this the connection fails loudly — there
       is no insecure fallback.
     required: true
+  consumer-result:
+    description: >-
+      Result of the job that ran on this runner: success, failure, or
+      cancelled. When failure or cancelled, the guest is dumped before the VM
+      is destroyed -- that window is the only opportunity to capture evidence
+      of a mid-job death (dmesg OOM entries, the runner service journal, load
+      and memory at the moment of failure). Has no effect on success; omit it
+      and the dump never runs.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -72,6 +82,24 @@ runs:
       run: |
         printf '%s\n' "$PVE_CA_CERT" > "$RUNNER_TEMP/pve-root-ca.pem"
         echo "PVE_CA_CERT_FILE=$RUNNER_TEMP/pve-root-ca.pem" >> "$GITHUB_ENV"
+
+    # Runs before the destroy so the guest is still alive. Conditioned on the
+    # consuming job having failed or been cancelled -- the only cases where the
+    # evidence is needed and the guest may have died mid-job with nothing
+    # capturing it. Never fails the teardown job: continue-on-error is set and
+    # guest-diag.sh itself never returns non-zero for a broken guest.
+    - name: Dump guest state on job failure
+      if: inputs.vmid != '' && (inputs.consumer-result == 'failure' || inputs.consumer-result == 'cancelled')
+      continue-on-error: true
+      shell: bash
+      env:
+        PVE_API_HOST: ${{ inputs.pve-api-host }}
+        PVE_API_HOSTNAME: ${{ inputs.pve-api-hostname }}
+        PVE_NODE: ${{ inputs.pve-node }}
+        PVE_TOKEN_ID: ${{ inputs.pve-token-id }}
+        PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
+        CRED_FILE: /dev/null
+      run: bash "${{ github.action_path }}/../scripts/guest-diag.sh" "${{ inputs.vmid }}"
 
     - name: Destroy the runner VM
       if: inputs.vmid != ''
