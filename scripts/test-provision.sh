@@ -174,6 +174,15 @@ case "$path" in
     #                              for the running VM's cpus, then revert to
     #                              CURL_NODE_ALLOC_CPUS. Models a concurrent VM
     #                              finishing and freeing cores mid-wait.
+    #   CURL_REPO_RUNNER_COUNT  -- if set to N, inject N extra gh-runner-* VMs
+    #                              tagged with CURL_NODE_REPO_TAG in the /qemu
+    #                              list. Models runners from the same repo that
+    #                              are already running.
+    #   CURL_NODE_REPO_TAG      -- tag string to set on the injected repo VMs.
+    #   CURL_REPO_TIGHT_POLLS   -- if set to N, the first N /qemu list calls
+    #                              inject CURL_REPO_RUNNER_COUNT repo VMs; after
+    #                              N calls they are omitted. Models a repo runner
+    #                              finishing and freeing its slot mid-wait.
     /nodes/*/status)
         http_code="${CURL_NODE_CODE:-200}"
         body="{\"data\":{\"memory\":{\"total\":$(( ${CURL_NODE_TOTAL_MIB:-131072} * 1048576 ))},\"cpuinfo\":{\"cpus\":${CURL_NODE_CPUS:-32}}}}"
@@ -190,7 +199,25 @@ case "$path" in
                 _eff_alloc_cpus="${CURL_CPU_TIGHT_ALLOC_CPUS:-120}"
             fi
         fi
-        body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( ${CURL_NODE_ALLOC_MIB:-0} * 1048576 )),\"cpus\":${_eff_alloc_cpus}},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8}}]}"
+        # Inject gh-runner-* VMs for per-repo count testing.
+        _eff_repo_count="${CURL_REPO_RUNNER_COUNT:-0}"
+        if [ -n "${CURL_REPO_TIGHT_POLLS:-}" ] && [ "${_eff_repo_count:-0}" -gt 0 ]; then
+            _repo_tight_state="${TMPDIR:-/tmp}/repo-tight-count"
+            _rtcnt=$(cat "$_repo_tight_state" 2>/dev/null || echo 0)
+            _rtcnt=$(( _rtcnt + 1 ))
+            printf '%s' "$_rtcnt" > "$_repo_tight_state"
+            if [ "$_rtcnt" -gt "${CURL_REPO_TIGHT_POLLS}" ]; then
+                _eff_repo_count=0
+            fi
+        fi
+        _repo_runners_json=""
+        if [ "${_eff_repo_count:-0}" -gt 0 ] && [ -n "${CURL_NODE_REPO_TAG:-}" ]; then
+            for _rn in $(seq 1 "${_eff_repo_count}"); do
+                _rvm=$((1000 + _rn))
+                _repo_runners_json="${_repo_runners_json},{\"vmid\":${_rvm},\"name\":\"gh-runner-${_rvm}\",\"status\":\"running\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8},\"tags\":\"${CURL_NODE_REPO_TAG}\"}"
+            done
+        fi
+        body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( ${CURL_NODE_ALLOC_MIB:-0} * 1048576 )),\"cpus\":${_eff_alloc_cpus}}${_repo_runners_json},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8}}]}"
         ;;
     *)
         printf 'curl stub: unhandled path: %s\n' "$path" >&2
@@ -986,6 +1013,139 @@ if grep -qP 'provision_time=\d+' "$CURL_ARGV_FILE" 2>/dev/null; then
 else
     ko "test-22: provision_time= missing or non-numeric in clone description"
 fi
+
+# ---------------------------------------------------------------------------
+# Test 23 -- per-repo admission cap (FLEET_SHARE_PER_REPO)
+#
+# REPO_SLUG="owner/repo" causes provision.sh to derive REPO_TAG="repo-owner-repo"
+# and count ALL gh-runner-* VMs bearing that tag before cloning. If the count
+# is at or above FLEET_SHARE_PER_REPO the provision waits, not fails; it
+# proceeds once the count drops below the cap.
+#
+# Counting stopped VMs (not just running ones) catches VMs that have been
+# cloned but not yet started, narrowing the race window between concurrent
+# provisions from the same repository.
+# ---------------------------------------------------------------------------
+export CURL_NODE_TOTAL_MIB=131072
+export CURL_TEMPLATE_MIB=16384
+export CURL_NODE_CPUS=32
+export CURL_TEMPLATE_CPUS=8
+export CURL_NODE_ALLOC_MIB=0
+export CURL_NODE_ALLOC_CPUS=0
+export CPU_OVERCOMMIT_RATIO=4
+export CAPACITY_POLL=1
+export CAPACITY_TIMEOUT=5
+export FLEET_SHARE_PER_REPO=1
+export REPO_SLUG="owner/repo"
+# provision.sh derives REPO_TAG="repo-owner-repo" from REPO_SLUG="owner/repo"
+
+# (a) cap hit: one repo runner already running -> provision waits, then times out
+rm -f "$CURL_ARGV_FILE"
+_err23="$SCRATCH/err23a"
+CURL_REPO_RUNNER_COUNT=1 CURL_NODE_REPO_TAG="repo-owner-repo" bash "$PROVISION" \
+    valid-label test-token https://github.com/owner/repo >/dev/null 2>"$_err23" && _rc23a=0 || _rc23a=$?
+if [ "$_rc23a" -ne 0 ]; then
+    ok "test-23a: per-repo cap blocks provision when at limit"
+else
+    ko "test-23a: provision proceeded despite per-repo cap being hit"
+fi
+if ! grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23a: nothing cloned while per-repo cap is at limit"
+else
+    ko "test-23a: clone happened despite per-repo cap"
+fi
+
+# (b) cap not hit: zero runners for this repo -> provision proceeds
+rm -f "$CURL_ARGV_FILE"
+run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23b: provision proceeds when per-repo count is below cap"
+else
+    ko "test-23b: provision did not proceed with per-repo count below cap"
+fi
+
+# (c) FLEET_SHARE_PER_REPO=0 disables the cap
+rm -f "$CURL_ARGV_FILE"
+CURL_REPO_RUNNER_COUNT=5 CURL_NODE_REPO_TAG="repo-owner-repo" FLEET_SHARE_PER_REPO=0 \
+    run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23c: FLEET_SHARE_PER_REPO=0 disables the cap"
+else
+    ko "test-23c: per-repo cap not disabled by FLEET_SHARE_PER_REPO=0"
+fi
+
+# (d) at exact threshold: two running, cap=2 -> blocked; cap=3 -> proceeds
+rm -f "$CURL_ARGV_FILE"
+_err23d="$SCRATCH/err23d"
+CURL_REPO_RUNNER_COUNT=2 CURL_NODE_REPO_TAG="repo-owner-repo" FLEET_SHARE_PER_REPO=2 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err23d" && _rc23d=0 || _rc23d=$?
+if [ "$_rc23d" -ne 0 ]; then
+    ok "test-23d: cap at exact threshold blocks provision (count=cap -> blocked)"
+else
+    ko "test-23d: provision proceeded at exact threshold (off-by-one in cap check)"
+fi
+
+rm -f "$CURL_ARGV_FILE"
+CURL_REPO_RUNNER_COUNT=2 CURL_NODE_REPO_TAG="repo-owner-repo" FLEET_SHARE_PER_REPO=3 \
+    run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23d: count below cap (2 < 3) allows clone"
+else
+    ko "test-23d: clone blocked despite count being below cap"
+fi
+
+# (e) provision waits and proceeds once a repo runner goes away
+rm -f "$CURL_ARGV_FILE" "${TMPDIR:-/tmp}/repo-tight-count"
+CURL_REPO_RUNNER_COUNT=1 CURL_NODE_REPO_TAG="repo-owner-repo" FLEET_SHARE_PER_REPO=1 \
+    CURL_REPO_TIGHT_POLLS=2 CAPACITY_TIMEOUT=15 \
+    run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+_rc23e=$?
+rm -f "${TMPDIR:-/tmp}/repo-tight-count"
+if [ "$_rc23e" -eq 0 ]; then
+    ok "test-23e: provision waits and proceeds when per-repo cap clears"
+else
+    ko "test-23e: provision did not proceed after per-repo cap cleared (rc=$_rc23e)"
+fi
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23e: a VM was cloned after the per-repo wait resolved"
+else
+    ko "test-23e: clone never happened after per-repo wait"
+fi
+
+# (f) no REPO_SLUG -> per-repo cap is skipped regardless of FLEET_SHARE_PER_REPO
+unset REPO_SLUG
+rm -f "$CURL_ARGV_FILE"
+CURL_REPO_RUNNER_COUNT=5 CURL_NODE_REPO_TAG="repo-owner-repo" FLEET_SHARE_PER_REPO=1 \
+    run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23f: without REPO_SLUG the per-repo cap is not enforced"
+else
+    ko "test-23f: per-repo cap enforced despite REPO_SLUG being unset"
+fi
+
+# (g) clone POST carries the repo tag when REPO_SLUG is set
+export REPO_SLUG="owner/repo"
+rm -f "$CURL_ARGV_FILE"
+run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qF 'tags=repo-owner-repo' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23g: clone POST carries the repo tag derived from REPO_SLUG"
+else
+    ko "test-23g: repo tag missing from clone POST argv"
+fi
+# Positive control: without REPO_SLUG no tags arg is sent
+unset REPO_SLUG
+rm -f "$CURL_ARGV_FILE"
+run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if ! grep -qF 'tags=' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-23g: no tags arg in clone POST when REPO_SLUG is unset"
+else
+    ko "test-23g: tags= in clone POST despite REPO_SLUG being unset"
+fi
+
+unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_CPUS CURL_TEMPLATE_CPUS
+unset CURL_NODE_ALLOC_MIB CURL_NODE_ALLOC_CPUS CPU_OVERCOMMIT_RATIO
+unset CAPACITY_POLL CAPACITY_TIMEOUT FLEET_SHARE_PER_REPO REPO_SLUG
 
 # ---------------------------------------------------------------------------
 # Summary

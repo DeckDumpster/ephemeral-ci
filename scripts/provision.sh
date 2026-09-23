@@ -59,6 +59,16 @@
 #                   Must be set by the caller; provision.sh never sets it from a
 #                   failed permission check. A missing privilege and a deliberate
 #                   decision to run uncapped must not produce the same behaviour.
+#   REPO_SLUG      -- "owner/repo" identifier (e.g. "ryangantt/ephemeral-ci").
+#                   When set, a sanitised tag is derived from it and stamped on
+#                   cloned VMs so the per-repo admission count can identify them.
+#                   Unset or empty -> per-repo cap is not enforced.
+#   FLEET_SHARE_PER_REPO -- maximum concurrent runner VMs from this repo.
+#                   Counts ALL gh-runner VMs tagged with this repo's derived tag
+#                   (any state, including stopped/cloning) before cloning. If at
+#                   or above this ceiling, waits. 0 disables the cap entirely.
+#                   Default 1: one install cannot take the whole fleet while
+#                   another install is waiting for a slot.
 #   CPU_OVERCOMMIT_RATIO -- vCPUs to allocate per physical CPU thread (default: 4).
 #                   CPU overcommit is legitimate where memory overcommit is not: a
 #                   guest that gets less CPU than it expects slows down; a guest that
@@ -340,7 +350,7 @@ pick_vmid() {
 # and size the slack for what it does not.
 #
 # EVERYTHING HERE PRINTS TO STDERR. stdout carries the vmid= output contract.
-CAPACITY_TIMEOUT="${CAPACITY_TIMEOUT:-1800}"
+CAPACITY_TIMEOUT="${CAPACITY_TIMEOUT:-3600}"
 CAPACITY_POLL="${CAPACITY_POLL:-15}"
 CAPACITY_SLACK_RUNNERS="${CAPACITY_SLACK_RUNNERS:-1}"
 CAPACITY_UNCAPPED="${CAPACITY_UNCAPPED:-0}"
@@ -355,6 +365,14 @@ NODE_MEM_RESERVE_MIB="${NODE_MEM_RESERVE_MIB:-8192}"
 CPU_OVERCOMMIT_RATIO="${CPU_OVERCOMMIT_RATIO:-4}"
 # vCPUs reserved for the hypervisor itself and any non-guest workloads.
 NODE_CPU_RESERVE_VCPUS="${NODE_CPU_RESERVE_VCPUS:-0}"
+# Per-repo admission cap. REPO_SLUG must be set to enable it; derive a
+# Proxmox tag by lowercasing and replacing non-alphanumeric chars with '-'.
+FLEET_SHARE_PER_REPO="${FLEET_SHARE_PER_REPO:-1}"
+REPO_TAG=""
+if [ -n "${REPO_SLUG:-}" ]; then
+    _slug_sanitized="$(printf '%s' "${REPO_SLUG}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+    REPO_TAG="repo-${_slug_sanitized#-}"
+fi
 
 # Prints "<total_mib> <total_cpus> <alloc_mib> <template_mib> <alloc_cpus> <template_cpus>"
 # for the node, or nothing if the token cannot see them.
@@ -379,23 +397,27 @@ print(d["memory"]["total"]//1048576, d["cpuinfo"]["cpus"])' 2>/dev/null)" || ret
     [ -n "$status_vals" ] || return 1
 
     qemu_body="$(pvapi GET "/nodes/${PVE_NODE}/qemu")" || return 1
-    rest="$(printf '%s' "$qemu_body" | TEMPLATE_VMID="$TEMPLATE_VMID" python3 -c \
+    rest="$(printf '%s' "$qemu_body" | TEMPLATE_VMID="$TEMPLATE_VMID" REPO_TAG="${REPO_TAG:-}" python3 -c \
         'import json,os,sys
 d=json.load(sys.stdin)["data"]
 tid=str(os.environ["TEMPLATE_VMID"])
+repo_tag=os.environ.get("REPO_TAG","")
 run_mem=sum(v.get("maxmem",0) for v in d if v.get("status")=="running")//1048576
 run_cpu=sum(int(v.get("cpus",0)) for v in d if v.get("status")=="running")
 tpl=[v for v in d if str(v.get("vmid"))==tid]
 tpl_mem=tpl[0].get("maxmem",0)//1048576 if tpl else 0
 tpl_cpu=int(tpl[0].get("cpus",0)) if tpl else 0
-print(run_mem, tpl_mem, run_cpu, tpl_cpu)' 2>/dev/null)" || return 1
+repo_count=0
+if repo_tag:
+ repo_count=sum(1 for v in d if (v.get("name","") or "").startswith("gh-runner-") and str(v.get("vmid",""))!=tid and repo_tag in [t.strip() for t in (v.get("tags","") or "").split(";")])
+print(run_mem, tpl_mem, run_cpu, tpl_cpu, repo_count)' 2>/dev/null)" || return 1
     [ -n "$rest" ] || return 1
     printf '%s %s' "$status_vals" "$rest"
 }
 
 wait_for_capacity() {
     local total_mib total_cpus alloc_mib want_mib alloc_cpus want_cpus \
-          free_mib need_mib free_cpus need_cpus \
+          free_mib need_mib free_cpus need_cpus repo_count _repo_at_cap \
           waited=0 resources
     while :; do
         if ! resources="$(node_resources)" || [ -z "$resources" ]; then
@@ -413,11 +435,11 @@ wait_for_capacity() {
             printf '::error::provision.sh: cannot read node resources (see pvapi error above for the failing call) -- refusing to clone without a capacity check. Grant the token Sys.Audit on /nodes/%s and VM.Audit on /vms, or set CAPACITY_UNCAPPED=1 for a deliberately uncapped deployment.\n' "$PVE_NODE" >&2
             return 1
         fi
-        # $resources is "total_mib total_cpus alloc_mib template_mib alloc_cpus template_cpus"
+        # $resources is "total_mib total_cpus alloc_mib template_mib alloc_cpus template_cpus repo_count"
         # shellcheck disable=SC2086
         set -- $resources
         total_mib="$1"; total_cpus="$2"; alloc_mib="$3"; want_mib="$4"
-        alloc_cpus="$5"; want_cpus="$6"
+        alloc_cpus="$5"; want_cpus="$6"; repo_count="${7:-0}"
         if [ "${want_mib:-0}" -le 0 ]; then
             printf '::warning::provision.sh: template %s reports no memory -- proceeding with NO capacity cap\n' "$TEMPLATE_VMID" >&2
             return 0
@@ -430,27 +452,37 @@ wait_for_capacity() {
         # starts. If the template reports 0 cpus the CPU check is skipped.
         need_cpus=$(( want_cpus * (1 + CAPACITY_SLACK_RUNNERS) ))
         free_cpus=$(( total_cpus * CPU_OVERCOMMIT_RATIO - alloc_cpus - NODE_CPU_RESERVE_VCPUS ))
+        _repo_at_cap=0
+        if [ "${FLEET_SHARE_PER_REPO:-0}" -gt 0 ] && [ -n "${REPO_TAG:-}" ] \
+           && [ "$repo_count" -ge "$FLEET_SHARE_PER_REPO" ]; then
+            _repo_at_cap=1
+        fi
         if [ "$free_mib" -ge "$need_mib" ] \
-           && { [ "${want_cpus:-0}" -le 0 ] || [ "$free_cpus" -ge "$need_cpus" ]; }; then
-            printf 'provision.sh: %s has %s MiB free of %s (reserve %s, VMs allocate %s); %s vCPUs free (budget %s x %s = %s, reserve %s, VMs allocate %s); this runner wants %s MiB / %s vCPUs\n' \
+           && { [ "${want_cpus:-0}" -le 0 ] || [ "$free_cpus" -ge "$need_cpus" ]; } \
+           && [ "$_repo_at_cap" -eq 0 ]; then
+            printf 'provision.sh: %s has %s MiB free of %s (reserve %s, VMs allocate %s); %s vCPUs free (budget %s x %s = %s, reserve %s, VMs allocate %s); this runner wants %s MiB / %s vCPUs; per-repo (%s): %s/%s\n' \
                 "$PVE_NODE" "$free_mib" "$total_mib" "$NODE_MEM_RESERVE_MIB" "$alloc_mib" \
                 "$free_cpus" "$total_cpus" "$CPU_OVERCOMMIT_RATIO" \
                 "$(( total_cpus * CPU_OVERCOMMIT_RATIO ))" \
                 "$NODE_CPU_RESERVE_VCPUS" "$alloc_cpus" \
-                "$want_mib" "$want_cpus" >&2
+                "$want_mib" "$want_cpus" \
+                "${REPO_TAG:-none}" "$repo_count" "${FLEET_SHARE_PER_REPO:-0}" >&2
             return 0
         fi
         if [ "$waited" -ge "$CAPACITY_TIMEOUT" ]; then
-            printf '::error::provision.sh: waited %ss for room on %s. Memory: %s MiB free of %s (reserve %s, VMs allocate %s, need %s). CPU: %s vCPUs free of %s (budget %s x %s, reserve %s, VMs allocate %s, need %s). Slack: %s concurrent clone(s).\n' \
+            printf '::error::provision.sh: waited %ss for room on %s. Memory: %s MiB free of %s (reserve %s, VMs allocate %s, need %s). CPU: %s vCPUs free of %s (budget %s x %s, reserve %s, VMs allocate %s, need %s). Slack: %s concurrent clone(s). Per-repo (%s): %s/%s.\n' \
                 "$waited" "$PVE_NODE" \
                 "$free_mib" "$total_mib" "$NODE_MEM_RESERVE_MIB" "$alloc_mib" "$need_mib" \
                 "$free_cpus" "$(( total_cpus * CPU_OVERCOMMIT_RATIO ))" \
                 "$total_cpus" "$CPU_OVERCOMMIT_RATIO" "$NODE_CPU_RESERVE_VCPUS" "$alloc_cpus" "$need_cpus" \
-                "$CAPACITY_SLACK_RUNNERS" >&2
+                "$CAPACITY_SLACK_RUNNERS" \
+                "${REPO_TAG:-none}" "$repo_count" "${FLEET_SHARE_PER_REPO:-0}" >&2
             return 1
         fi
-        printf 'provision.sh: %s: memory %s MiB free (need %s), cpu %s vCPUs free (need %s) -- waiting (%ss/%ss)\n' \
-            "$PVE_NODE" "$free_mib" "$need_mib" "$free_cpus" "$need_cpus" "$waited" "$CAPACITY_TIMEOUT" >&2
+        printf 'provision.sh: %s: memory %s MiB free (need %s), cpu %s vCPUs free (need %s), per-repo (%s): %s/%s -- waiting (%ss/%ss)\n' \
+            "$PVE_NODE" "$free_mib" "$need_mib" "$free_cpus" "$need_cpus" \
+            "${REPO_TAG:-none}" "$repo_count" "${FLEET_SHARE_PER_REPO:-0}" \
+            "$waited" "$CAPACITY_TIMEOUT" >&2
         sleep "$CAPACITY_POLL"
         waited=$(( waited + CAPACITY_POLL ))
     done
@@ -502,6 +534,12 @@ PROVISION_TIMESTAMP="$(date +%s)"
 # lacks -- unlike probing the id first, which a pool-scoped token cannot do
 # (see pick_vmid). On refusal, ask nextid again: if the id was taken by a
 # concurrent provision, nextid has moved past it.
+# Build optional per-repo tag arg. Tags are semicolon-separated in Proxmox;
+# we emit a single tag derived from REPO_SLUG. When REPO_TAG is empty the
+# clone POST omits the tags parameter entirely.
+_clone_tag_args=()
+[ -n "${REPO_TAG:-}" ] && _clone_tag_args=("--data-urlencode" "tags=${REPO_TAG}")
+
 clone_upid=""
 for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
     printf 'provision.sh: cloning template %s -> VMID %s (attempt %s/%s)\n' \
@@ -511,7 +549,8 @@ for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
         --data-urlencode "name=gh-runner-${VMID}" \
         --data-urlencode "description=runner=${LABEL} vmtoken=${VM_TOKEN} provision_time=${PROVISION_TIMESTAMP}" \
         --data-urlencode "full=0" \
-        --data-urlencode "pool=ephemeral-ci")"; then
+        --data-urlencode "pool=ephemeral-ci" \
+        "${_clone_tag_args[@]+"${_clone_tag_args[@]}"}")"; then
         clone_upid="$(printf '%s\n' "$clone_body" | python3 -c \
             'import json,sys; print(json.load(sys.stdin).get("data",""))')"
         [ -n "$clone_upid" ] && break
