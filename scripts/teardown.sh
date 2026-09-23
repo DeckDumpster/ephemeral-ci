@@ -42,7 +42,7 @@
 #      this workflow controls.
 #
 # Environment variables:
-#   TEMPLATE_VMID          — source VM template id (default: 101)
+#   TEMPLATE_VMID          — source VM template id; required, no default
 #   PVE_POOL               — pool every runner VM must belong to
 #                            (default: ephemeral-ci)
 #   CRED_FILE              — credential file to source
@@ -79,7 +79,6 @@ if [ -f "$CRED_FILE" ]; then
     . "$CRED_FILE"
 fi
 
-TEMPLATE_VMID="${TEMPLATE_VMID:-101}"
 PVE_POOL="${PVE_POOL:-ephemeral-ci}"
 CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
@@ -106,7 +105,7 @@ _require_env() {
         exit 1
     fi
 }
-for _v in PVE_NODE PVE_TOKEN_ID PVE_TOKEN_SECRET; do
+for _v in PVE_NODE PVE_TOKEN_ID PVE_TOKEN_SECRET TEMPLATE_VMID; do
     _require_env "$_v"
 done
 

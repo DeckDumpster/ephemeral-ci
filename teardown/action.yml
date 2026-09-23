@@ -47,6 +47,12 @@ inputs:
   pve-node:
     description: Proxmox node name.
     required: true
+  template-vmid:
+    description: >-
+      VMID of the runner template. teardown.sh refuses to destroy this id
+      (Guard 2), so a clone that lands on it is never torn down — it leaks.
+      Pass vars.TEMPLATE_VMID here, the same value provision receives.
+    required: true
   pve-ca-cert:
     description: >-
       Proxmox cluster CA certificate (PEM), used to verify the API TLS
@@ -121,6 +127,7 @@ runs:
         PVE_NODE: ${{ inputs.pve-node }}
         PVE_TOKEN_ID: ${{ inputs.pve-token-id }}
         PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
+        TEMPLATE_VMID: ${{ inputs.template-vmid }}
         VM_TOKEN: ${{ inputs.vm-token }}
         CRED_FILE: /dev/null
       run: bash "${{ github.action_path }}/../scripts/teardown.sh" "${{ inputs.vmid }}"

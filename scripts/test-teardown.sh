@@ -581,6 +581,60 @@ echo "--- Test 16: VM_TOKEN unset, VM has no token → rc=0, VM destroyed (degra
 ) && _pass "Test 16" || _fail "Test 16"
 
 # ============================================================
+# TEST 17: explicit TEMPLATE_VMID=107; VMID=107 → still refused (db-b2gh)
+#
+# Guard 2 must use the configured TEMPLATE_VMID, not a hard-coded default.
+# When the caller correctly wires template-vmid=107, tearing down the template
+# itself must still be refused.
+# ============================================================
+echo "--- Test 17: TEMPLATE_VMID=107, VMID=107 → rc≠0, API never called"
+(
+    _setup
+    VMID=107
+
+    rc=0
+    TEMPLATE_VMID=107 _run_teardown $VMID >/dev/null 2>&1 || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero when VMID == TEMPLATE_VMID=107" >&2; exit 1; }
+    _assert_eq "call count" "$(_call_count)" "0"
+) && _pass "Test 17" || _fail "Test 17"
+
+# ============================================================
+# TEST 18: explicit TEMPLATE_VMID=107; VMID=101 → NOT blocked, VM destroyed (db-b2gh)
+#
+# 101 was the old hard-coded default. With the correct template id configured
+# as 107, a clone that lands on VMID 101 must not be blocked by Guard 2 —
+# it should proceed through all guards and be destroyed normally.
+# ============================================================
+echo "--- Test 18: TEMPLATE_VMID=107, VMID=101 → rc=0, VM destroyed (old default no longer blocks)"
+(
+    _setup
+    VMID=101
+    # Call 1: GET /config → 200, VM exists with correct name and token
+    _resp 1 200 "$(_config_with_token 101)"
+    # Call 2: GET /pools/<pool> → 200, VMID is a member
+    _resp 2 200 "$(_pool_with $VMID)"
+    # Call 3: POST /agent/exec → 200, journal pid (journal capture)
+    _resp 3 200 '{"data":{"pid":9876}}'
+    # Call 4: GET /agent/exec-status → 200, exited
+    _resp 4 200 '{"data":{"exited":1,"out-data":"","exitcode":0}}'
+    # Call 5: POST /status/stop → 200, UPID
+    _resp 5 200 '{"data":"UPID:pve:00001234:abcdef01:67890abc:stopvm:101:root@pam:"}'
+    # Call 6: GET /tasks/.../status → stopped/OK
+    _resp 6 200 '{"data":{"status":"stopped","exitstatus":"OK"}}'
+    # Call 7: GET /status/current → stopped
+    _resp 7 200 '{"data":{"status":"stopped"}}'
+    # Call 8: DELETE → 200
+    _resp 8 200 '{"data":"UPID:pve:00001235:abcdef02:67890abd:qmdestroy:101:root@pam:"}'
+
+    rc=0
+    TEMPLATE_VMID=107 _run_teardown $VMID >/dev/null 2>&1 || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && _assert_log_has "PVAPI:DELETE:"
+) && _pass "Test 18" || _fail "Test 18"
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

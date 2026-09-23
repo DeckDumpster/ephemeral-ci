@@ -137,6 +137,37 @@ else
     _fail "teardown Destroy step VM_TOKEN value is '${VM_TOKEN_VALUE}', expected '\${{ inputs.vm-token }}'"
 fi
 
+# --- Check 5: teardown/action.yml declares template-vmid input (db-b2gh) ---
+# Without the input declaration GitHub supplies nothing; TEMPLATE_VMID is unset;
+# teardown.sh's _require_env exits non-zero before the first API call, and every
+# VM leaks until the reaper picks it up.
+
+if printf '%s\n' "$TEARDOWN_INPUTS" | grep -qx "template-vmid"; then
+    _pass "teardown/action.yml declares template-vmid input"
+else
+    _fail "teardown/action.yml does NOT declare template-vmid input"
+fi
+
+# --- Check 6: teardown Destroy step wires TEMPLATE_VMID from inputs.template-vmid ---
+
+TEMPLATE_VMID_VALUE=$(python3 - <<PY
+import sys, yaml
+with open("$REPO_DIR/teardown/action.yml") as f:
+    action = yaml.safe_load(f)
+for step in (action.get("runs") or {}).get("steps") or []:
+    if (step.get("name") or "") == "Destroy the runner VM":
+        env = step.get("env") or {}
+        print(env.get("TEMPLATE_VMID", ""))
+        break
+PY
+)
+
+if [ "$TEMPLATE_VMID_VALUE" = "\${{ inputs.template-vmid }}" ]; then
+    _pass "teardown Destroy step sets TEMPLATE_VMID from inputs.template-vmid"
+else
+    _fail "teardown Destroy step TEMPLATE_VMID value is '${TEMPLATE_VMID_VALUE}', expected '\${{ inputs.template-vmid }}'"
+fi
+
 # --- Summary ---
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
