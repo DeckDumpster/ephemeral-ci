@@ -928,7 +928,7 @@ _rc20=$?
 if [ "$_rc20" -eq 0 ]; then
     ok "test-20: provision exits 0 (sanity)"
 else
-    ko "test-20: provision exited non-zero ($rc20) — cannot check vmtoken"
+    ko "test-20: provision exited non-zero ($_rc20) — cannot check vmtoken"
 fi
 
 if printf '%s\n' "$OUT20" | grep -qE '^vmtoken=[a-f0-9]{32}$'; then
