@@ -1259,10 +1259,10 @@ else
     ko "test-24a: error message does not name the template (got: $(cat "$_err24"))"
 fi
 
-if ! grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-24a: VM was not cloned while lock was blocked"
+if ! grep -q '/status/start' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-24a: VM was not started while lock was blocked"
 else
-    ko "test-24a: clone happened despite lock timeout"
+    ko "test-24a: start was called despite lock timeout (lock must guard start, not clone)"
 fi
 
 # (b) happy path -- lock is acquired, provision completes normally
