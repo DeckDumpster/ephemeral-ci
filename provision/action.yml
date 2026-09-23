@@ -95,8 +95,19 @@ inputs:
       How long to wait for room before giving up. The wait is deliberately long:
       a run that waits is a slow run, and a run that fails for capacity is
       indistinguishable from a broken test to whoever opened the pull request.
+      Raised from 1800 so a run queued behind a busy fleet is not failed before
+      the fleet can clear (a deckdumpster suite can run longer than 30 minutes).
     required: false
-    default: '1800'
+    default: '3600'
+  fleet-share-per-repo:
+    description: >-
+      Maximum concurrent runner VMs allowed from this repository. Counts ALL
+      gh-runner VMs tagged with this repo's slug (any state, including stopped
+      VMs still being initialised) before cloning; if at or above this ceiling,
+      waits. 0 disables. Default 1: a single repo cannot take the whole fleet
+      while another install is waiting for a slot.
+    required: false
+    default: '1'
 
 outputs:
   vmid:
@@ -171,6 +182,8 @@ runs:
         NODE_MEM_RESERVE_MIB: ${{ inputs.node-memory-reserve-mib }}
         CAPACITY_SLACK_RUNNERS: ${{ inputs.capacity-slack-runners }}
         CAPACITY_TIMEOUT: ${{ inputs.capacity-timeout-seconds }}
+        FLEET_SHARE_PER_REPO: ${{ inputs.fleet-share-per-repo }}
+        REPO_SLUG: ${{ github.repository }}
         CRED_FILE: /dev/null
       run: |
         set +e
