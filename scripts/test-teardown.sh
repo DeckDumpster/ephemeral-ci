@@ -635,6 +635,63 @@ echo "--- Test 18: TEMPLATE_VMID=107, VMID=101 → rc=0, VM destroyed (old defau
 ) && _pass "Test 18" || _fail "Test 18"
 
 # ============================================================
+# TEST 19: config read returns HTTP 500 with VM_TOKEN set → names VMID and
+#          "created by this run" (db-spsp)
+#
+# When teardown.sh gets HTTP 500 on the config read it must say WHICH VMID
+# caused the 500, and whether the calling job created it. With VM_TOKEN set
+# the job provisioned this VM, so the message says "created by this run".
+# ============================================================
+echo "--- Test 19: GET config returns HTTP 500, VM_TOKEN set → names VMID + created-by-this-run"
+(
+    _setup
+    VMID=500
+    # Call 1: GET /config → 500
+    _resp 1 500 '{"errors":{"vmid":"internal server error"}}'
+
+    rc=0
+    output=$(VM_TOKEN="$TEST_VM_TOKEN" _run_teardown $VMID 2>&1) || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero exit on HTTP 500" >&2; exit 1; }
+    echo "$output" | grep -q "500" \
+        || { echo "  FAIL: output does not mention HTTP 500" >&2; exit 1; }
+    echo "$output" | grep -q "$VMID" \
+        || { echo "  FAIL: output does not name VMID $VMID" >&2; exit 1; }
+    echo "$output" | grep -q "created by this run" \
+        || { echo "  FAIL: output does not say 'created by this run'" >&2; exit 1; }
+    _assert_log_not_has "PVAPI:DELETE:"
+) && _pass "Test 19" || _fail "Test 19"
+
+# ============================================================
+# TEST 20: config read returns HTTP 500 with VM_TOKEN unset → names VMID and
+#          "not created by this run" (db-spsp)
+#
+# When VM_TOKEN is unset the calling job did not provision this VM (or is
+# from a workflow that predates token wiring). The message says
+# "not created by this run" so a refused teardown can be told apart from a
+# leak from a different job.
+# ============================================================
+echo "--- Test 20: GET config returns HTTP 500, VM_TOKEN unset → names VMID + not-created-by-this-run"
+(
+    _setup
+    VMID=500
+    # Call 1: GET /config → 500
+    _resp 1 500 '{"errors":{"vmid":"internal server error"}}'
+
+    rc=0
+    output=$(VM_TOKEN="" _run_teardown $VMID 2>&1) || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero exit on HTTP 500" >&2; exit 1; }
+    echo "$output" | grep -q "500" \
+        || { echo "  FAIL: output does not mention HTTP 500" >&2; exit 1; }
+    echo "$output" | grep -q "$VMID" \
+        || { echo "  FAIL: output does not name VMID $VMID" >&2; exit 1; }
+    echo "$output" | grep -q "not created by this run" \
+        || { echo "  FAIL: output does not say 'not created by this run'" >&2; exit 1; }
+    _assert_log_not_has "PVAPI:DELETE:"
+) && _pass "Test 20" || _fail "Test 20"
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
