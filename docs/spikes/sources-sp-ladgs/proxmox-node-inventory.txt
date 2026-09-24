@@ -1,0 +1,28 @@
+# Proxmox node inventory — read for sp-ladgs
+# source:    Proxmox VE API on node "hypervisor" (GET /nodes/<node>/status, GET /nodes/<node>/qemu)
+# retrieved: 2026-09-23T23:12:07Z
+# note:      read with the concierge API token; TLS authenticated by leaf SPKI pin
+#            sha256//p6DC+kWPfT/EkEATTaC/TpljMz7wGLpV4dpcme9fkNU= (the cluster CA is not
+#            present on the aeon host, so the chain could not be built).
+# NOTE:      vmid 9016 in the listing below is the measurement VM this spike created.
+
+## node status
+logical CPUs : 48
+sockets      : 2
+cores        : 48
+model        : Intel(R) Xeon(R) Platinum 8160 CPU @ 2.10GHz
+memory total : 128543 MiB
+memory used  : 80268 MiB
+cpu util     : 5.7%
+loadavg      : ['28.00', '23.08', '17.49']
+
+## qemu guests
+  vmid    status  cpus   maxmemMiB  name                             tags
+   100   running    24       32768  Agent-Swarm                      
+   101   running    16        6144  gh-runner-101                    repo-deckdumpster-spira
+   102   running     8        8192  Prod-Services                    
+   103   running    16        6144  gh-runner-103                    repo-deckdumpster-spira
+   104   running    16        6144  gh-runner-104                    repo-deckdumpster-deckdumpster
+   105   running    16       32768  Agent-Swarm-Test                 
+   107   stopped    16        6144  ci-runner-template-resealed      
+  9016   running     8       16384  spike-sp-ladgs-cpu               spike-sp-ladgs

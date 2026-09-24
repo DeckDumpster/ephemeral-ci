@@ -1,0 +1,18 @@
+# EC2 C7i / C7i-flex — baseline CPU performance
+# source:    https://aws.amazon.com/ec2/instance-types/c7i/
+# title:     Amazon EC2 C7i Instances (AWS product page)
+# retrieved: 2026-09-23
+# why kept:  c7i-flex.4xlarge is 5% cheaper on-demand than c7i.4xlarge at the same
+#            16 vCPU / 32 GiB shape. This page is the evidence that it is the wrong
+#            instance for a gate that pins every vCPU at 100% for ~19 minutes.
+#            Extracted to text from the rendered HTML; the full page is 456,664 bytes.
+# ------------------------------------------------------------------------
+
+## context around: don't fully utilize all compute resources
+g comparable Intel processors in the cloud – up to 15% better performance than Intel processors utilized by other cloud providers. C7i-flex instances provide the easiest way for you to get price performance benefits for a majority of compute-intensive workloads. They deliver up to 19% better price performance compared to C6i instances. C7i-flex instances offer the most common sizes, from large to 16xlarge, with up to 64 vCPUs, 128 GiB memory, and are a great first choice for applications that don't fully utilize all compute resources. C7i-flex instances are designed to seamlessly run the most common compute-intensive workloads, including web and application servers, databases, caches, Apache Kafka, and Elasticsearch. C7i instances offer price performance benefits for workloads that need larger instance sizes (up to 192 vCPUs and 384 GiB memory) or continuous high CPU usage. C7i instances are ideal for workloads including batch processing, distributed analytics, high performance com
+
+## context around: baseline level of performance
+rds offload and accelerate I/O for functions, increasing overall system performance. C7i-flex Amazon EC2 C7i-flex instances, powered by 4th Generation Intel Xeon Scalable processors, deliver up to 19% better price performance compared to C6i instances. C7i-flex instances are a great first choice for applications that don't fully utilize all compute resources. C7i-flex instances efficiently use compute resources to deliver a baseline level of performance with the ability to scale up to the full compute performance a majority of the time. Instance Size vCPU Memory (GiB) Baseline Performance /vCPU Instance Storage (GB) Network Bandwidth (Gbps) EBS Bandwidth (Gbps) c7i-flex.large 2 4 40% EBS-Only Up to 12.5 Up to 10 c7i-flex.xlarge
+
+## the C7i-flex specification table (verbatim run of text)
+Baseline Performance /vCPU Instance Storage (GB) Network Bandwidth (Gbps) EBS Bandwidth (Gbps) c7i-flex.large 2 4 40% EBS-Only Up to 12.5 Up to 10 c7i-flex.xlarge 4 8 40% EBS-Only Up to 12.5 Up to 10 c7i-flex.2xlarge 8 16 40% EBS-Only Up to 12.5 Up to 10 c7i-flex.4xlarge 16 32 40% EBS-Only Up to 12.5 Up to 10 c7i-flex.8xlarge 32 64 40% EBS-Only Up to 12.5 Up to 10 c7i-flex.12xlarge 48 96 40% EBS-Only Up to 18.75 Up to 15 c7i-flex.16xlarge 64 128 40% EBS-Only Up to 25

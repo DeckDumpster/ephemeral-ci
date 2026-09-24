@@ -1,0 +1,891 @@
+2026-09-24T01:37:41Z spira: batch: --suites: selected 461 explicit suite(s)
+2026-09-24T01:37:49Z spira: batch: starting container spira-batch-deb7acb23a8f (branch main)
+testenv: user@1001.service active; systemctl --user ready
+2026-09-24T01:37:55Z spira: batch: configure inside spira-batch-deb7acb23a8f
+configure: seeded repo-map from repo-map.example â edit /home/spirauser/.config/spira/repo-map
+configure: wrote /home/spirauser/.config/spira/spira.conf
+configure: next steps:
+  1. Edit /home/spirauser/.config/spira/spira.conf (at minimum: update SPIRA_PROD)
+  2. Run: /workspace/spira/doctor.sh
+2026-09-24T01:37:56Z spira: batch: suspending Rust-backed units inside spira-batch-deb7acb23a8f (image rustc too old for lockfile v4)
+ctrl: suspended spira-loom (owner: sp-fud1)
+ctrl: suspended spira-cockpit (owner: sp-fud1)
+2026-09-24T01:37:57Z spira: batch: install instance deb7acb23a8f inside spira-batch-deb7acb23a8f
+note: SPIRA_DOLT_DATA is empty â not installing dolt-beads.service.
+      Start your Dolt server yourself, or set it in /home/spirauser/.config/spira/spira.conf.
+note: loom binary not built at /workspace/loom/target/release/loom â not installing spira-loom.service.
+      Build it: cd $SPIRA_REPO/loom && cargo build --release, then re-run install.sh.
+note: broker binary not built at /workspace/broker/target/release/broker â not installing spira-broker.service.
+      Build it: cd $SPIRA_REPO/broker && cargo build --release, then re-run install.sh.
+install: placed /tmp/spira-batch-deb7acb23a8f/testdb/dolt-server.yaml
+installed spira-sentinel-deb7acb23a8f.service
+installed spira-sentinel-deb7acb23a8f.timer
+installed spira-ops-deb7acb23a8f.service
+installed spira-ops-deb7acb23a8f.timer
+installed spira-auron-deb7acb23a8f.service
+installed spira-auron-deb7acb23a8f.timer
+installed spira-watchtower-deb7acb23a8f.service
+installed spira-watchtower-deb7acb23a8f.timer
+installed spira-skew-deb7acb23a8f.service
+installed spira-skew-deb7acb23a8f.timer
+installed spira-archivist-deb7acb23a8f.service
+installed spira-archivist-deb7acb23a8f.timer
+installed spira-czar-pass-deb7acb23a8f.service
+installed spira-czar-pass-deb7acb23a8f.timer
+installed spira-cockpit-deb7acb23a8f.service
+installed spira-watch-notify-deb7acb23a8f.service
+installed spira-watch-notify-deb7acb23a8f.timer
+installed spira-watch-refresh-deb7acb23a8f.service
+installed spira-watch-refresh-deb7acb23a8f.timer
+installed cockpit-ensure.service
+installed cockpit-ensure.timer
+installed concierge.service
+installed concierge.timer
+installed beads-push.service
+installed beads-push.timer
+installed spira-archive-deb7acb23a8f.service
+installed spira-archive-deb7acb23a8f.timer
+installed spira-groom-deb7acb23a8f.service
+installed spira-groom-deb7acb23a8f.timer
+installed spira-maechen-deb7acb23a8f.service
+installed spira-maechen-deb7acb23a8f.timer
+installed spira-moot-sweep-deb7acb23a8f.service
+installed spira-moot-sweep-deb7acb23a8f.timer
+installed spira-verify-asks-deb7acb23a8f.service
+installed spira-verify-asks-deb7acb23a8f.timer
+installed spira-gate-check-deb7acb23a8f.service
+installed spira-gate-check-deb7acb23a8f.timer
+installed spira-pr-notify-deb7acb23a8f.service
+installed spira-pr-notify-deb7acb23a8f.timer
+installed spira-mail-tidy-deb7acb23a8f.service
+installed spira-mail-tidy-deb7acb23a8f.timer
+installed spira-gh-intake-deb7acb23a8f.service
+installed spira-gh-intake-deb7acb23a8f.timer
+installed spira-verdict-deb7acb23a8f.service
+installed spira-verdict-deb7acb23a8f.timer
+installed spira-suites-deb7acb23a8f.service
+installed spira-suites-deb7acb23a8f.timer
+installed spira-mail-deliver-deb7acb23a8f.service
+installed dolt-beads-test.service
+install: 49 unit file(s) changed, 0 unchanged
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/cockpit-ensure.timer â /home/spirauser/.config/systemd/user/cockpit-ensure.timer.
+enabled   cockpit-ensure.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/concierge.timer â /home/spirauser/.config/systemd/user/concierge.timer.
+enabled   concierge.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-watch-refresh-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-watch-refresh-deb7acb23a8f.timer.
+enabled   spira-watch-refresh-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/beads-push.timer â /home/spirauser/.config/systemd/user/beads-push.timer.
+enabled   beads-push.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-sentinel-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-sentinel-deb7acb23a8f.timer.
+enabled   spira-sentinel-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-ops-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-ops-deb7acb23a8f.timer.
+enabled   spira-ops-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-auron-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-auron-deb7acb23a8f.timer.
+enabled   spira-auron-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-watchtower-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-watchtower-deb7acb23a8f.timer.
+enabled   spira-watchtower-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-skew-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-skew-deb7acb23a8f.timer.
+enabled   spira-skew-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-czar-pass-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-czar-pass-deb7acb23a8f.timer.
+enabled   spira-czar-pass-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-archive-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-archive-deb7acb23a8f.timer.
+enabled   spira-archive-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-archivist-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-archivist-deb7acb23a8f.timer.
+enabled   spira-archivist-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-watch-notify-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-watch-notify-deb7acb23a8f.timer.
+enabled   spira-watch-notify-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-groom-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-groom-deb7acb23a8f.timer.
+enabled   spira-groom-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-maechen-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-maechen-deb7acb23a8f.timer.
+enabled   spira-maechen-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-moot-sweep-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-moot-sweep-deb7acb23a8f.timer.
+enabled   spira-moot-sweep-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-verify-asks-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-verify-asks-deb7acb23a8f.timer.
+enabled   spira-verify-asks-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-gate-check-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-gate-check-deb7acb23a8f.timer.
+enabled   spira-gate-check-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-pr-notify-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-pr-notify-deb7acb23a8f.timer.
+enabled   spira-pr-notify-deb7acb23a8f.timer
+install: spira-cockpit-deb7acb23a8f.service is suspended (ctrl: spira-cockpit) â skipping
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-mail-tidy-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-mail-tidy-deb7acb23a8f.timer.
+enabled   spira-mail-tidy-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-gh-intake-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-gh-intake-deb7acb23a8f.timer.
+enabled   spira-gh-intake-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-verdict-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-verdict-deb7acb23a8f.timer.
+enabled   spira-verdict-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/timers.target.wants/spira-suites-deb7acb23a8f.timer â /home/spirauser/.config/systemd/user/spira-suites-deb7acb23a8f.timer.
+enabled   spira-suites-deb7acb23a8f.timer
+Created symlink /home/spirauser/.config/systemd/user/default.target.wants/spira-mail-deliver-deb7acb23a8f.service â /home/spirauser/.config/systemd/user/spira-mail-deliver-deb7acb23a8f.service.
+enabled   spira-mail-deliver-deb7acb23a8f.service
+install SessionStart
+install PostCompact
+install: linked cockpit-remote: /home/spirauser/.local/bin/cockpit-remote -> /workspace/cockpit/remote/cockpit-remote
+disabled  spira-watch-notify-deb7acb23a8f.service (no row in the manifest)
+disabled  spira-watch-refresh-deb7acb23a8f.service (no row in the manifest)
+Thu 2026-09-24 01:38:54 UTC      47s -         - concierge.timer                        concierge.service
+Thu 2026-09-24 01:38:54 UTC      47s -         - spira-czar-pass-deb7acb23a8f.timer     spira-czar-pass-deb7acb23a8f.service
+Thu 2026-09-24 01:38:54 UTC      47s -         - spira-verdict-deb7acb23a8f.timer       spira-verdict-deb7acb23a8f.service
+Thu 2026-09-24 01:39:24 UTC 1min 17s -         - spira-gate-check-deb7acb23a8f.timer    spira-gate-check-deb7acb23a8f.service
+Thu 2026-09-24 01:39:24 UTC 1min 17s -         - spira-watch-refresh-deb7acb23a8f.timer spira-watch-refresh-deb7acb23a8f.service
+Thu 2026-09-24 01:39:54 UTC 1min 47s -         - cockpit-ensure.timer                   cockpit-ensure.service
+Thu 2026-09-24 01:40:54 UTC 2min 47s -         - spira-mail-tidy-deb7acb23a8f.timer     spira-mail-tidy-deb7acb23a8f.service
+Thu 2026-09-24 01:40:54 UTC 2min 47s -         - spira-sentinel-deb7acb23a8f.timer      spira-sentinel-deb7acb23a8f.service
+Thu 2026-09-24 01:40:54 UTC 2min 47s -         - spira-watchtower-deb7acb23a8f.timer    spira-watchtower-deb7acb23a8f.service
+Thu 2026-09-24 01:42:54 UTC 4min 47s -         - spira-archive-deb7acb23a8f.timer       spira-archive-deb7acb23a8f.service
+Thu 2026-09-24 01:42:54 UTC 4min 47s -         - spira-archivist-deb7acb23a8f.timer     spira-archivist-deb7acb23a8f.service
+Thu 2026-09-24 01:42:54 UTC 4min 47s -         - spira-moot-sweep-deb7acb23a8f.timer    spira-moot-sweep-deb7acb23a8f.service
+Thu 2026-09-24 01:42:54 UTC 4min 47s -         - spira-ops-deb7acb23a8f.timer           spira-ops-deb7acb23a8f.service
+Thu 2026-09-24 01:42:54 UTC 4min 47s -         - spira-pr-notify-deb7acb23a8f.timer     spira-pr-notify-deb7acb23a8f.service
+Thu 2026-09-24 01:42:54 UTC 4min 47s -         - spira-watch-notify-deb7acb23a8f.timer  spira-watch-notify-deb7acb23a8f.service
+Thu 2026-09-24 01:44:54 UTC     6min -         - spira-auron-deb7acb23a8f.timer         spira-auron-deb7acb23a8f.service
+Thu 2026-09-24 01:44:54 UTC     6min -         - spira-verify-asks-deb7acb23a8f.timer   spira-verify-asks-deb7acb23a8f.service
+Thu 2026-09-24 01:47:54 UTC     9min -         - spira-skew-deb7acb23a8f.timer          spira-skew-deb7acb23a8f.service
+Thu 2026-09-24 01:47:54 UTC     9min -         - spira-suites-deb7acb23a8f.timer        spira-suites-deb7acb23a8f.service
+Thu 2026-09-24 01:52:54 UTC    14min -         - spira-gh-intake-deb7acb23a8f.timer     spira-gh-intake-deb7acb23a8f.service
+Thu 2026-09-24 01:52:54 UTC    14min -         - spira-groom-deb7acb23a8f.timer         spira-groom-deb7acb23a8f.service
+Thu 2026-09-24 01:52:54 UTC    14min -         - spira-maechen-deb7acb23a8f.timer       spira-maechen-deb7acb23a8f.service
+Thu 2026-09-24 03:53:27 UTC 2h 15min -         - beads-push.timer                       beads-push.service
+spira-cockpit-deb7acb23a8f.service   inactive
+spira-loom-deb7acb23a8f.service      inactive
+2026-09-24T01:38:13Z spira: batch: requirement not met in container: spira-nonexistent-xyz
+  test-requires.sh                 SKIP-REQ requires:spira-nonexistent-xyz
+2026-09-24T01:38:16Z spira: batch: building shared testdb baseline in spira-batch-deb7acb23a8f
+2026-09-24T01:38:24Z spira: batch: shared testdb baseline ready (mode: embedded, name: sptest_batch_baseline_1790213900_3044)
+2026-09-24T01:38:25Z spira: batch: bd shim install failed â bd timing will be absent
+2026-09-24T01:38:25Z spira: batch: running 460 suite(s) in spira-batch-deb7acb23a8f (mode: parallel, maxpar: 8 [cpu-bound: cpu=8 mem=14879MiB avail 1024MiB reserve 192MiB/suite])
+  test-acceptance-ready.sh         ok      0s
+  test-acceptance-ci.sh            ok      1s
+  test-activate.sh                 ok      2s
+  test-aeon-dirty-commit.sh        SKIPPED
+  test-aeon-heartbeat.sh           SKIPPED
+  test-aeon-fence-bd-create.sh     ok      3s
+  test-aeon-launch-grammar.sh      SKIPPED
+  test-aeon-lease.sh               ok      2s
+  test-aeon-fence.sh               ok      9s
+  test-acceptance-run.sh           ok      14s
+  test-aeon-decision-blocked.sh    ok      16s
+  test-aeon-operator-wait.sh       ok      16s
+  test-aeon-gate-close-silent.sh   ok      21s
+  test-aeon-exit.sh                ok      24s
+  test-aeon-presession-death.sh    ok      22s
+  test-aeon-wiki-concurrent.sh     ok      4s
+  test-aeon-sweep.sh               ok      15s
+  test-aeon-worktree-guard.sh      ok      9s
+  test-aeon-prompt-layers.sh       ok      30s
+  test-aeon-ledger.sh              ok      49s
+  test-aeon-prod-dirty.sh          ok      44s
+  test-aeon-yield-headless.sh      ok      19s
+  test-answers-silent-seed.sh      ok      4s
+  test-aeon-eviction-race.sh       ok      61s
+  test-aeon-world-stop.sh          ok      26s
+  test-archivist-cited-bead.sh     ok      8s
+  test-aeon-resume.sh              ok      49s
+  test-aeon-wiki-dirty.sh          ok      38s
+  test-archivist.sh                ok      11s
+  test-answers-premise-rejected.sh ok      27s
+  test-aeon-verdict.sh             ok      81s
+2026-09-24T01:40:12Z spira: batch: draining for exclusive suite test-artifact-install.sh (cargo build peaks at several GB; runs alone to prevent container OOM)
+  test-artifact-install.sh         ok      143s
+  test-batch-certified-landed.sh   ok      2s
+  test-batch-certified-orphan.sh   ok      3s
+  test-batch-conflicting-pr.sh     ok      2s
+  test-batch-maxpar.sh             ok      0s
+  test-batch-closed-red-live.sh    ok      5s
+  test-batch-idle-cut.sh           ok      6s
+  test-batch-cited-commit.sh       ok      16s
+  test-batch-stuck.sh              ok      14s
+  test-bd-delivers-label-guard.sh  ok      5s
+  test-batch-lock.sh               ok      25s
+  test-bd-lock-retry.sh            ok      9s
+  test-bd-remember-guard.sh        ok      3s
+  test-bd-resolve.sh               ok      3s
+  test-bd-schema-stamp.sh          ok      3s
+  test-bd-stdin.sh                 ok      2s
+  test-attempts.sh                 ok      36s
+  test-batch-repeat-refused-delivers.sh ok      35s
+  test-bead-lane-guard.sh          ok      2s
+  test-bead-file-kinds.sh          ok      4s
+  test-bd-update-inflight-guard.sh ok      12s
+  test-beads-sparklines.sh         ok      1s
+  test-beads-push-verify.sh        ok      5s
+  test-boundary.sh                 ok      2s
+  test-branch-guard.sh             ok      4s
+  test-bd-close-unacked-guard.sh   ok      46s
+  test-brief-mail-options.sh       ok      5s
+  test-bin-manifest.sh             ok      12s
+  test-budget-drift.sh             ok      3s
+  test-build-bd-release.sh         ok      1s
+  test-build-tarball.sh            ok      1s
+  test-beads-push-commit.sh        ok      20s
+  test-build.sh                    ok      1s
+  test-builder-qa-proposed.sh      ok      1s
+  test-cadence-tool.sh             SKIPPED
+  test-cadence.sh                  SKIPPED
+  test-capacity-probe.sh           ok      1s
+  test-bead-lint.sh                ok      24s
+  test-broker.sh                   ok      14s
+  test-census-window.sh            ok      6s
+  test-auron.sh                    ok      72s
+  test-cert-gate-reopen-note.sh    ok      3s
+  test-cert-lint.sh                ok      15s
+  test-canary.sh                   ok      32s
+  test-chamber-repo-labels.sh      ok      5s
+  test-batch.sh                    ok      93s
+  test-check2-reclaim.sh           ok      9s
+  test-census-reopen.sh            ok      42s
+  test-census-watermark.sh         ok      59s
+  test-check5-body-search.sh       ok      21s
+  test-check5-delivers-action.sh   ok      8s
+  test-attribution.sh              ok      140s
+  test-check5-content-landed.sh    ok      38s
+  test-check5-delivers-check.sh    ok      22s
+  test-certify.sh                  ok      82s
+  test-check5-drop.sh              ok      17s
+  test-check5-delivers-falls-through.sh ok      27s
+  test-census-events.sh            ok      99s
+  test-check5-hold-no-reopen.sh    ok      24s
+  test-check5-landstate.sh         ok      12s
+  test-check5-landed-no-delivers.sh ok      13s
+  test-check5-landed-assert.sh     ok      32s
+  test-check8-progressed.sh        ok      12s
+  test-check5-sweep-delivers.sh    ok      20s
+  test-check5-unmapped-repo.sh     ok      16s
+  test-check4-batch.sh             ok      89s
+  test-cockpit-collect-probes.sh   ok      2s
+  test-citations.sh                ok      6s
+  test-cockpit-collector-quota.sh  ok      4s
+  test-cockpit-collector-watchdog.sh ok      5s
+  test-census.sh                   ok      123s
+  test-cockpit-dup-refs.sh         ok      7s
+  test-cockpit-conf-change.sh      ok      9s
+  test-cockpit-fuse.sh             ok      6s
+  test-cockpit-layout-ensure-focus.sh ok      1s
+  test-cockpit-layout-conf.sh      ok      4s
+  test-cockpit-layout-identity.sh  ok      2s
+  test-cockpit-layout-mail.sh      ok      7s
+  test-cockpit-gate.sh             ok      13s
+  test-cockpit-landed.sh           ok      14s
+  test-ci-park.sh                  ok      31s
+  test-cockpit-mouse.sh            ok      1s
+  test-check4-events.sh            ok      106s
+  test-cockpit-reachable.sh        ok      3s
+  test-cockpit-layout.sh           ok      13s
+  test-check5-nopayload.sh         ok      53s
+  test-cockpit-probe-fault.sh      ok      7s
+  test-cockpit-ready-seeded.sh     ok      7s
+  test-cockpit-remote.sh           ok      3s
+  test-cockpit-ready.sh            ok      9s
+  test-cockpit-queue.sh            ok      11s
+  test-cockpit-queue-section.sh    ok      12s
+  test-cockpit-runtime-path.sh     ok      3s
+  test-cockpit-repo-labels.sh      ok      9s
+  test-cockpit-self.sh             ok      8s
+  test-cockpit-snap-absent.sh      ok      11s
+  test-cockpit-rebuild.sh          ok      20s
+  test-cockpit-sop.sh              ok      14s
+  test-cockpit-sphere.sh           ok      9s
+  test-cockpit-sweep.sh            ok      10s
+  test-cockpit-unit-notify.sh      ok      1s
+  test-cockpit-unclaimable.sh      ok      4s
+  test-cockpit-tmp.sh              ok      6s
+  test-conf.sh                     ok      2s
+  test-cockpit-watcher-owner.sh    ok      5s
+  test-configure.sh                ok      8s
+  test-cockpit.sh                  ok      9s
+  test-concierge.sh                ok      9s
+  test-cockpit-unadopted-queue.sh  ok      13s
+  test-containment.sh              ok      6s
+  test-cockpit-tiered-collector.sh ok      18s
+  test-covers-entries.sh           ok      3s
+  test-czar-partition.sh           ok      3s
+  test-ctx-pointer.sh              ok      3s
+  test-cockpit-unlanded.sh         ok      18s
+  test-content-landed-empty-branch.sh ok      7s
+  test-cross-repo.sh               ok      11s
+  test-czar-pass.sh                ok      15s
+  test-delivers-parity.sh          ok      13s
+  test-czar-shadow.sh              ok      16s
+  test-content-landed-no-reopen.sh ok      29s
+  test-ctrl.sh                     ok      32s
+  test-cockpit-unsent.sh           ok      47s
+  test-destroy-branch.sh           ok      1s
+  test-destructive-bead.sh         ok      2s
+  test-doctor-embedded.sh          ok      4s
+  test-doctor-bd-tag.sh            ok      5s
+  test-doctor-checkout-mode.sh     ok      5s
+  test-doctor-dolt.sh              ok      6s
+  test-dependents.sh               ok      35s
+  test-doctor-hooks-path.sh        ok      2s
+  test-doctor-events-probe.sh      ok      8s
+  test-doctor-cargo.sh             ok      11s
+  test-deploy.sh                   ok      20s
+  test-doctor-goal.sh              ok      5s
+  test-doctor-installing.sh        ok      6s
+  test-doctor-enable-drift.sh      ok      13s
+  test-doctor-gh-intake-skip.sh    ok      8s
+  test-doctor-missing-store.sh     ok      6s
+  test-drain-banner.sh             ok      2s
+  test-drain-expiry.sh             ok      2s
+  test-doctor-snap-fresh.sh        ok      4s
+  test-dummy.sh                    ok      3s
+  test-doctor-schema.sh            ok      6s
+  test-doctor-unit-install.sh      ok      10s
+  test-doctor-unit-dup.sh          ok      13s
+  test-effective-lanes.sh          ok      13s
+  test-elastic-ceiling.sh          ok      4s
+  test-fayth-free.sh               ok      7s
+  test-fayth-predicates.sh         ok      8s
+  test-event.sh                    ok      24s
+  test-fayth-project-instructions.sh ok      18s
+  test-fayth.sh                    ok      15s
+  test-forge-run-metadata.sh       ok      8s
+  test-focus-close-guard.sh        ok      26s
+  test-forge-check-status.sh       ok      14s
+  test-freshclone.sh               ok      14s
+  test-gate-base-evidence.sh       ok      19s
+  test-gate-base-selection.sh      ok      12s
+  test-gate-check-flaky.sh         ok      19s
+  test-gate-check-red-twice.sh     ok      18s
+  test-gate-check-stderr.sh        ok      17s
+  test-gate-check-stuck.sh         ok      16s
+  test-gate-ci-diag.sh             ok      11s
+  test-gate-discover-branch.sh     ok      17s
+  test-gate-fixture-diag.sh        ok      10s
+  test-gate-host-cores.sh          ok      11s
+  test-gate-missing-cmd.sh         ok      32s
+  test-gate-preflight.sh           ok      11s
+  test-gate-retry-structural.sh    ok      17s
+  test-gate-retry.sh               ok      27s
+  test-gate-sweep.sh               ok      33s
+  test-gate-touched.sh             ok      18s
+  test-gate-vitals.sh              ok      1s
+  test-gate-workflow.sh            ok      2s
+  test-git-identity.sh             ok      1s
+  test-gate-verdict.sh             ok      8s
+  test-governor-host-cores.sh      ok      3s
+  test-groom-trigger.sh            ok      2s
+  test-gh-run-gate.sh              ok      9s
+  test-gh-intake.sh                ok      11s
+  test-groomer.sh                  ok      4s
+  test-host-unit-names.sh          SKIPPED
+  test-held.sh                     ok      6s
+  test-id-prefix.sh                ok      2s
+  test-incident-cause.sh           ok      1s
+  test-incident-delivers-satisfiable.sh ok      1s
+  test-hold.sh                     ok      8s
+  test-groomer-sweep.sh            ok      16s
+  test-host-reason.sh              ok      12s
+  test-gate-tree.sh                ok      32s
+  test-gh-issue-closeout.sh        ok      32s
+  test-install-bootstrap-release.sh ok      10s
+  test-groom-escalation-check.sh   ok      38s
+  test-install-bd-init-cwd.sh      ok      20s
+  test-install-conflicts.sh        ok      11s
+  test-incident-dedup.sh           ok      37s
+  test-install-dolt-breaker.sh     RED     rc=1 after 9s
+  test-install-dolt-mode.sh        ok      7s
+  test-install-dolt-port-wait.sh   ok      5s
+  test-incident-recur-cause.sh     ok      39s
+  test-install-dolt.sh             ok      9s
+  test-install-conf-seed.sh        ok      38s
+  test-install-halt.sh             ok      17s
+  test-install-exec.sh             ok      19s
+  test-install-loom-broker.sh      ok      3s
+  test-install-aeons.sh            ok      56s
+  test-install-landref.sh          ok      4s
+  test-install-mail-deliver.sh     ok      4s
+  test-incident-recur-bounded.sh   ok      67s
+  test-incident.sh                 ok      66s
+  test-install-rehearsal.sh        SKIPPED
+  test-install-prod-checkout.sh    ok      6s
+  test-install-self-test.sh        ok      12s
+  test-install-migrate.sh          ok      24s
+  test-install-instance.sh         ok      37s
+  test-install-idempotent.sh       ok      49s
+  test-install-paths.sh            ok      28s
+  test-install-unit-directive.sh   ok      34s
+  test-install-unit-ensure.sh      ok      40s
+  test-install-unit-prune.sh       ok      42s
+  test-inventory.sh                ok      53s
+  test-landing-build.sh            ok      13s
+  test-landed-stays-landed.sh      ok      46s
+  test-landing-base-fail.sh        ok      69s
+  test-landing-basefail-fix.sh     ok      62s
+  test-landing-gate-wait.sh        ok      44s
+  test-landing-mode-map.sh         ok      17s
+  test-landing-halt.sh             ok      41s
+  test-landing-order.sh            ok      19s
+  test-landing-phase2-order.sh     ok      34s
+  test-landing-pr.sh               ok      48s
+  test-lane-ceiling.sh             ok      8s
+  test-landing-race.sh             ok      35s
+  test-lanes.sh                    ok      14s
+  test-landing-queue-early.sh      ok      55s
+  test-layout-guard.sh             ok      18s
+  test-limits.sh                   ok      26s
+  test-loom-conf-change.sh         ok      19s
+  test-literal-lint.sh             ok      32s
+  test-loom-ops.sh                 SKIPPED
+  test-landing-rebase.sh           ok      73s
+  test-loom-rebuild.sh             ok      10s
+  test-loom-page.sh                ok      32s
+  test-landing.sh                  ok      99s
+  test-livelock.sh                 ok      72s
+  test-loop-readonly.sh            ok      45s
+  test-maechen-sibling-blind.sh    ok      12s
+  test-maechen-blind-window.sh     ok      46s
+  test-maechen-trigger.sh          ok      26s
+  test-maechen.sh                  ok      27s
+  test-mail-aeon.sh                ok      43s
+  test-loom.sh                     ok      117s
+  test-mail-decision-ask.sh        ok      43s
+  test-mail-deliver.sh             ok      33s
+  test-mail-fence.sh               ok      22s
+  test-mail-kinds.sh               ok      17s
+  test-mail-health.sh              ok      30s
+  test-mail-repeat.sh              ok      12s
+  test-mail-pane.sh                ok      27s
+  test-mail-sendmail.sh            ok      30s
+  test-mail-tidy.sh                ok      22s
+  test-mail.sh                     ok      17s
+  test-migrate-ask.sh              ok      54s
+  test-model-switch-report.sh      ok      37s
+  test-ops-allowlist.sh            ok      1s
+  test-null-close-reason.sh        ok      2s
+  test-orphan-test.sh              ok      1s
+  test-parallel-isolation.sh       SKIPPED
+  test-now.sh                      ok      10s
+  test-panel.sh                    ok      8s
+  test-pane-fyi.sh                 ok      9s
+  test-output-visibility.sh        ok      12s
+  test-owned.sh                    ok      17s
+  test-pilgrimage.sh               ok      18s
+  test-pr-stall.sh                 ok      17s
+  test-pr-notify.sh                ok      33s
+  test-priority-bands.sh           ok      20s
+  test-pve.sh                      ok      43s
+  test-queue-abandon.sh            ok      11s
+  test-poison-ask.sh               ok      90s
+  test-poison-edge.sh              ok      112s
+  test-queue-eject.sh              ok      43s
+  test-ops-closing.sh              ok      120s
+  test-queue-flush.sh              ok      37s
+  test-poison.sh                   ok      117s
+  test-queue-protect.sh            ok      32s
+  test-queue-sort-large.sh         ok      21s
+  test-queue-submit.sh             ok      13s
+  test-ready.sh                    ok      23s
+  test-reclaim-escalated.sh        ok      22s
+  test-reclaim-needs-ryan.sh       ok      9s
+  test-ref-guard.sh                ok      2s
+  test-release-acceptance.sh       ok      1s
+  test-release-workflow.sh         ok      2s
+  test-release.sh                  ok      3s
+  test-reopen-queue-eject.sh       ok      2s
+  test-repo-label.sh               ok      2s
+  test-repo-lanes.sh               ok      3s
+  test-released-defects.sh         ok      7s
+  test-render-memories.sh          ok      7s
+  test-repo.sh                     ok      5s
+  test-resolve-output.sh           ok      1s
+  test-roster-warn.sh              ok      1s
+  test-rollback.sh                 ok      1s
+  test-reclaim-slay-branch-guard.sh ok      16s
+  test-runner-deps.sh              ok      1s
+  test-schema-migration-guard.sh   ok      2s
+  test-scope-label.sh              ok      1s
+  test-scratch-fence.sh            ok      2s
+  test-schema.sh                   ok      5s
+  test-script-exec.sh              ok      3s
+  test-review.sh                   ok      7s
+  test-sending-certified-guard.sh  ok      7s
+  test-sending-empty-commit.sh     ok      6s
+  test-sending-content-label.sh    ok      6s
+  test-sending-metrics.sh          ok      1s
+  test-sending-landstate-assert.sh ok      18s
+  test-sending-unlanded-guard.sh   ok      13s
+  test-sending-squash-merged.sh    ok      13s
+  test-select.sh                   ok      26s
+  test-sentinel-capacity.sh        ok      32s
+  test-sentinel-order.sh           ok      18s
+  test-sentinel.sh                 ok      20s
+  test-requeue-cap.sh              ok      71s
+  test-session-hook.sh             ok      32s
+  test-skew-escalate.sh            ok      1s
+  test-skew-check-release.sh       ok      2s
+  test-skew-foreign.sh             ok      3s
+  test-skew-refresh.sh             ok      5s
+  test-set-state-writers.sh        ok      22s
+  test-requeue-cap-accept.sh       RED     rc=1 after 89s
+  test-schema-apply.sh             RED     rc=1 after 84s
+  test-snap-stale-threshold.sh     ok      11s
+  test-statusline.sh               ok      1s
+  test-requeue.sh                  RED     rc=1 after 92s
+  test-statute-projection.sh       ok      7s
+  test-sop-lint.sh                 ok      13s
+  test-soak.sh                     ok      16s
+  test-sin-exempt.sh               RED     rc=1 after 32s
+  test-sop.sh                      ok      22s
+  test-spike.sh                    ok      23s
+  test-slay.sh                     ok      56s
+  test-strand-deferred.sh          ok      14s
+  test-strand-capacity.sh          ok      55s
+  test-strand-ghost-teardown.sh    ok      7s
+  test-strand-lock.sh              ok      1s
+  test-strand-pool-paused.sh       ok      1s
+  test-strand-partition.sh         ok      2s
+  test-strand-truncated.sh         ok      2s
+  test-submit.sh                   ok      5s
+  test-suite-cleanup.sh            ok      6s
+  test-suite-state.sh              ok      5s
+  test-suite-state-fence.sh        ok      7s
+  test-suite-times.sh              ok      3s
+  test-suites-containment.sh       SKIPPED
+  test-suites-flake-branch.sh      ok      2s
+  test-suites-hygiene.sh           ok      12s
+  test-suites-timeout.sh           ok      22s
+  test-suites-setup-fault.sh       ok      22s
+  test-suites-timer.sh             ok      22s
+  test-suites-red-dedup.sh         ok      25s
+  test-suites-fixture-fault.sh     ok      27s
+  test-testdb-concurrent.sh        ok      9s
+  test-suites-cluster.sh           ok      40s
+  test-testenv-batch-baseline.sh   ok      1s
+  test-testenv-batch-branch.sh     SKIPPED
+  test-suites-confirm-red.sh       ok      40s
+  test-suites-result-files.sh      ok      41s
+  test-testenv-batch-fence.sh      ok      4s
+  test-superseded.sh               ok      17s
+  test-testenv-batch.sh            SKIPPED
+  test-testenv-doctor-check.sh     ok      1s
+  test-suites-watchdog-classify.sh ok      19s
+  test-testenv-image-tag.sh        ok      1s
+  test-testenv-mode.sh             SKIPPED
+  test-testenv-publish.sh          ok      1s
+  test-testenv-registry.sh         ok      2s
+  test-testenv-stdin.sh            SKIPPED
+  test-testenv-systemctl.sh        SKIPPED
+  test-testenv-suites.sh           SKIPPED
+  test-testenv-timeout.sh          SKIPPED
+  test-testenv-tmux-isolation.sh   ok      2s
+  test-testenv.sh                  SKIPPED
+  test-thrash-wall.sh              ok      1s
+  test-testdb-failsafe.sh          ok      23s
+  test-timeout.sh                  SKIPPED
+  test-thrash.sh                   ok      4s
+  test-tmux-env.sh                 ok      1s
+  test-timer-templates.sh          ok      2s
+  test-tokens.sh                   ok      1s
+  test-unclaimable-cycle.sh        ok      1s
+  test-unit-name.sh                ok      1s
+  test-unit-restart-limits.sh      ok      1s
+  test-verdict-timer.sh            ok      1s
+  test-suites-unreached.sh         ok      37s
+  test-unmapped-repo-park.sh       ok      7s
+  test-unclaimable-bead.sh         ok      9s
+  test-unit-drift.sh               ok      12s
+  test-uninstall.sh                ok      12s
+  test-watch-unit-restart.sh       ok      5s
+  test-watchd-halt-health.sh       ok      3s
+  test-watchd-health-ids.sh        ok      2s
+  test-verify-asks.sh              ok      13s
+  test-watchd-prune.sh             ok      3s
+  test-watch-refresh.sh            ok      11s
+  test-watchd-unit-name.sh         ok      2s
+  test-watcher-reopen.sh           SKIPPED
+  test-testenv-scratch.sh          ok      36s
+  test-watchtower-czar-outcome.sh  ok      10s
+  test-watch-notify.sh             ok      21s
+  test-wire-token.sh               ok      2s
+  test-watchtower-throttle.sh      ok      12s
+  test-work-services-exclusion.sh  ok      5s
+  test-watchd-tail.sh              ok      19s
+  test-worktree-absent.sh          ok      3s
+  test-watchtower-queue.sh         ok      17s
+  test-world-drain-deadline.sh     ok      4s
+  test-world-drain.sh              ok      3s
+  test-world-start-honours-ctrl.sh ok      6s
+  test-world-start-revives-watchers.sh ok      3s
+  test-world-timer-names.sh        ok      5s
+  test-world-timer-service-result.sh ok      3s
+  test-world.sh                    ok      7s
+  test-suites.sh                   ok      102s
+  test-yield.sh                    ok      29s
+  test-watchtower.sh               ok      92s
+  test-watchtower-lapse.sh         ok      116s
+  test-verdict.sh                  ok      246s
+2026-09-24T02:13:14Z spira: batch: cgroup peak 2558MiB (maxpar 8, ~319MiB/slot; budget 192MiB/suite)
+2026-09-24T02:13:14Z spira: batch: wall 2089s
+2026-09-24T02:13:14Z spira: batch: testdb: shared baseline used (mode: embedded, name: sptest_batch_baseline_1790213900_3044)
+2026-09-24T02:13:14Z spira: batch: 5 suite(s) red
+
+=== test-install-dolt-breaker.sh  red  rc=1  9s ===
+  FAIL  no-clear: install reports db probe failure: wanted [bd did not accept] in [
+  FAIL  no-clear: db probe attempt logged: wanted [db probe] in [
+  FAIL  install passes: install exits 0 after doctor clears breaker: wanted exit 0, got 5
+  FAIL  install passes: bd store accepting logged: wanted [bd store accepting] in [
+--- last 50 lines ---
+3. INSTALL POSITIVE CONTROL â no clear: probe fails, install exits non-zero:
+  ok    no-clear: install exits non-zero when db probe fails
+  FAIL  no-clear: install reports db probe failure: wanted [bd did not accept] in [
+[phase 0: preflight]
+  spira doctor
+    ok    stub â all checks passed
+  preflight passed
+
+[phase 0.5: conflict checks]
+  conflict 1 clear: no foreign harness owns these unit names
+  conflict 2 clear: no live aeons
+  conflict 3 clear: no landing in flight
+  conflict 4 clear: no instance mismatch
+install: CONFLICT â Dolt server listening on port 19142 is serving '/tmp/spira-batch-deb7acb23a8f/testdb' (not /tmp/tmp.h7eXw03K0Z/dolt-data)
+install:   remedy: stop the other Dolt server or set SPIRA_DOLT_DATA to match its data directory
+install:   override: SPIRA_INSTALL_CONFLICT_CONSIDERED=1]
+  FAIL  no-clear: db probe attempt logged: wanted [db probe] in [
+[phase 0: preflight]
+  spira doctor
+    ok    stub â all checks passed
+  preflight passed
+
+[phase 0.5: conflict checks]
+  conflict 1 clear: no foreign harness owns these unit names
+  conflict 2 clear: no live aeons
+  conflict 3 clear: no landing in flight
+  conflict 4 clear: no instance mismatch
+install: CONFLICT â Dolt server listening on port 19142 is serving '/tmp/spira-batch-deb7acb23a8f/testdb' (not /tmp/tmp.h7eXw03K0Z/dolt-data)
+install:   remedy: stop the other Dolt server or set SPIRA_DOLT_DATA to match its data directory
+install:   override: SPIRA_INSTALL_CONFLICT_CONSIDERED=1]
+
+4. INSTALL PASSES â doctor clears breaker: install exits 0:
+  FAIL  install passes: install exits 0 after doctor clears breaker: wanted exit 0, got 5
+  FAIL  install passes: bd store accepting logged: wanted [bd store accepting] in [
+[phase 0: preflight]
+  spira doctor
+    ok    stub â all checks passed
+  preflight passed
+
+[phase 0.5: conflict checks]
+  conflict 1 clear: no foreign harness owns these unit names
+  conflict 2 clear: no live aeons
+  conflict 3 clear: no landing in flight
+  conflict 4 clear: no instance mismatch
+install: CONFLICT â Dolt server listening on port 19142 is serving '/tmp/spira-batch-deb7acb23a8f/testdb' (not /tmp/tmp.h7eXw03K0Z/dolt-data)
+install:   remedy: stop the other Dolt server or set SPIRA_DOLT_DATA to match its data directory
+install:   override: SPIRA_INSTALL_CONFLICT_CONSIDERED=1]
+  ok    install passes: no circuit-breaker error
+
+5 passed, 4 failed
+
+=== test-requeue-cap-accept.sh  red  rc=1  89s ===
+  FAIL  a bead at the attempt threshold is still poisoned: wanted [spira-poison] in []
+--- last 50 lines ---
+testdb: TRACE: entering server mode initialization for tag=requeue-cap-accept
+testdb: TRACE: calling testdb_server_ensure
+testdb: TRACE: testdb_server_ensure returned
+testdb: TRACE: TESTDB_DIR created: /var/tmp/sptest_requeue-cap-accept_1790215525_652113
+testdb: TRACE: calling bd init --server with database=sptest_requeue-cap-accept_1790215525_652113
+testdb: TRACE: bd init returned with rc=0
+test-requeue-cap-accept.sh
+
+acceptance: counts 10..13 send exactly one mail total:
+OK, 0 rows affected
+OK, 0 rows affected
+OK, 0 rows affected
+  ok    count 10 fires the first (and only) escalation
+  ok    count 11 sends no mail (already asked per bead)
+  ok    count 12 sends no mail
+  ok    count 13 sends no mail
+
+delivers:action â never triggers requeue cap:
+OK, 30 rows affected
+OK, 0 rows affected
+OK, 0 rows affected
+  ok    delivers:action bead with 10 reopens sends no requeue mail
+
+counters do not conflate â bead with zero attempt events is never poisoned:
+OK, 25 rows affected
+OK, 0 rows affected
+OK, 0 rows affected
+  ok    a bead with no attempt events is never poisoned
+
+poison path unchanged â bead at the attempt threshold is still poisoned:
+OK, 4 rows affected
+OK, 0 rows affected
+OK, 0 rows affected
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+  File "/usr/lib/python3.12/json/__init__.py", line 293, in load
+    return loads(fp.read(),
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 355, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+  FAIL  a bead at the attempt threshold is still poisoned: wanted [spira-poison] in []
+
+6 passed, 1 failed
+
+=== test-requeue.sh  red  rc=1  92s ===
+  FAIL  and its cycling is visible as one requeue: wanted [1] got [0]
+  FAIL  the work's bead carries one attempt: wanted [1] got [0]
+  FAIL  the deadlocked bead is named: wanted [WOULD    sp-rq-s] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+  FAIL  the genuinely failed one is kept: wanted [KEEP     sp-rq-k] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+  FAIL  with the test it failed: wanted [no branch spira/sp-rq-k] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+  FAIL  and nothing changed without --apply: wanted [dry run] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+  FAIL  so the poison still stands: wanted [spira-poison] in []
+  FAIL  the sweep lifts it: wanted [RESTORED sp-rq-s] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+  FAIL  the rungs are left standing as the record: wanted [3] got [0]
+  FAIL  the bead records why: wanted [Poison lifted by attempts.sh deadlocked] in []
+  FAIL  the bead that really failed keeps its poison: wanted [spira-poison] in []
+--- last 50 lines ---
+testdb: TRACE: bd init returned with rc=0
+test-requeue.sh
+
+the session committed, closed, and the harness reopened it over a rebase conflict:
+OK, 0 rows affected
+OK, 0 rows affected
+OK, 0 rows affected
+  ok    the bead is open again
+  ok    and the log says why
+  ok    NO attempt is charged
+  ok    so it carries no attempt rung
+  ok    it is counted as a requeue instead
+  ok    the teardown says no attempt was charged
+  ok    the bead carries the decision
+  ok    and the ledger carries the outcome
+  ok    the branch still carries the aeon's commit after the requeue
+
+the session did not close the bead at all â that IS an attempt, and still charges:
+OK, 14 rows affected
+OK, 0 rows affected
+OK, 0 rows affected
+  ok    the bead is open
+  ok    and one attempt is charged
+  ok    with nothing on the requeue counter
+
+the pair, one cycle each â only the genuine failure charges attempts:
+testdb: server dolt_reset failed (rc=1) for sptest_requeue_1790215525_652331: Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+  ok    the harness's bead is still at zero attempts
+  FAIL  and its cycling is visible as one requeue: wanted [1] got [0]
+  FAIL  the work's bead carries one attempt: wanted [1] got [0]
+
+the deadlock sweep lifts a poison from finished, landable work:
+testdb: server dolt_reset failed (rc=1) for sptest_requeue_1790215525_652331: Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+  FAIL  the deadlocked bead is named: wanted [WOULD    sp-rq-s] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+spira: bd is bd]
+  FAIL  the genuinely failed one is kept: wanted [KEEP     sp-rq-k] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+spira: bd is bd]
+  FAIL  with the test it failed: wanted [no branch spira/sp-rq-k] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+spira: bd is bd]
+  FAIL  and nothing changed without --apply: wanted [dry run] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+spira: bd is bd]
+  FAIL  so the poison still stands: wanted [spira-poison] in []
+  FAIL  the sweep lifts it: wanted [RESTORED sp-rq-s] in [spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_requeue_1790215525_652331
+spira: bd is bd]
+  ok    and the label is gone
+  FAIL  the rungs are left standing as the record: wanted [3] got [0]
+  FAIL  the bead records why: wanted [Poison lifted by attempts.sh deadlocked] in []
+  FAIL  the bead that really failed keeps its poison: wanted [spira-poison] in []
+
+14 passed, 11 failed
+
+=== test-schema-apply.sh  red  rc=1  84s ===
+  FAIL â apply succeeds on a bare store: exited 1: schema-apply: custom types: [types.custom (not set)] -> [escalation,event,gate,proposal]
+schema-apply: FAILED (rc=1): bd -C '/var/tmp/sptest_schema-apply-server_1790215529_653491' config set types.custom 'escalation,event,gate,proposal' >/dev/null
+schema-apply: FAILED (rc=1): sql "alter table issues add column _is_work tinyint as (case when issue_type in ('task','bug','feature','epic','chore','spike') then 1 else 0 end) stored;" >/dev/null
+schema-apply: FAILED (rc=1): sql "alter table issues add constraint spira_priority_range check (priority between 0 and 4);" >/dev/null
+  FAIL â schema.sh check: reported drift on a store schema-apply.sh had just applied
+  FAIL â second run reports types already exact: wanted [already exact] in []
+  FAIL â second run reports _is_work already there: wanted [already present] in []
+--- last 50 lines ---
+test-schema-apply.sh
+
+the generated column classifies every declared kind
+  ok   â kind work (task) is a work type
+  ok   â kind event (event) is excluded from work by type
+  ok   â kind escalation (escalation) is excluded from work by type
+  ok   â kind proposal (proposal) is excluded from work by type
+  ok   â kind insight (chore) is a work type
+  ok   â kind gate (gate) is excluded from work by type
+
+NEGATIVE â detection notices a missing CHECK (proved in a fixture, never in production)
+  ok   â absent constraint detected as absent
+  ok   â control â present constraint detected as present
+  ok   â dropped constraint detected as gone â the bd-upgrade scenario
+
+and the constraint actually refuses, in the fixture
+  ok   â priority 9 refused by the CHECK
+  ok   â control â priority 2 accepted
+
+on an engine that cannot run bd sql, apply says so instead of reporting drift
+  ok   â apply exits non-zero on an engine it cannot use (rc=3)
+  ok   â and names the engine as the reason
+  ok   â and names what could not be applied
+  ok   â and says where it could be applied
+  ok   â and does not claim it applied anything
+
+apply makes a bare store correct, and a second apply changes nothing
+  FAIL â apply succeeds on a bare store: exited 1: schema-apply: custom types: [types.custom (not set)] -> [escalation,event,gate,proposal]
+schema-apply: FAILED (rc=1): bd -C '/var/tmp/sptest_schema-apply-server_1790215529_653491' config set types.custom 'escalation,event,gate,proposal' >/dev/null
+  Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_schema-apply-server_1790215529_653491
+spira: bd migrate schema failed â Error: failed to open database: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_schema-apply-server_1790215529_653491
+spira: bd is bd
+schema-apply: custom statuses already exact: 
+schema-apply: _is_work: adding generated column over [task bug feature epic chore spike]
+schema-apply: FAILED (rc=1): sql "alter table issues add column _is_work tinyint as (case when issue_type in ('task','bug','feature','epic','chore','spike') then 1 else 0 end) stored;" >/dev/null
+schema-apply: spira_priority_range: adding CHECK (priority between 0 and 4)
+schema-apply: FAILED (rc=1): sql "alter table issues add constraint spira_priority_range check (priority between 0 and 4);" >/dev/null
+schema-apply: NOT applied â one or more statements failed:
+  bd -C '/var/tmp/sptest_schema-apply-server_1790215529_653491' config set types.custom 'escalation,event,gate,proposal' >/dev/null
+  sql "alter table issues add column _is_work tinyint as (case when issue_type in ('task','bug','feature','epic','chore','spike') then 1 else 0 end) stored;" >/dev/null
+  sql "alter table issues add constraint spira_priority_range check (priority between 0 and 4);" >/dev/null
+  ok   â and adds the generated column
+  ok   â and adds the priority constraint
+  FAIL â schema.sh check: reported drift on a store schema-apply.sh had just applied
+  FAIL â second run reports types already exact: wanted [already exact] in []
+  FAIL â second run reports _is_work already there: wanted [already present] in []
+
+test-schema-apply.sh: 18 passed, 4 failed
+
+=== test-sin-exempt.sh  red  rc=1  32s ===
+  FAIL  the bead was created: no bead found for ref incident:test-nonexempt-sin
+  FAIL  the exempt bead was created: no bead found for ref incident:test-exempt-sin
+--- last 50 lines ---
+testdb: TRACE: entering server mode initialization for tag=sinex
+testdb: TRACE: calling testdb_server_ensure
+testdb: TRACE: testdb_server_ensure returned
+testdb: TRACE: TESTDB_DIR created: /var/tmp/sptest_sinex_1790215598_695007
+testdb: TRACE: calling bd init --server with database=sptest_sinex_1790215598_695007
+testdb: TRACE: bd init returned with rc=0
+testdb: warning: could not capture init hash for sptest_sinex_1790215598_695007; reset will be slow
+test-sin-exempt.sh
+
+the positive control â a non-exempt ref reaches SIN:
+testdb: server reset (fallback) failed (rc=1) for sptest_sinex_1790215598_695007
+testdb:   Error: failed to open Dolt store: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_sinex_1790215598_695007
+  FAIL  the bead was created: no bead found for ref incident:test-nonexempt-sin
+
+an exempt ref does NOT reach SIN:
+testdb: server reset (fallback) failed (rc=1) for sptest_sinex_1790215598_695007
+testdb:   Error: failed to open Dolt store: schema skew check: reading schema_migrations version: Error 1049 (HY000): database not found: sptest_sinex_1790215598_695007
+  FAIL  the exempt bead was created: no bead found for ref incident:test-exempt-sin
+
+an exempt ref past the threshold still increments:
+
+the watchtower sets SPIRA_SIN_EXEMPT=1:
+  ok    watchtower.sh sets SPIRA_SIN_EXEMPT=1 on the DRAINING escalation
+
+test-sin-exempt.sh: 1 passed, 2 failed
+
+| Suite | Duration | Verdict | First FAIL line |
+|-------|----------|---------|-----------------|
+| test-install-dolt-breaker.sh | 9s (rc=1) | red | FAIL  no-clear: install reports db probe failure: wanted [bd did not accept] in  |
+| test-requeue-cap-accept.sh | 89s (rc=1) | red | FAIL  a bead at the attempt threshold is still poisoned: wanted [spira-poison] i |
+| test-requeue.sh | 92s (rc=1) | red | FAIL  and its cycling is visible as one requeue: wanted [1] got [0] |
+| test-schema-apply.sh | 84s (rc=1) | red | FAIL â apply succeeds on a bare store: exited 1: schema-apply: custom types: [ |
+| test-sin-exempt.sh | 32s (rc=1) | red | FAIL  the bead was created: no bead found for ref incident:test-nonexempt-sin |

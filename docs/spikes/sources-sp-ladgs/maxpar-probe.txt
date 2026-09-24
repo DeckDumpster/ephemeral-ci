@@ -1,0 +1,123 @@
+# maxpar derivation probe — executed, not hand-derived
+# source:    spira/testenv-batch.sh @ dd345ae0 (DeckDumpster/spira, branch main),
+#            the block between its #!maxpar-begin and #!maxpar-end markers,
+#            extracted verbatim and executed with (nproc, MemAvailable) injected.
+# retrieved: 2026-09-23
+# why kept:  The sp-ladgs measurement holds memory at 16 GiB rather than the 6 GiB
+#            the bead's method named. This probe is the evidence for why: at 6 GiB
+#            a 32-vCPU guest is capped at maxpar 18 by MEMORY, so the bead's stated
+#            method would have measured the memory cap instead of the CPU curve.
+#
+# POSITIVE CONTROLS (law-absence-needs-a-positive-control). The probe reproduces two
+# independently observed real log lines, so it is known to be capable of being wrong:
+#   * VM 9016, 8 vCPU / 16 GiB, observed: "maxpar: 8 [cpu-bound: cpu=8 mem=14744MiB avail]"
+#     probe(8, 14744) -> maxpar 8, cpu          MATCHES
+#   * gate run 35897850570, 16 vCPU / 6 GiB, observed: "cpu-bound: cpu=16 mem=4583MiB avail"
+#     probe(16, 4583) -> maxpar 16, cpu         MATCHES
+#
+# Reproduce:  bash maxpar-probe.sh   (needs maxpar-block.sh beside it)
+# ---------------------------------------------------------------------------
+
+## OUTPUT (2026-09-23)
+    vCPU       MemAvail(MiB)  maxpar    binding  note
+    8          14744          8         cpu      
+    16         14744          16        cpu      
+    32         14744          32        cpu      
+    8          4583           8         cpu      
+    16         4583           16        cpu      
+    32         4583           18        memory   memory cap bites before the vCPUs are used
+    64         4583           18        memory   memory cap bites before the vCPUs are used
+
+## THE PROBE (maxpar-probe.sh)
+    #!/usr/bin/env bash
+    # Run the harness's OWN maxpar derivation (extracted verbatim between its
+    # #!maxpar-begin / #!maxpar-end markers) at injected (nproc, MemAvailable) pairs.
+    # nproc is shadowed by a function so the block is executed unmodified.
+    set -uo pipefail
+    printf '%-10s %-14s %-9s %-8s %s\n' "vCPU" "MemAvail(MiB)" "maxpar" "binding" "note"
+    for pair in "8:14744" "16:14744" "32:14744" "8:4583" "16:4583" "32:4583" "64:4583"; do
+      NP="${pair%%:*}"; MA="${pair##*:}"
+      out=$(
+        nproc() { echo "$NP"; }
+        export -f nproc 2>/dev/null || true
+        SPIRA_BATCH_MEM_AVAIL_MIB="$MA"
+        unset SPIRA_BATCH_MAXPAR
+        . /tmp/sp-ladgs/maxpar-block.sh
+        printf '%s %s %s' "$_maxpar" "$_maxpar_binding" "$_hardware_maxpar"
+      )
+      set -- $out
+      note=""
+      [ "$2" = "memory" ] && note="memory cap bites before the vCPUs are used"
+      printf '%-10s %-14s %-9s %-8s %s\n' "$NP" "$MA" "$1" "$2" "$note"
+    done
+
+## THE EXTRACTED BLOCK (maxpar-block.sh, verbatim from testenv-batch.sh @ dd345ae0)
+    #!maxpar-begin
+    # Derive maxpar from the guest's own hardware: min(nproc, floor((avail-reserve)/per_suite)).
+    # SPIRA_BATCH_MAXPAR is a ceiling: when set, the result is min(N, hardware_maxpar).
+    # An operator value set for a larger box cannot exceed what this box allows.
+    # Setting it to 0 disables all capping (useful for small explicit selections or stress tests).
+    _mem_reserve_mib="${SPIRA_BATCH_MEM_RESERVE_MIB:-1024}"
+    _mem_per_suite_mib="${SPIRA_BATCH_MEM_PER_SUITE_MIB:-192}"
+    _maxpar_cpu="$(nproc)"
+    _mem_avail_mib="${SPIRA_BATCH_MEM_AVAIL_MIB:-$(awk '/^MemAvailable:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)}"
+    _mem_budget=$(( _mem_avail_mib - _mem_reserve_mib ))
+    [ "${_mem_budget:-0}" -lt "${_mem_per_suite_mib}" ] && _mem_budget="${_mem_per_suite_mib}"
+    _mem_bound=$(( _mem_budget / _mem_per_suite_mib ))
+    [ "${_mem_bound:-0}" -lt 1 ] && _mem_bound=1
+    if [ "${_maxpar_cpu}" -le "${_mem_bound}" ]; then
+        _hardware_maxpar="${_maxpar_cpu}"
+        _hardware_binding="cpu"
+    else
+        _hardware_maxpar="${_mem_bound}"
+        _hardware_binding="memory"
+    fi
+    if [ -n "${SPIRA_BATCH_MAXPAR:-}" ] && [ "${SPIRA_BATCH_MAXPAR}" = "0" ]; then
+        _maxpar=0
+        _maxpar_binding="override-unlimited"
+    elif [ -n "${SPIRA_BATCH_MAXPAR:-}" ] && [ "${SPIRA_BATCH_MAXPAR}" -le "${_hardware_maxpar}" ] 2>/dev/null; then
+        _maxpar="${SPIRA_BATCH_MAXPAR}"
+        _maxpar_binding="override"
+    elif [ -n "${SPIRA_BATCH_MAXPAR:-}" ]; then
+        _maxpar="${_hardware_maxpar}"
+        _maxpar_binding="${_hardware_binding}"
+    else
+        _maxpar="${_hardware_maxpar}"
+        _maxpar_binding="${_hardware_binding}"
+    fi
+    #!maxpar-end
+
+## CAN AN OPERATOR RAISE maxpar ABOVE nproc? (executed, same extracted block)
+## This decides whether concurrency can be bought without buying vCPUs.
+
+    nproc    MemAvail(MiB)  SPIRA_BATCH_MAXPAR     maxpar   binding            verdict
+    8        14744          <unset>                8        cpu                
+    8        14744          4                      4        override           
+    8        14744          16                     8        cpu                CLAMPED to nproc — the ask was 16
+    8        14744          32                     8        cpu                CLAMPED to nproc — the ask was 32
+    8        14744          0                      0        override-unlimited 0 = uncapped entirely
+    16       4583           32                     16       cpu                CLAMPED to nproc — the ask was 32
+
+## THE OVERRIDE PROBE (maxpar-override-probe.sh)
+    #!/usr/bin/env bash
+    # Does SPIRA_BATCH_MAXPAR let an operator raise maxpar ABOVE nproc?
+    # Executes the harness's own derivation block; nproc shadowed by a function.
+    set -uo pipefail
+    printf '%-8s %-14s %-22s %-8s %-18s %s\n' "nproc" "MemAvail(MiB)" "SPIRA_BATCH_MAXPAR" "maxpar" "binding" "verdict"
+    for spec in "8:14744:" "8:14744:4" "8:14744:16" "8:14744:32" "8:14744:0" "16:4583:32"; do
+      IFS=: read -r NP MA OV <<<"$spec"
+      out=$(
+        nproc() { echo "$NP"; }
+        SPIRA_BATCH_MEM_AVAIL_MIB="$MA"
+        if [ -n "$OV" ]; then SPIRA_BATCH_MAXPAR="$OV"; else unset SPIRA_BATCH_MAXPAR; fi
+        . /tmp/sp-ladgs/maxpar-block.sh
+        printf '%s %s' "$_maxpar" "$_maxpar_binding"
+      )
+      set -- $out
+      verdict=""
+      if [ -n "$OV" ] && [ "$OV" != "0" ] && [ "$OV" -gt "$NP" ] 2>/dev/null; then
+        if [ "$1" -eq "$NP" ]; then verdict="CLAMPED to nproc — the ask was $OV"; else verdict="honoured above nproc"; fi
+      fi
+      [ "$OV" = "0" ] && verdict="0 = uncapped entirely"
+      printf '%-8s %-14s %-22s %-8s %-18s %s\n' "$NP" "$MA" "${OV:-<unset>}" "$1" "$2" "$verdict"
+    done
