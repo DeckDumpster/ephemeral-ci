@@ -57,7 +57,11 @@ conclusion, and at that point a single run at any size could no longer be truste
 The bead's method said to keep memory at 6 GiB. **Following it would have measured the wrong
 thing at 32 vCPU**, and the harness's own arithmetic says so. `maxpar` is
 `min(nproc, floor((MemAvailable - reserve) / per_suite))`, and the runner now budgets 192 MiB
-per suite against a 1,024 MiB reserve. Executing that derivation verbatim at the two memory
+per suite against a 1,024 MiB reserve. That derivation is preserved verbatim, with the banner
+line that prints it, at
+[`sources-sp-ladgs/testenv-batch-maxpar.txt`](sources-sp-ladgs/testenv-batch-maxpar.txt)
+(an annotated excerpt, hence `.txt`; the runnable extract the probe actually sources is
+[`maxpar-block.sh`](sources-sp-ladgs/maxpar-block.sh)). Executing it at the two memory
 sizes — not deriving it by hand — gives:
 
 | vCPU | MemAvailable | `maxpar` | bound by |
