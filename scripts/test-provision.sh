@@ -125,6 +125,18 @@ case "$path" in
     /nodes/*/qemu/*/status/start)
         body='{"data":"UPID:pve:00002:00002:00000066:qmstart:200:root@pam:"}'
         ;;
+    /nodes/*/qemu/*/status/current)
+        # VMID free check added in db-spsp. Default 404 (VMID is free).
+        # CURL_VMID_OCCUPIED: if set to a VMID, that specific id returns 200.
+        _cur_vmid="${path#/nodes/}"; _cur_vmid="${_cur_vmid#*/qemu/}"; _cur_vmid="${_cur_vmid%%/*}"
+        if [ -n "${CURL_VMID_OCCUPIED:-}" ] && [ "$_cur_vmid" = "${CURL_VMID_OCCUPIED}" ]; then
+            http_code=200
+            body='{"data":{"status":"stopped","vmid":'"$_cur_vmid"'}}'
+        else
+            http_code=404
+            body='{"errors":{"vmid":"VM not found"}}'
+        fi
+        ;;
     /nodes/*/qemu/*/agent/ping)
         if [ "${CURL_AGENT_PING_FAIL:-0}" = "1" ]; then
             http_code=500
@@ -1314,6 +1326,52 @@ fi
 
 # Restore default TEMPLATE_VMID for any tests that follow.
 export TEMPLATE_VMID=101
+
+# ---------------------------------------------------------------------------
+# Test 25 -- occupied VMID: provision refuses before cloning and names it (db-spsp)
+#
+# /cluster/nextid can return a VMID still held by a stopped (not destroyed) VM.
+# The clone would then fail with an opaque permission error rather than a clear
+# message. provision.sh now checks status/current before cloning: a non-404
+# response means the VMID is occupied, and provision refuses before touching
+# the clone endpoint.
+#
+# (a) occupied VMID → refuse before cloning, name the VMID in the error
+# (b) free VMID (positive control) → provision completes normally
+# ---------------------------------------------------------------------------
+
+# (a) nextid returns VMID 200 but that VMID is occupied (status/current returns 200)
+rm -f "$CURL_ARGV_FILE"
+_err25="$SCRATCH/err25"
+CURL_VMID_OCCUPIED=200 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>"$_err25" && _rc25=0 || _rc25=$?
+
+if [ "$_rc25" -ne 0 ]; then
+    ok "test-25a: provision refuses when VMID is occupied"
+else
+    ko "test-25a: provision proceeded despite occupied VMID"
+fi
+
+if ! grep -q '/clone' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-25a: clone endpoint not called (refused before cloning)"
+else
+    ko "test-25a: clone was called despite occupied VMID"
+fi
+
+if grep -q '200' "$_err25" 2>/dev/null; then
+    ok "test-25a: error message names the occupied VMID"
+else
+    ko "test-25a: error message does not name the occupied VMID (got: $(cat "$_err25"))"
+fi
+
+# (b) free VMID (default stub: status/current returns 404) → provision succeeds
+rm -f "$CURL_ARGV_FILE"
+run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-25b: free VMID provisions normally (positive control)"
+else
+    ko "test-25b: provision failed despite free VMID (positive control broken)"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -316,6 +316,38 @@ pick_vmid() {
     printf '%s' "$vmid"
 }
 
+# ---------------------------------------------------------------------------
+# assert_vmid_free <vmid>
+#
+# Verifies the VMID nextid returned is not already in use by a stopped VM.
+# /cluster/nextid can hand back a VMID still owned by a stopped (not destroyed)
+# VM; the clone then fails with an opaque permission error
+# (Permission check failed (/vms/<id>, VM.GuestAgent.Unrestricted)) rather
+# than a clear "VMID in use" message (db-spsp).
+#
+# Only a 404 from status/current means the VMID is free. Any other response
+# — 200 for a stopped/running VM, or anything else — is treated as occupied.
+# ---------------------------------------------------------------------------
+assert_vmid_free() {
+    local vmid="$1"
+    local body_file code
+    body_file="$(mktemp)"
+    code="$(curl -sS -k -o "$body_file" -w '%{http_code}' -X GET \
+        -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
+        "https://${PVE_API_HOST}:${PVE_API_PORT}/api2/json/nodes/${PVE_NODE}/qemu/${vmid}/status/current")" || {
+        rm -f "$body_file"
+        printf 'provision.sh: curl error checking VMID %s — refusing to clone\n' "$vmid" >&2
+        return 1
+    }
+    rm -f "$body_file"
+    case "$code" in
+        404) return 0 ;;
+        *) printf 'provision.sh: VMID %s is occupied (status/current returned HTTP %s) — refusing to clone\n' \
+               "$vmid" "$code" >&2
+           return 1 ;;
+    esac
+}
+
 # --- Wait for the node to have room -------------------------------------------
 #
 # WHY THIS IS HERE AND NOT IN THE GUEST. By the time a runner VM exists its
@@ -511,6 +543,7 @@ VM_TOKEN=$(python3 -c 'import os,binascii; print(binascii.hexlify(os.urandom(16)
 
 # --- Pick a VMID ---
 VMID="$(pick_vmid)" || exit 1
+assert_vmid_free "$VMID" || exit 1
 
 # Capture the wall-clock epoch once before the clone loop. provision_time is
 # written into the VM description so reap.sh can use it as the authoritative

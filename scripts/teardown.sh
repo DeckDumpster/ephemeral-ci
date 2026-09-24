@@ -221,7 +221,17 @@ if [ "$PVAPI_STATUS" = "404" ]; then
 fi
 
 if [ "$PVAPI_STATUS" != "200" ]; then
-    echo "teardown.sh: GET config returned HTTP $PVAPI_STATUS — refusing" >&2
+    if [ "$PVAPI_STATUS" = "500" ]; then
+        if [ -n "${VM_TOKEN:-}" ]; then
+            printf 'teardown.sh: GET /qemu/%s/config returned HTTP 500 (created by this run) — refusing\n' \
+                "$VMID" >&2
+        else
+            printf 'teardown.sh: GET /qemu/%s/config returned HTTP 500 (not created by this run) — refusing\n' \
+                "$VMID" >&2
+        fi
+    else
+        echo "teardown.sh: GET config returned HTTP $PVAPI_STATUS — refusing" >&2
+    fi
     exit 1
 fi
 
