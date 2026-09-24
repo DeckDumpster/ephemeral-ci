@@ -595,7 +595,28 @@ for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
         printf 'provision.sh: clone POST returned no UPID\n' >&2
         exit 1
     fi
-    printf 'provision.sh: clone onto VMID %s refused; asking for a new id\n' "$VMID" >&2
+    # pvapi already logged HTTP status and raw body above. Parse the body for
+    # "Permission check failed (/vms/<id>, <perm>)" so we name the actual
+    # refused object rather than always blaming the target VMID (db-g8po).
+    _refused_info="$(printf '%s' "$clone_body" | python3 -c \
+        'import json,sys,re
+b=sys.stdin.read()
+try: text=json.dumps(json.loads(b))
+except: text=b
+m=re.search(r"Permission check failed \(/vms/(\d+),\s*([^)]+)\)", text)
+if m: print(m.group(1)+" "+m.group(2).strip())
+' 2>/dev/null)" || true
+    _refused_vmid="${_refused_info%% *}"
+    _refused_perm="${_refused_info#* }"
+    if [ "${_refused_vmid:-}" = "$TEMPLATE_VMID" ]; then
+        printf 'provision.sh: clone refused: %s denied on template %s -- is template %s in the ephemeral-ci pool?\n' \
+            "${_refused_perm:-VM.Clone}" "$TEMPLATE_VMID" "$TEMPLATE_VMID" >&2
+    elif [ -n "${_refused_vmid:-}" ]; then
+        printf 'provision.sh: clone onto VMID %s refused (%s denied on /vms/%s); asking for a new id\n' \
+            "$VMID" "${_refused_perm:-permission}" "$_refused_vmid" >&2
+    else
+        printf 'provision.sh: clone onto VMID %s refused; asking for a new id\n' "$VMID" >&2
+    fi
     VMID="$(pick_vmid)" || exit 1
     sleep 1
 done

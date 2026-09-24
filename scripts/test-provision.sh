@@ -113,7 +113,12 @@ case "$path" in
         esac
         ;;
     /nodes/*/qemu/*/clone)
-        body='{"data":"UPID:pve:00001:00001:00000066:qmclone:101:root@pam:"}'
+        if [ -n "${CURL_CLONE_403_VMID:-}" ]; then
+            http_code=403
+            body="{\"errors\":{\"authorization\":\"Permission check failed (/vms/${CURL_CLONE_403_VMID}, VM.Clone)\"}}"
+        else
+            body='{"data":"UPID:pve:00001:00001:00000066:qmclone:101:root@pam:"}'
+        fi
         ;;
     /nodes/*/tasks/*qmclone*/status)
         body="{\"data\":{\"status\":\"stopped\",\"exitstatus\":\"${CURL_CLONE_EXITSTATUS:-OK}\"}}"
@@ -1371,6 +1376,74 @@ if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
     ok "test-25b: free VMID provisions normally (positive control)"
 else
     ko "test-25b: provision failed despite free VMID (positive control broken)"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 26 -- a 403 on the clone names the refused object, not just the target
+#
+# The Proxmox API returns "403 Permission check failed (/vms/<id>, <perm>)"
+# when a token lacks a right on a specific object. provision.sh used to print
+# "clone onto VMID <target> refused" regardless, which sent the reader to the
+# wrong VM when the template was what the API actually denied (db-g8po).
+#
+# (a) 403 names the template (freshly created template not yet in the pool):
+#     message must say "template <id>" and name the permission, not target VMID.
+# (b) 403 names the target VMID (a collision):
+#     message must name the target VMID.
+# ---------------------------------------------------------------------------
+
+# (a) refused object is the template
+rm -f "$CURL_ARGV_FILE"
+_err26a="$SCRATCH/err26a"
+CLONE_RETRIES=1 TEMPLATE_VMID=107 CURL_CLONE_403_VMID=107 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err26a" && _rc26a=0 || _rc26a=$?
+
+if [ "$_rc26a" -ne 0 ]; then
+    ok "test-26a: provision fails when all clone attempts return 403 on the template"
+else
+    ko "test-26a: provision succeeded despite 403 on every clone attempt"
+fi
+if grep -q "template 107" "$_err26a"; then
+    ok "test-26a: error names the template"
+else
+    ko "test-26a: error does not name the template (got: $(cat "$_err26a"))"
+fi
+if grep -q "VM.Clone" "$_err26a"; then
+    ok "test-26a: error names the refused permission"
+else
+    ko "test-26a: error does not name the permission (got: $(cat "$_err26a"))"
+fi
+if ! grep -q "clone onto VMID 200" "$_err26a"; then
+    ok "test-26a: error does not blame the target VMID for a template permission failure"
+else
+    ko "test-26a: error blames the target VMID instead of the template"
+fi
+
+# Restore TEMPLATE_VMID for subsequent tests.
+export TEMPLATE_VMID=101
+
+# (b) refused object is the target VMID (/cluster/nextid returns 200)
+rm -f "$CURL_ARGV_FILE"
+_err26b="$SCRATCH/err26b"
+CLONE_RETRIES=1 CURL_CLONE_403_VMID=200 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err26b" && _rc26b=0 || _rc26b=$?
+
+if [ "$_rc26b" -ne 0 ]; then
+    ok "test-26b: provision fails when all clone attempts return 403 on the target"
+else
+    ko "test-26b: provision succeeded despite 403 on every clone attempt"
+fi
+if grep -q "VMID 200" "$_err26b"; then
+    ok "test-26b: error names the target VMID"
+else
+    ko "test-26b: error does not name the target VMID 200 (got: $(cat "$_err26b"))"
+fi
+if ! grep -q "in the ephemeral-ci pool" "$_err26b"; then
+    ok "test-26b: template pool hint absent when the target VMID was refused"
+else
+    ko "test-26b: template pool hint appeared for a target-VMID refusal"
 fi
 
 # ---------------------------------------------------------------------------
