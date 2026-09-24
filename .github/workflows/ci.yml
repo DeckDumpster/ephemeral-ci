@@ -54,7 +54,8 @@ jobs:
               scripts/test-provision.sh \
               scripts/test-teardown.sh \
               scripts/test-reap.sh \
-              scripts/test-template-substrate.sh; do
+              scripts/test-template-substrate.sh \
+              scripts/test-advance-inputs.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
           done
 
@@ -93,6 +94,12 @@ jobs:
       # required but nothing compared the action file to the consumer workflows.
       - name: consumer action inputs
         run: bash scripts/test-action-inputs.sh
+
+      # Advance-v1 input-diff check: verifies that check-advance-inputs.sh
+      # refuses a candidate that adds a new required input without a default,
+      # and passes candidates that add only optional or defaulted inputs.
+      - name: advance-v1 input diff
+        run: bash scripts/test-advance-inputs.sh
 
       # A second reap suite, in Python, inherited from deckdumpster. It covers
       # the age and enumeration paths against a stubbed Proxmox API; the bash
