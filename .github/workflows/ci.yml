@@ -44,6 +44,20 @@ jobs:
       #                   idiom. Rewriting 16 sites in scripts that destroy
       #                   virtual machines to satisfy a style check is a worse
       #                   trade than the check is worth.
+      # The spira gate command (repo-map) names the same scripts this CI runs.
+      # This step keeps them honest: if a gate clause names a script that does
+      # not exist yet, this step fails here instead of blocking every branch at
+      # gate time with NO_VERDICT (scar: sp-h08ym).
+      - name: gate scripts present
+        run: |
+          for script in \
+              scripts/test-provision.sh \
+              scripts/test-teardown.sh \
+              scripts/test-reap.sh \
+              scripts/test-template-substrate.sh; do
+            test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
+          done
+
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
