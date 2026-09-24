@@ -4,6 +4,14 @@ name: Advance v1
 # "success". Consumers pin @v1; this is the documented path for landing
 # a batch of changes onto them.
 #
+# Before moving the tag, two checks must pass:
+#   1. Probe: provision and teardown a real VM at the candidate SHA. A
+#      candidate whose provision.sh refuses the template, or whose teardown
+#      fails, cannot be v1 — consumers would break immediately.
+#   2. Input diff: any new required input without a default in provision or
+#      teardown breaks every consumer that has not yet added it. The check
+#      names the input and the way through.
+#
 # CI must be running on push to main (ci.yml's push trigger) for this to
 # find green commits reliably. For commits that predate that trigger,
 # manually dispatch ci.yml on main first, wait for it to pass, then run
@@ -13,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       dry-run:
-        description: Print the target commit but do not move the tag.
+        description: Run all checks and report results but do not move the tag.
         type: boolean
         default: false
       consumers-updated:
@@ -30,8 +38,10 @@ permissions:
   actions: read
 
 jobs:
-  advance:
+  find-green:
     runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.find-green.outputs.target }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,21 +76,109 @@ jobs:
           echo "Latest green commit on main:"
           git log --oneline -1 "$found"
 
+  # Provisions and immediately tears down a real VM using the candidate's
+  # own actions. A green CI run proves the scripts pass unit tests; this
+  # proves they work end-to-end against the real template and node.
+  probe:
+    needs: find-green
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.find-green.outputs.target }}
+
+      - name: Probe provision at candidate SHA
+        id: provision
+        uses: ./provision
+        with:
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
+          pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
+          pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
+          pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-node:           ${{ vars.PVE_NODE }}
+          template-vmid:      ${{ vars.TEMPLATE_VMID }}
+
+      - name: Probe teardown at candidate SHA
+        if: always() && steps.provision.outputs.vmid != ''
+        uses: ./teardown
+        with:
+          vmid:               ${{ steps.provision.outputs.vmid }}
+          label:              ${{ steps.provision.outputs.label }}
+          vm-token:           ${{ steps.provision.outputs.vm-token }}
+          runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
+          pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
+          pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-node:           ${{ vars.PVE_NODE }}
+          template-vmid:      ${{ vars.TEMPLATE_VMID }}
+          pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
+
+  advance:
+    needs: [find-green, probe]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Show current v1 and target
         run: |
           current=$(git rev-parse refs/tags/v1 2>/dev/null || echo "(not set)")
-          target="${{ steps.find-green.outputs.target }}"
+          target="${{ needs.find-green.outputs.target }}"
           echo "Current v1 : $current"
           echo "Target     : $target"
           if [ "$current" = "$target" ]; then
             echo "v1 is already at the latest green commit. Nothing to do."
           fi
 
+      - name: Check for new required inputs since v1
+        run: |
+          target="${{ needs.find-green.outputs.target }}"
+          if ! git rev-parse --verify refs/tags/v1 >/dev/null 2>&1; then
+            echo "No v1 tag yet — skipping input-diff check."
+            exit 0
+          fi
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+          for action in provision teardown; do
+            mkdir -p "$WORK/v1" "$WORK/candidate"
+            git show "refs/tags/v1:${action}/action.yml" > "$WORK/v1/${action}.yml"
+            git show "${target}:${action}/action.yml"    > "$WORK/candidate/${action}.yml"
+          done
+
+          blocking=""
+          for action in provision teardown; do
+            echo "--- ${action}/action.yml ---"
+            if ! bash scripts/check-advance-inputs.sh \
+                   "$WORK/v1/${action}.yml" \
+                   "$WORK/candidate/${action}.yml"; then
+              blocking="${blocking}${action} "
+            fi
+          done
+
+          if [ -n "$blocking" ]; then
+            echo "::error::Advance blocked by new required inputs in: ${blocking}"
+            echo "::error::Add a default value to each listed input, or update all consumers to pass it before advancing v1."
+            {
+              echo "### Advance blocked: new required inputs"
+              echo
+              echo "Actions with new required inputs (no default): \`${blocking}\`"
+              echo
+              echo "Way through: add \`default: ''\` to each input, or update all consumers and re-run."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "No new required inputs without defaults."
+
       - name: Check for action interface changes since v1
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          target="${{ steps.find-green.outputs.target }}"
+          target="${{ needs.find-green.outputs.target }}"
           if ! git rev-parse --verify refs/tags/v1 >/dev/null 2>&1; then
             echo "No v1 tag yet — skipping interface check."
             exit 0
@@ -128,10 +226,27 @@ jobs:
           fi
           echo "No action interface changes since v1."
 
+      - name: Dry-run summary
+        if: inputs.dry-run == true
+        run: |
+          target="${{ needs.find-green.outputs.target }}"
+          {
+            echo "### Dry run — checks passed, tag not moved"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Probe (provision + teardown) | passed |"
+            echo "| New required inputs | none |"
+            echo "| Target | \`${target}\` |"
+            echo
+            echo "Re-run with **dry-run: false** to advance the tag."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Dry run complete. Target: $target"
+
       - name: Advance v1 tag
         if: inputs.dry-run == false
         run: |
-          target="${{ steps.find-green.outputs.target }}"
+          target="${{ needs.find-green.outputs.target }}"
           git tag -f v1 "$target"
           git push origin v1 --force
           echo "::notice::v1 advanced to $target"
