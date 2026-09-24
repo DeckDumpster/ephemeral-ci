@@ -51,6 +51,11 @@
 #   CLONE_RETRIES  -- attempts before giving up on VMID collision (default: 5)
 #   TASK_TIMEOUT   -- seconds to wait for a UPID task to complete (default: 120)
 #   AGENT_TIMEOUT  -- seconds to wait for the guest agent to become ready (default: 120)
+#   BOOT_LOCK_TIMEOUT -- seconds to wait for the per-template boot lock (default: 600).
+#                   Linked clones from the same template share a base volume; concurrent
+#                   boots contend on it and can stall long enough to miss AGENT_TIMEOUT
+#                   (sp-bmim8). The lock serialises start-through-agent-ready so each
+#                   boot has the base volume mostly to itself.
 #   CRED_FILE      -- credential file to source (default: /etc/gh-ephemeral-runner/token)
 #   PVE_API_HOST   -- Proxmox API hostname or IP (default: localhost)
 #   PVE_API_PORT   -- Proxmox API port (default: 8006)
@@ -97,6 +102,7 @@ TEMPLATE_VMID="${TEMPLATE_VMID:-101}"
 CLONE_RETRIES="${CLONE_RETRIES:-5}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-120}"
 AGENT_TIMEOUT="${AGENT_TIMEOUT:-120}"
+BOOT_LOCK_TIMEOUT="${BOOT_LOCK_TIMEOUT:-600}"
 CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
 # Where the Proxmox API lives. These default to loopback because that is right
 # when the script runs on the hypervisor, but it no longer does: provision runs
@@ -615,6 +621,26 @@ fi
 printf 'vmid=%s\n' "$VMID"
 printf 'vmtoken=%s\n' "$VM_TOKEN"
 
+# --- Serialize boot by template ---
+#
+# Linked clones from template N all share base-N's volume. Two clones booting
+# at once both fault in blocks from that volume; the second can stall long
+# enough to miss AGENT_TIMEOUT (sp-bmim8). Hold a per-template lock from VM
+# start through agent-ready so at most one clone per template is booting at
+# any moment. The lock is released before credential delivery, which does not
+# touch the disk path that causes contention.
+_BOOT_LOCK_FILE="/var/lock/pve-clone-${TEMPLATE_VMID}.lock"
+exec {_boot_lock_fd}>>"$_BOOT_LOCK_FILE" || {
+    printf 'provision.sh: cannot open boot lock file %s\n' "$_BOOT_LOCK_FILE" >&2
+    exit 1
+}
+if ! flock -w "$BOOT_LOCK_TIMEOUT" "$_boot_lock_fd"; then
+    printf 'provision.sh: timed out waiting for boot lock for template %s (%ss)\n' \
+        "$TEMPLATE_VMID" "$BOOT_LOCK_TIMEOUT" >&2
+    exit 1
+fi
+printf 'provision.sh: acquired boot lock for template %s\n' "$TEMPLATE_VMID" >&2
+
 # --- Start ---
 printf 'provision.sh: starting VM %s\n' "$VMID" >&2
 start_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/status/start")" || exit 1
@@ -651,6 +677,12 @@ while true; do
     fi
     sleep 2
 done
+
+# Release the boot lock. The bulk of the base-volume I/O is done once the
+# agent answers; subsequent steps (apt masking, credential delivery) touch
+# only the clone's own volume.
+exec {_boot_lock_fd}>&-
+printf 'provision.sh: released boot lock for template %s\n' "$TEMPLATE_VMID" >&2
 
 # --- Mask apt automation ---
 #
