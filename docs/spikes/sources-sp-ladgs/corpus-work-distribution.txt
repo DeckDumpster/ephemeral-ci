@@ -1,0 +1,113 @@
+# Work distribution of the 461-suite corpus, and where parallelism stops paying
+# source:    the harness's own per-suite timing ledger
+#            (.runtime/spira/suite-times.log, TSV: run_id branch suite rc wall_secs ...)
+#            written by spira/testenv-batch.sh during THIS spike's 8 vCPU run
+#            (run_id local-1790206201) on VM 9016, harness dd345ae0.
+# retrieved: 2026-09-24
+# why kept:  this is what explains the measured wall clocks rather than merely
+#            reporting them, and it predicts the scaling knee without needing a run
+#            at every size. The model: 460 suites each hold one slot for their elapsed
+#            duration, so wall clock cannot fall below max(W/P, L) where W is total
+#            suite-seconds, P the slot count and L the longest single suite. Note W is
+#            ELAPSED suite-seconds, not CPU-seconds - which is exactly why the CPU can
+#            sit 40% idle while more slots still help: a waiting suite holds its slot.
+# ---------------------------------------------------------------------------
+
+## ANALYSIS OUTPUT
+    === /tmp/sp-ladgs/collected/cpu08/cpu08-only.tsv
+      suites timed            : 460
+      total work W            : 10079 suite-seconds
+      longest single suite L  : 293 s  (test-poison.sh)
+      maxpar P                : 8
+      ideal floor max(W/P, L) : 1260 s   (W/P=1260, L=293)
+      measured suite wall     : 1716 s
+      packing efficiency      : 73.4%  (floor / measured)
+      ledger __batch__ wall   : 1716 s
+      top suites by wall:
+              293s  test-poison.sh
+              289s  test-landing.sh
+              279s  test-budget-drift.sh
+              264s  test-requeue.sh
+              239s  test-verdict.sh
+              233s  test-poison-edge.sh
+              227s  test-requeue-cap-accept.sh
+              197s  test-requeue-cap.sh
+      where the floor changes hands (W held constant at 10079 s):
+          P=8   floor=   1260s   bound by CPU (W/P)
+          P=16  floor=    630s   bound by CPU (W/P)
+          P=24  floor=    420s   bound by CPU (W/P)
+          P=32  floor=    315s   bound by CPU (W/P)
+          P=48  floor=    293s   bound by longest suite L
+          P=64  floor=    293s   bound by longest suite L
+          P=96  floor=    293s   bound by longest suite L
+    
+
+## the knee, stated exactly
+    W = 10079 suite-seconds, L = 293 s
+    W/P = L  when  P = W/L = 34.4 slots
+    so beyond ~34 slots the longest single suite is the floor and extra slots buy nothing.
+
+## THE ANALYSER (analyse-scaling.py)
+    #!/usr/bin/env python3
+    """Analyse a per-suite timing ledger to explain a measured wall clock, and to
+    predict where adding vCPUs stops paying.
+    
+    The model. 461 independent suites are a bag of tasks, each single-threaded (one
+    podman exec) apart from the one exclusive suite. Running them P at a time, wall
+    clock cannot go below either
+        W / P        -- total work divided by the slots, if packing were perfect
+        L            -- the longest single suite, which no amount of parallelism splits
+    so the floor is max(W/P, L). Comparing that floor to the measured wall clock
+    gives the packing efficiency; comparing the two terms to each other says which
+    of the two ceilings a given P is actually up against.
+    """
+    import sys, collections
+    
+    def load(path):
+        rows=[]; batch=None
+        for line in open(path):
+            line=line.rstrip("\n")
+            if not line.strip() or line.startswith("#"): continue
+            f=line.split("\t")
+            if len(f)<5: continue
+            suite, rc, wall = f[2], f[3], f[4]
+            try: wall=float(wall)
+            except ValueError: continue
+            if suite=="__batch__": batch=wall; continue
+            rows.append((suite, rc, wall))
+        return rows, batch
+    
+    def report(path, ncpu, maxpar, measured_wall):
+        rows, batch = load(path)
+        W = sum(w for _,_,w in rows)
+        L = max((w for _,_,w in rows), default=0)
+        longest = sorted(rows, key=lambda r:-r[2])[:8]
+        P = maxpar
+        floor = max(W/P, L)
+        print(f"=== {path}")
+        print(f"  suites timed            : {len(rows)}")
+        print(f"  total work W            : {W:.0f} suite-seconds")
+        print(f"  longest single suite L  : {L:.0f} s  ({longest[0][0] if longest else '-'})")
+        print(f"  maxpar P                : {P}")
+        print(f"  ideal floor max(W/P, L) : {floor:.0f} s   (W/P={W/P:.0f}, L={L:.0f})")
+        if measured_wall:
+            print(f"  measured suite wall     : {measured_wall:.0f} s")
+            print(f"  packing efficiency      : {100*floor/measured_wall:.1f}%  (floor / measured)")
+        if batch: print(f"  ledger __batch__ wall   : {batch:.0f} s")
+        print(f"  top suites by wall:")
+        for s,rc,w in longest:
+            print(f"      {w:7.0f}s  {s}")
+        print(f"  where the floor changes hands (W held constant at {W:.0f} s):")
+        for p in (8,16,24,32,48,64,96):
+            wp=W/p; f=max(wp,L)
+            which="CPU (W/P)" if wp>L else "longest suite L"
+            print(f"      P={p:<3} floor={f:7.0f}s   bound by {which}")
+        print()
+        return W, L
+    
+    if __name__=="__main__":
+        args=sys.argv[1:]
+        while args:
+            path=args.pop(0); ncpu=int(args.pop(0)); maxpar=int(args.pop(0))
+            mw=args.pop(0); mw=float(mw) if mw!="-" else None
+            report(path,ncpu,maxpar,mw)

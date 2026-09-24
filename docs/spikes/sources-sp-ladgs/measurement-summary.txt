@@ -1,0 +1,44 @@
+# sp-ladgs measurement summary — the six runs, in one table
+# source:    derived from runs/batch-<tag>.log, runs/cpu-<tag>.samples and
+#            runs/suite-times-<tag>.tsv in this directory. Every figure here is
+#            recomputable from those files with analyse-samples.py and
+#            analyse-scaling.py, also in this directory.
+# retrieved: 2026-09-24
+# guest:     Proxmox VM 9016 "spike-sp-ladgs-cpu" on node hypervisor, 16 GiB RAM held
+#            constant, vCPU varied. Harness DeckDumpster/spira @ dd345ae0, branch main,
+#            461 suites selected / 460 run in parallel, warm container image.
+#            The VM was destroyed at the end of the session.
+# ---------------------------------------------------------------------------
+
+run      vCPU maxpar  suite   total  concur  cores   busy%  steal%  cgroup  longest  reds
+                       wall    work   -rency  busy            (guest)  peak    suite
+cpu08      8     8    1716s  10079s   5.87  3.26/8   40.7    2.62   1405MiB   293s     3
+cpu08b     8     8    2089s   9018s   4.32  2.59/8   32.4    0.00   2558MiB   246s     5
+cpu16     16    16    1132s  10369s   9.16  5.21/16  32.5    0.05   2578MiB   358s     1
+cpu16b    16    16    1146s  10526s   9.18  5.29/16  33.1    0.77   2630MiB   312s     2
+cpu32     32    32    1582s  14457s   9.14  3.97/32  12.4    2.36   2792MiB   421s     2
+cpu32b    32    32     996s  11899s  11.95  6.46/32  20.2    1.83   2845MiB   466s     2
+
+  suite wall   = testenv-batch's own "batch: wall Ns" (the parallel suite phase only).
+                 Fixed setup before it - container start, configure, install, shared testdb
+                 baseline - was measured at 81s and is NOT included.
+  total work   = sum of all 460 suites' own elapsed seconds (from the timing ledger).
+  concurrency  = total work / suite wall = average number of suites actually in flight.
+  cores busy   = ncpu x busy fraction, over the suite phase only.
+  busy%/steal% = from /proc/stat sampled every 5s, suite phase only.
+
+BY SIZE
+  vCPU   runs            mean    spread   vs 16 vCPU mean
+     8   1716, 2089     1902s     21.7%          +67%
+    16   1132, 1146     1139s      1.2%            --
+    32    996, 1582     1289s     58.8%          +13%
+
+POSITIVE CONTROL
+  The production gate on a real 16 vCPU runner (GitHub run 35897850570, 456 suites,
+  2026-09-23) took 1134s. The two 16 vCPU runs here took 1132s and 1146s - agreement to
+  0.2%, which is what licenses trusting the 8 and 32 vCPU numbers.
+
+CONCLUSION
+  16 vCPU is fastest on the mean AND the only reproducible size. 8 vCPU cannot fill the
+  slots the pipeline could use; 32 vCPU inflates total work 14-38% through suite
+  interference. Recommended EC2 shape for spill: c7i.4xlarge (16 vCPU / 32 GiB), spot.

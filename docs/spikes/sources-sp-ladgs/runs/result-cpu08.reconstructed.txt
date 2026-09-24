@@ -1,0 +1,29 @@
+# Reconstructed by hand from batch-cpu08.log + cpu-cpu08.samples.
+# The driver's own reporting block never ran: this session overwrote
+# measure-corpus.sh in place while it was executing, and bash resumed reading the
+# replaced file at a stale offset, dying with
+#   measure-corpus.sh: line 49: syntax error near unexpected token `)'
+# (law-replace-running-scripts-atomically, violated and then remediated for the
+# later runs). The batch itself completed normally and every raw artefact survived,
+# so only the convenience summary was lost, not the measurement.
+TAG=cpu08
+NCPU=8
+MAXPAR_OVERRIDE=<none>
+MEMAVAIL_MIB_AT_START=14744
+NSUITES_SELECTED=461
+NSUITES_RUN_PARALLEL=460
+SETUP_S=81                      # 23:28:44Z container start -> 23:30:05Z suites begin
+SUITE_WALL_S=1716               # batch self-reported "batch: wall 1716s"
+TOTAL_WALL_S=1797               # 23:28:44Z -> 23:58:41Z
+MAXPAR=8
+MAXPAR_NOTE=cpu-bound: cpu=8 mem=14744MiB avail 1024MiB reserve 192MiB/suite
+CGROUP_PEAK_MIB=1405
+PER_SLOT_MIB=175
+OUTCOMES=438 ok, 18 SKIPPED, 3 RED, 1 SKIP-REQ
+# CPU accounting over the suite phase only (23:30:05Z..23:58:41Z, 341 samples):
+BUSY_PCT=40.7
+CORES_BUSY=3.26                 # of 8
+IOWAIT_PCT=7.5
+STEAL_PCT=2.62
+INTERVALS_UNDER_10PCT_BUSY=89 of 340
+INTERVALS_AT_OR_OVER_80PCT_BUSY=55 of 340

@@ -1,0 +1,17 @@
+TAG=cpu16
+NCPU=16
+MAXPAR_OVERRIDE=<none>
+MEMAVAIL_MIB_AT_START=14897
+NSUITES_SELECTED=460
+RC=1
+WALL_S=1204
+CPU_ACCOUNTING=busy_pct=30.8 idle_pct=69.2 steal_pct=0.1
+HARNESS_COMMIT=dd345ae07caf75f016fefcc7972bb11d68448365
+--- batch self-report ---
+2026-09-24T00:34:57Z spira: batch: running 460 suite(s) in spira-batch-deb7acb23a8f (mode: parallel, maxpar: 16 [cpu-bound: cpu=16 mem=14822MiB avail 1024MiB reserve 192MiB/suite])
+  test-suites-timeout.sh           ok      19s
+  test-testenv-timeout.sh          SKIPPED
+  test-timeout.sh                  ok      204s
+2026-09-24T00:53:49Z spira: batch: cgroup peak 2578MiB (maxpar 16, ~161MiB/slot; budget 192MiB/suite)
+2026-09-24T00:53:49Z spira: batch: wall 1132s
+2026-09-24T00:53:49Z spira: batch: 1 suite(s) red

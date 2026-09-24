@@ -1,0 +1,19 @@
+TAG=cpu16b
+NCPU=16
+MAXPAR_OVERRIDE=<none>
+MEMAVAIL_MIB_AT_START=14867
+NSUITES_SELECTED=460
+RC=1
+WALL_S=1192
+CPU_ACCOUNTING=busy_pct=32.0 idle_pct=67.3 steal_pct=0.7
+HARNESS_COMMIT=dd345ae07caf75f016fefcc7972bb11d68448365
+--- batch self-report ---
+2026-09-24T01:15:05Z spira: batch: running 460 suite(s) in spira-batch-deb7acb23a8f (mode: parallel, maxpar: 16 [cpu-bound: cpu=16 mem=14831MiB avail 1024MiB reserve 192MiB/suite])
+  test-suites-timeout.sh           ok      20s
+  test-testenv-timeout.sh          SKIPPED
+  test-timeout.sh                  ok      150s
+2026-09-24T01:34:11Z spira: batch: cgroup peak 2630MiB (maxpar 16, ~164MiB/slot; budget 192MiB/suite)
+2026-09-24T01:34:11Z spira: batch: wall 1146s
+2026-09-24T01:34:11Z spira: batch: 2 suite(s) red
+  ok    and names the reason as lock-timeout
+  ok    the holder's worktree survives a timeout

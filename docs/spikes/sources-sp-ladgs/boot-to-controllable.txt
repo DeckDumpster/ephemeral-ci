@@ -1,0 +1,33 @@
+# Boot-to-controllable, measured on the Proxmox measurement guest
+# source:    timed during this spike's own resizes of VM 9016 — POST
+#            /nodes/hypervisor/qemu/9016/status/start, then poll agent/exec until a
+#            command returns. Recorded by resize.sh (reproduced below).
+# retrieved: 2026-09-24
+# why kept:  the EC2 per-run cost model needs a pre-gate overhead term (boot + become
+#            controllable + deliver token + register runner). No AWS account exists on
+#            this box, so the EC2 figure cannot be measured. This is the Proxmox
+#            analogue, and it is a MEASUREMENT standing in for an ESTIMATE — it is not
+#            an EC2 number and must not be quoted as one. ephemeral-ci's provision.sh
+#            allows AGENT_TIMEOUT=120s for the same step, which is the timeout rather
+#            than the typical.
+# ---------------------------------------------------------------------------
+
+## measurements
+    2026-09-24T00:02:14Z cores=32 boot_to_agent_s=58
+
+## how it was timed (resize.sh, extract)
+    say "starting"
+    BOOT_T0=$(date +%s)
+    /tmp/pv.sh POST "/nodes/hypervisor/qemu/$VMID/status/start" >/dev/null || exit 1
+    
+    say "waiting for guest agent"
+    for i in $(seq 1 60); do
+        if out=$(/tmp/gx.sh "$VMID" 30 /bin/bash -lc 'nproc; awk "/^MemAvailable:/{printf \"%d\", \$2/1024}" /proc/meminfo' 2>/dev/null); then
+            BOOT_S=$(( $(date +%s) - BOOT_T0 ))
+            say "agent up after ${BOOT_S}s: nproc=$(echo "$out" | head -1) memavail=$(echo "$out" | tail -1)MiB"
+            printf '%s cores=%s boot_to_agent_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CORES" "$BOOT_S" >> /tmp/sp-ladgs/boot-timings.txt
+            exit 0
+        fi
+        sleep 5
+    done
+    say "agent never came up"; exit 1

@@ -1,0 +1,242 @@
+{
+ "_provenance": {
+  "documents": [
+   {
+    "bytes": 2837927,
+    "sha256": "e22171ee6e5d350e049ea63dbc09aa70cc2cbfb5b7d75eb49e8aa048961b9944",
+    "url": "https://website.spot.ec2.aws.a2z.com/spot.json"
+   },
+   {
+    "bytes": 1190579,
+    "sha256": "f2bd345cbf48629e9ba32d127dd989aada8db3c099c21f54e941611d034e32be",
+    "url": "https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json"
+   }
+  ],
+  "interruptionRateRanges": [
+   {
+    "dots": 0,
+    "index": 0,
+    "label": "<5%",
+    "max": 5
+   },
+   {
+    "dots": 1,
+    "index": 1,
+    "label": "5-10%",
+    "max": 11
+   },
+   {
+    "dots": 2,
+    "index": 2,
+    "label": "10-15%",
+    "max": 16
+   },
+   {
+    "dots": 3,
+    "index": 3,
+    "label": "15-20%",
+    "max": 22
+   },
+   {
+    "dots": 4,
+    "index": 4,
+    "label": ">20%",
+    "max": 100
+   }
+  ],
+  "note": "Spot prices are the live public feed behind the EC2 Spot pricing page; the advisor block is the public Spot Instance Advisor dataset (savings vs on-demand, and the frequency-of-interruption bucket). Both are point-in-time: spot prices move. Only the candidate instance types are kept; sha256 of each full document is recorded.",
+  "retrieved": "2026-09-23"
+ },
+ "spotAdvisorLinux": {
+  "us-east-1": {
+   "c6i.4xlarge": {
+    "r": 4,
+    "s": 55
+   },
+   "c7a.2xlarge": {
+    "r": 1,
+    "s": 56
+   },
+   "c7a.4xlarge": {
+    "r": 1,
+    "s": 55
+   },
+   "c7a.8xlarge": {
+    "r": 3,
+    "s": 56
+   },
+   "c7g.2xlarge": {
+    "r": 1,
+    "s": 58
+   },
+   "c7g.4xlarge": {
+    "r": 0,
+    "s": 54
+   },
+   "c7g.8xlarge": {
+    "r": 0,
+    "s": 65
+   },
+   "c7i-flex.2xlarge": {
+    "r": 0,
+    "s": 51
+   },
+   "c7i-flex.4xlarge": {
+    "r": 3,
+    "s": 58
+   },
+   "c7i-flex.8xlarge": {
+    "r": 4,
+    "s": 59
+   },
+   "c7i.2xlarge": {
+    "r": 4,
+    "s": 56
+   },
+   "c7i.4xlarge": {
+    "r": 4,
+    "s": 57
+   },
+   "c7i.8xlarge": {
+    "r": 4,
+    "s": 66
+   },
+   "c8g.4xlarge": {
+    "r": 4,
+    "s": 57
+   },
+   "c8i.4xlarge": {
+    "r": 1,
+    "s": 43
+   },
+   "m7a.2xlarge": {
+    "r": 4,
+    "s": 57
+   },
+   "m7i.2xlarge": {
+    "r": 4,
+    "s": 59
+   },
+   "m7i.4xlarge": {
+    "r": 4,
+    "s": 55
+   }
+  },
+  "us-west-2": {
+   "c6i.4xlarge": {
+    "r": 4,
+    "s": 58
+   },
+   "c7a.2xlarge": {
+    "r": 4,
+    "s": 55
+   },
+   "c7a.4xlarge": {
+    "r": 2,
+    "s": 57
+   },
+   "c7a.8xlarge": {
+    "r": 3,
+    "s": 62
+   },
+   "c7g.2xlarge": {
+    "r": 1,
+    "s": 53
+   },
+   "c7g.4xlarge": {
+    "r": 0,
+    "s": 60
+   },
+   "c7g.8xlarge": {
+    "r": 0,
+    "s": 55
+   },
+   "c7i-flex.2xlarge": {
+    "r": 0,
+    "s": 51
+   },
+   "c7i-flex.4xlarge": {
+    "r": 2,
+    "s": 57
+   },
+   "c7i-flex.8xlarge": {
+    "r": 3,
+    "s": 60
+   },
+   "c7i.2xlarge": {
+    "r": 3,
+    "s": 55
+   },
+   "c7i.4xlarge": {
+    "r": 1,
+    "s": 56
+   },
+   "c7i.8xlarge": {
+    "r": 2,
+    "s": 61
+   },
+   "c8g.4xlarge": {
+    "r": 0,
+    "s": 62
+   },
+   "c8i.4xlarge": {
+    "r": 0,
+    "s": 49
+   },
+   "m7a.2xlarge": {
+    "r": 2,
+    "s": 53
+   },
+   "m7i.2xlarge": {
+    "r": 4,
+    "s": 59
+   },
+   "m7i.4xlarge": {
+    "r": 1,
+    "s": 55
+   }
+  }
+ },
+ "spotPriceUSDPerHour": {
+  "us-east-1": {
+   "c6i.4xlarge": "0.4658",
+   "c7a.2xlarge": "0.1669",
+   "c7a.4xlarge": "0.3142",
+   "c7a.8xlarge": "0.5317",
+   "c7g.2xlarge": "0.1179",
+   "c7g.4xlarge": "0.2018",
+   "c7g.8xlarge": "0.3937",
+   "c7i-flex.2xlarge": "0.1464",
+   "c7i-flex.4xlarge": "0.268",
+   "c7i-flex.8xlarge": "0.5057",
+   "c7i.2xlarge": "0.1756",
+   "c7i.4xlarge": "0.2446",
+   "c7i.8xlarge": "0.5085",
+   "c8g.4xlarge": "0.2603",
+   "c8i.4xlarge": "0.3264",
+   "m7a.2xlarge": "0.2005",
+   "m7i.2xlarge": "0.1643",
+   "m7i.4xlarge": "0.293"
+  },
+  "us-west-2": {
+   "c6i.4xlarge": "0.2517",
+   "c7a.2xlarge": "0.15",
+   "c7a.4xlarge": "0.3013",
+   "c7a.8xlarge": "0.6161",
+   "c7g.2xlarge": "0.1077",
+   "c7g.4xlarge": "0.2171",
+   "c7g.8xlarge": "0.4157",
+   "c7i-flex.2xlarge": "0.1416",
+   "c7i-flex.4xlarge": "0.3012",
+   "c7i-flex.8xlarge": "0.5603",
+   "c7i.2xlarge": "0.1466",
+   "c7i.4xlarge": "0.2503",
+   "c7i.8xlarge": "0.5171",
+   "c8g.4xlarge": "0.2231",
+   "c8i.4xlarge": "0.2922",
+   "m7a.2xlarge": "0.196",
+   "m7i.2xlarge": "0.1915",
+   "m7i.4xlarge": "0.3188"
+  }
+ }
+}

@@ -1,0 +1,81 @@
+# Hypervisor state during the sp-ladgs vCPU measurements
+# source:    Proxmox VE API on node "hypervisor" (GET /nodes/hypervisor/status,
+#            GET /nodes/hypervisor/qemu), read with the concierge API token.
+#            TLS verified against the cluster CA /etc/pve/pve-root-ca.pem, which was
+#            itself bootstrapped from GET /nodes/hypervisor/certificates/info over a
+#            channel pinned to the leaf SPKI
+#            sha256//p6DC+kWPfT/EkEATTaC/TpljMz7wGLpV4dpcme9fkNU=, and then checked
+#            with `openssl verify` to actually sign that leaf.
+# why kept:  The measurement guest shares this node with the live CI runner fleet.
+#            A vCPU scaling curve measured on a contended box can understate the
+#            benefit of more vCPUs, so the node's own state is part of the evidence
+#            for every number in the write-up. Snapshots are appended per run.
+# ---------------------------------------------------------------------------
+
+## snapshot: before/around the 8 vCPU run (cpu08)
+    # retrieved: 2026-09-23T23:40:35Z
+    node logical CPUs : 48 (Intel(R) Xeon(R) Platinum 8160 CPU @ 2.10GHz)
+    node loadavg      : 27.27, 23.96, 20.14
+    node cpu util     : 8.0%
+    node memory       : 92054 MiB used of 128543 MiB
+    
+    running guests:
+         100  24vcpu  32768MiB  Agent-Swarm                 
+         101  16vcpu   6144MiB  gh-runner-101               
+         102   8vcpu   8192MiB  Prod-Services               
+         103  16vcpu   6144MiB  gh-runner-103               
+         104  16vcpu   6144MiB  gh-runner-104               
+         105  16vcpu  32768MiB  Agent-Swarm-Test            
+         106  16vcpu   6144MiB  gh-runner-106               
+         108  16vcpu   6144MiB  gh-runner-108               
+        9016   8vcpu  16384MiB  spike-sp-ladgs-cpu             <-- the measurement guest
+    
+    total vCPU allocated to running guests      : 136
+      of which the measurement guest            : 8
+      allocated to OTHER guests                 : 128
+    node physical logical CPUs                  : 48
+    oversubscription ratio (allocated / physical): 2.83x
+
+## snapshot: late in the 8 vCPU run (cpu08), ~386/461 suites complete
+    # retrieved: 2026-09-23T23:53:55Z
+    node logical CPUs : 48 (Intel(R) Xeon(R) Platinum 8160 CPU @ 2.10GHz)
+    node loadavg      : 38.40, 49.07, 38.28
+    node cpu util     : 65.0%
+    node memory       : 81631 MiB used of 128543 MiB
+    
+    running guests:
+         100  24vcpu  32768MiB  Agent-Swarm                 
+         101  16vcpu   6144MiB  gh-runner-101               
+         102   8vcpu   8192MiB  Prod-Services               
+         105  16vcpu  32768MiB  Agent-Swarm-Test            
+         106  16vcpu   6144MiB  gh-runner-106               
+         108  16vcpu   6144MiB  gh-runner-108               
+        9016   8vcpu  16384MiB  spike-sp-ladgs-cpu             <-- the measurement guest
+    
+    total vCPU allocated to running guests      : 104
+      of which the measurement guest            : 8
+      allocated to OTHER guests                 : 96
+    node physical logical CPUs                  : 48
+    oversubscription ratio (allocated / physical): 2.17x
+
+## snapshot: after the last measurement (cpu08b), before VM 9016 was destroyed
+    # retrieved: 2026-09-24T02:17:41Z
+    node logical CPUs : 48 (Intel(R) Xeon(R) Platinum 8160 CPU @ 2.10GHz)
+    node loadavg      : 10.50, 12.40, 14.40
+    node cpu util     : 10.7%
+    node memory       : 72189 MiB used of 128543 MiB
+    
+    running guests:
+         100  24vcpu  32768MiB  Agent-Swarm                 
+         101  16vcpu   6144MiB  gh-runner-101               
+         102   8vcpu   8192MiB  Prod-Services               
+         103  16vcpu   6144MiB  gh-runner-103               
+         104  16vcpu   6144MiB  gh-runner-104               
+         105  16vcpu  32768MiB  Agent-Swarm-Test            
+        9016   8vcpu  16384MiB  spike-sp-ladgs-cpu             <-- the measurement guest
+    
+    total vCPU allocated to running guests      : 104
+      of which the measurement guest            : 8
+      allocated to OTHER guests                 : 96
+    node physical logical CPUs                  : 48
+    oversubscription ratio (allocated / physical): 2.17x
