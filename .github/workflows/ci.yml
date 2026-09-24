@@ -72,6 +72,14 @@ jobs:
       - name: action contract
         run: bash scripts/test-actions.sh
 
+      # Consumer-input check: verify that a workflow calling the action passes
+      # all inputs declared required: true. A composite action does not enforce
+      # required — GitHub silently supplies nothing when a caller omits an input.
+      # This is what would have caught sp-q1sp3: teardown declared template-vmid
+      # required but nothing compared the action file to the consumer workflows.
+      - name: consumer action inputs
+        run: bash scripts/test-action-inputs.sh
+
       # A second reap suite, in Python, inherited from deckdumpster. It covers
       # the age and enumeration paths against a stubbed Proxmox API; the bash
       # suite covers the busy check and the VM-to-runner correlation. Kept as
