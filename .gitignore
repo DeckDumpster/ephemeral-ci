@@ -1,1 +1,3 @@
 *.tar.xz
+__pycache__/
+*.pyc
