@@ -76,12 +76,16 @@ jobs:
           echo "Latest green commit on main:"
           git log --oneline -1 "$found"
 
-  # Provisions and immediately tears down a real VM using the candidate's
-  # own actions. A green CI run proves the scripts pass unit tests; this
-  # proves they work end-to-end against the real template and node.
-  probe:
+  # Provisions a real VM using the candidate's own actions. A green CI run
+  # proves the scripts pass unit tests; this proves they work end-to-end
+  # against the real template and node.
+  probe-provision:
     needs: find-green
     runs-on: ubuntu-latest
+    outputs:
+      vmid:     ${{ steps.provision.outputs.vmid }}
+      label:    ${{ steps.provision.outputs.label }}
+      vm-token: ${{ steps.provision.outputs.vm-token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,13 +104,25 @@ jobs:
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
 
+  # Tears down the VM provisioned above. Runs in its own job on a fresh
+  # runner so the Tailscale setup does not collide with probe-provision's.
+  # if: always() ensures cleanup runs even when provision failed mid-way.
+  probe-teardown:
+    needs: [find-green, probe-provision]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.find-green.outputs.target }}
+
       - name: Probe teardown at candidate SHA
-        if: always() && steps.provision.outputs.vmid != ''
+        if: needs.probe-provision.outputs.vmid != ''
         uses: ./teardown
         with:
-          vmid:               ${{ steps.provision.outputs.vmid }}
-          label:              ${{ steps.provision.outputs.label }}
-          vm-token:           ${{ steps.provision.outputs.vm-token }}
+          vmid:               ${{ needs.probe-provision.outputs.vmid }}
+          label:              ${{ needs.probe-provision.outputs.label }}
+          vm-token:           ${{ needs.probe-provision.outputs.vm-token }}
           runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
           ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
@@ -118,7 +134,7 @@ jobs:
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
 
   advance:
-    needs: [find-green, probe]
+    needs: [find-green, probe-provision, probe-teardown]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
