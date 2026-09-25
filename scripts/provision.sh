@@ -325,27 +325,23 @@ pick_vmid() {
 # (Permission check failed (/vms/<id>, VM.GuestAgent.Unrestricted)) rather
 # than a clear "VMID in use" message (db-spsp).
 #
-# Only a 404 from status/current means the VMID is free. Any other response
-# — 200 for a stopped/running VM, or anything else — is treated as occupied.
+# Uses GET /cluster/nextid?vmid=<n>, which returns 200 when the VMID is free
+# and an error (e.g. "vmid <n> already used") when it is taken. pvapi logs the
+# HTTP code and response body to stderr on non-2xx.
+#
+# Do NOT probe GET /nodes/{node}/qemu/{vmid}/status/current: the real Proxmox
+# API returns HTTP 500 with "Configuration file '...' does not exist" for a
+# VMID with no VM, not 404. Treating anything other than 404 as occupied causes
+# every free VMID to be refused (db-ueon).
 # ---------------------------------------------------------------------------
 assert_vmid_free() {
     local vmid="$1"
-    local body_file code
-    body_file="$(mktemp)"
-    code="$(curl -sS -k -o "$body_file" -w '%{http_code}' -X GET \
-        -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
-        "https://${PVE_API_HOST}:${PVE_API_PORT}/api2/json/nodes/${PVE_NODE}/qemu/${vmid}/status/current")" || {
-        rm -f "$body_file"
-        printf 'provision.sh: curl error checking VMID %s — refusing to clone\n' "$vmid" >&2
-        return 1
-    }
-    rm -f "$body_file"
-    case "$code" in
-        404) return 0 ;;
-        *) printf 'provision.sh: VMID %s is occupied (status/current returned HTTP %s) — refusing to clone\n' \
-               "$vmid" "$code" >&2
-           return 1 ;;
-    esac
+    if pvapi GET "/cluster/nextid?vmid=${vmid}" >/dev/null; then
+        return 0
+    fi
+    printf 'provision.sh: VMID %s is occupied (nextid rejected it) — refusing to clone\n' \
+        "$vmid" >&2
+    return 1
 }
 
 # --- Wait for the node to have room -------------------------------------------
