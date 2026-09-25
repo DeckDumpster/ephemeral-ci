@@ -316,34 +316,6 @@ pick_vmid() {
     printf '%s' "$vmid"
 }
 
-# ---------------------------------------------------------------------------
-# assert_vmid_free <vmid>
-#
-# Verifies the VMID nextid returned is not already in use by a stopped VM.
-# /cluster/nextid can hand back a VMID still owned by a stopped (not destroyed)
-# VM; the clone then fails with an opaque permission error
-# (Permission check failed (/vms/<id>, VM.GuestAgent.Unrestricted)) rather
-# than a clear "VMID in use" message (db-spsp).
-#
-# Uses GET /cluster/nextid?vmid=<n>, which returns 200 when the VMID is free
-# and an error (e.g. "vmid <n> already used") when it is taken. pvapi logs the
-# HTTP code and response body to stderr on non-2xx.
-#
-# Do NOT probe GET /nodes/{node}/qemu/{vmid}/status/current: the real Proxmox
-# API returns HTTP 500 with "Configuration file '...' does not exist" for a
-# VMID with no VM, not 404. Treating anything other than 404 as occupied causes
-# every free VMID to be refused (db-ueon).
-# ---------------------------------------------------------------------------
-assert_vmid_free() {
-    local vmid="$1"
-    if pvapi GET "/cluster/nextid?vmid=${vmid}" >/dev/null; then
-        return 0
-    fi
-    printf 'provision.sh: VMID %s is occupied (nextid rejected it) — refusing to clone\n' \
-        "$vmid" >&2
-    return 1
-}
-
 # --- Wait for the node to have room -------------------------------------------
 #
 # WHY THIS IS HERE AND NOT IN THE GUEST. By the time a runner VM exists its
@@ -539,7 +511,6 @@ VM_TOKEN=$(python3 -c 'import os,binascii; print(binascii.hexlify(os.urandom(16)
 
 # --- Pick a VMID ---
 VMID="$(pick_vmid)" || exit 1
-assert_vmid_free "$VMID" || exit 1
 
 # Capture the wall-clock epoch once before the clone loop. provision_time is
 # written into the VM description so reap.sh can use it as the authoritative
