@@ -54,6 +54,7 @@ export CURL_ARGV_FILE="$SCRATCH/curl-argv"
 #   CURL_VMID_403_UNTIL     -- vmid probes for ids <= this return 403 (pool ACL)
 #   CURL_FILEWRITE_FAIL_N   -- first N agent/file-write calls return HTTP 500
 #   CURL_AGENT_PING_FAIL    -- if "1", agent/ping returns 500 (agent not ready)
+#   CURL_CLONE_FAIL_N       -- first N clone POSTs return 403 (collision), then succeed
 # ---------------------------------------------------------------------------
 cat >"$SCRATCH/bin/curl" <<'SH'
 #!/usr/bin/env bash
@@ -135,6 +136,17 @@ case "$path" in
         if [ -n "${CURL_CLONE_403_VMID:-}" ]; then
             http_code=403
             body="{\"errors\":{\"authorization\":\"Permission check failed (/vms/${CURL_CLONE_403_VMID}, VM.Clone)\"}}"
+        elif [ -n "${CURL_CLONE_FAIL_N:-}" ]; then
+            _cf_state="${TMPDIR:-/tmp}/clone-fail-count"
+            _cf_n=$(cat "$_cf_state" 2>/dev/null || echo 0)
+            _cf_n=$(( _cf_n + 1 ))
+            printf '%s' "$_cf_n" > "$_cf_state"
+            if [ "$_cf_n" -le "${CURL_CLONE_FAIL_N}" ]; then
+                http_code=403
+                body='{"errors":{"authorization":"Permission check failed (/vms/200, VM.Clone)"}}'
+            else
+                body='{"data":"UPID:pve:00001:00001:00000066:qmclone:101:root@pam:"}'
+            fi
         else
             body='{"data":"UPID:pve:00001:00001:00000066:qmclone:101:root@pam:"}'
         fi
@@ -1356,54 +1368,73 @@ fi
 export TEMPLATE_VMID=101
 
 # ---------------------------------------------------------------------------
-# Test 25 -- occupied VMID: provision refuses before cloning and names it (db-spsp)
+# Test 25 -- provision makes no per-VMID existence probe before the clone (db-zzon)
 #
-# /cluster/nextid can return a VMID still held by a stopped (not destroyed) VM.
-# The clone would then fail with an opaque permission error rather than a clear
-# message. provision.sh checks /cluster/nextid?vmid=<n> before cloning: an
-# error response means the VMID is occupied, and provision refuses before
-# touching the clone endpoint.
+# pick_vmid calls /cluster/nextid (no ?vmid= parameter) to get the next id.
+# That is the only pre-clone VMID call. No subsequent probe —
+# /cluster/nextid?vmid=<n> (db-spsp/db-ueon) or /status/current (db-spsp) —
+# may appear before the clone. The clone itself is the authoritative collision
+# check: Proxmox refuses to clone onto an existing VMID, and that refusal
+# requires no permission the pool-scoped token lacks. See pick_vmid.
 #
-# The original fix (db-spsp) probed status/current and treated 404 as free.
-# The real Proxmox API returns HTTP 500 (not 404) for a VMID with no VM, so
-# every free VMID was treated as occupied (db-ueon). Using nextid?vmid=<n> is
-# the authoritative check: 200 = free, error = occupied.
-#
-# (a) occupied VMID → refuse before cloning, name the VMID in the error
-# (b) free VMID (positive control) → provision completes normally
+# (a) normal run: neither nextid?vmid= nor status/current appears before the clone
+# (b) positive control: the clone IS reached (so the absence above is grounded)
+# (c) even with CURL_VMID_OCCUPIED set (which would make the old probe fail),
+#     provision reaches the clone because the probe no longer exists
+# (d) clone-refusal retry: a collision caught by the clone triggers a fresh
+#     nextid call and a retry; the second attempt succeeds
 # ---------------------------------------------------------------------------
 
-# (a) nextid returns VMID 200 but that VMID is occupied (status/current returns 200)
-rm -f "$CURL_ARGV_FILE"
-_err25="$SCRATCH/err25"
-CURL_VMID_OCCUPIED=200 bash "$PROVISION" valid-label test-token \
-    https://github.com/owner/repo >/dev/null 2>"$_err25" && _rc25=0 || _rc25=$?
-
-if [ "$_rc25" -ne 0 ]; then
-    ok "test-25a: provision refuses when VMID is occupied"
-else
-    ko "test-25a: provision proceeded despite occupied VMID"
-fi
-
-if ! grep -q '/clone' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-25a: clone endpoint not called (refused before cloning)"
-else
-    ko "test-25a: clone was called despite occupied VMID"
-fi
-
-if grep -q '200' "$_err25" 2>/dev/null; then
-    ok "test-25a: error message names the occupied VMID"
-else
-    ko "test-25a: error message does not name the occupied VMID (got: $(cat "$_err25"))"
-fi
-
-# (b) free VMID (nextid?vmid=200 returns 200 with no CURL_VMID_OCCUPIED) → provision succeeds
+# (a) + (b): no per-VMID probe, clone is still reached
 rm -f "$CURL_ARGV_FILE"
 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
-if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
-    ok "test-25b: free VMID provisions normally (positive control)"
+
+_vmid_probe_count=$(grep -cF '/cluster/nextid?vmid=' "$CURL_ARGV_FILE" 2>/dev/null) || _vmid_probe_count=0
+_status_cur_count=$(grep -cF '/status/current' "$CURL_ARGV_FILE" 2>/dev/null) || _status_cur_count=0
+_total_probes=$(( _vmid_probe_count + _status_cur_count ))
+
+if [ "$_total_probes" -eq 0 ]; then
+    ok "test-25a: no per-VMID existence probe before the clone"
 else
-    ko "test-25b: provision failed despite free VMID (positive control broken)"
+    ko "test-25a: per-VMID probe found (nextid?vmid=$_vmid_probe_count, status/current=$_status_cur_count)"
+fi
+
+if grep -qF '/clone' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-25b: clone endpoint was reached (assertion is grounded)"
+else
+    ko "test-25b: clone endpoint not reached -- the absence above proves nothing"
+fi
+
+# (c) CURL_VMID_OCCUPIED=200 makes nextid?vmid=200 return 500, but provision
+# no longer makes that call, so the provision reaches the clone normally.
+rm -f "$CURL_ARGV_FILE"
+CURL_VMID_OCCUPIED=200 run_provision valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>/dev/null
+if grep -qF '/clone' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-25c: provision reaches the clone even when nextid?vmid= would 500"
+else
+    ko "test-25c: provision failed on a VMID that would have failed the old probe"
+fi
+
+# (d) clone-refusal retry: first clone returns 403 (collision), provision
+# calls nextid again and retries; the second attempt succeeds.
+rm -f "$CURL_ARGV_FILE" "${TMPDIR:-/tmp}/clone-fail-count"
+CURL_CLONE_FAIL_N=1 run_provision valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>/dev/null
+_rc25d=$?
+rm -f "${TMPDIR:-/tmp}/clone-fail-count"
+
+if [ "$_rc25d" -eq 0 ]; then
+    ok "test-25d: provision retries and succeeds after a clone collision"
+else
+    ko "test-25d: provision did not recover from a clone collision (rc=$_rc25d)"
+fi
+
+_clone_calls=$(grep -cF '/clone' "$CURL_ARGV_FILE" 2>/dev/null) || _clone_calls=0
+if [ "${_clone_calls:-0}" -ge 2 ]; then
+    ok "test-25d: clone was attempted more than once (retry happened)"
+else
+    ko "test-25d: clone called only once — retry did not happen ($_clone_calls call(s))"
 fi
 
 # ---------------------------------------------------------------------------
