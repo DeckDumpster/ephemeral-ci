@@ -56,7 +56,8 @@ jobs:
               scripts/test-reap.sh \
               scripts/test-template-substrate.sh \
               scripts/test-advance-inputs.sh \
-              scripts/test-aws-bootstrap.sh; do
+              scripts/test-aws-bootstrap.sh \
+              scripts/test-ami-build.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
           done
 
@@ -188,6 +189,32 @@ jobs:
           aws-region: us-west-2
       - name: aws-bootstrap test
         run: bash scripts/test-aws-bootstrap.sh
+
+  # Builds the runner AMI and verifies the acceptance criteria:
+  #   1. A real AMI is built and tagged with build-date and git-commit.
+  #   2. An instance from it registers with SSM within SSM_WAIT_SECONDS.
+  #   3. template-substrate.sh --check passes on the instance.
+  #   4. All substrate packages are present.
+  #   5. A stale AMI (created before the build) and its snapshot are removed
+  #      by --prune-only --retain 1 (positive control).
+  #
+  # Assumes ephemeral-ci-ami-build role via OIDC. No stored keys.
+  # Limited to DeckDumpster/ephemeral-ci; forks cannot assume the role.
+  test-ami-build:
+    runs-on: ubuntu-latest
+    if: github.repository == 'DeckDumpster/ephemeral-ci'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::189923011121:role/ephemeral-ci-ami-build
+          aws-region: us-west-2
+      - name: ami-build test
+        run: bash scripts/test-ami-build.sh
 
   # Only runs when `test` fails on a pull request. Checks whether the base
   # branch's most recent CI run is also failing, which would mean the red is

@@ -12,6 +12,7 @@
 #   EC2 instance role + profile: AmazonSSMManagedInstanceCore only
 #   GitHub Actions OIDC provider (token.actions.githubusercontent.com)
 #   Spill role (ephemeral-ci-spill): EC2 run/terminate/describe + SSM, tagged resources only
+#   AMI build role (ephemeral-ci-ami-build): spill + CreateImage/DeregisterImage/DeleteSnapshot
 #   CI test role (ephemeral-ci-ci-test): read-only + iam:SimulatePrincipalPolicy
 #   Budget alert: $100/month on tag spill:owner=ephemeral-ci
 #   Launch template: IMDSv2 required, gp3 root, tags propagated to instance+volume
@@ -39,6 +40,7 @@ SUBNET_AZ="${REGION}a"
 INSTANCE_ROLE_NAME="ephemeral-ci-runner"
 INSTANCE_PROFILE_NAME="ephemeral-ci-runner"
 SPILL_ROLE_NAME="ephemeral-ci-spill"
+AMI_BUILD_ROLE_NAME="ephemeral-ci-ami-build"
 CI_TEST_ROLE_NAME="ephemeral-ci-ci-test"
 BUDGET_NAME="ephemeral-ci-spill"
 LAUNCH_TEMPLATE_NAME="ephemeral-ci-spill"
@@ -448,6 +450,198 @@ ensure_spill_role() {
 }
 
 # ---------------------------------------------------------------------------
+# ensure_ami_build_role: role for ami-build.sh and its CI test.
+#
+# Permissions mirror the spill role (RunInstances on tagged instances,
+# SSM send/describe) plus the AMI lifecycle operations that the spill role
+# does not need: CreateImage/DeregisterImage/DeleteSnapshot/StopInstances.
+# All write operations are tag-conditioned; CreateImage is conditioned on
+# the source instance carrying the spill tag.
+#
+# Returns role ARN on stdout.
+# ---------------------------------------------------------------------------
+ensure_ami_build_role() {
+    local oidc_provider_arn="$1"
+    local existing
+    existing="$(aws iam get-role --role-name "$AMI_BUILD_ROLE_NAME" \
+        --query 'Role.RoleName' --output text 2>/dev/null)" || true
+    if [ "$existing" = "$AMI_BUILD_ROLE_NAME" ]; then
+        local arn
+        arn="$(aws iam get-role --role-name "$AMI_BUILD_ROLE_NAME" \
+            --query 'Role.Arn' --output text)"
+        printf 'no-change: ami-build-role %s\n' "$arn" >&2
+        printf '%s' "$arn"
+        return 0
+    fi
+
+    local trust
+    trust="$(printf '{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Federated": "%s"},
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+      },
+      "StringLike": {
+        "token.actions.githubusercontent.com:sub": "repo:%s:*"
+      }
+    }
+  }]
+}' "$oidc_provider_arn" "$GITHUB_REPO")"
+
+    local policy
+    policy="$(printf '{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunInstancesTagged",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:%s:%s:instance/*",
+      "Condition": {
+        "StringEquals": {"ec2:RequestTag/spill:owner": "ephemeral-ci"}
+      }
+    },
+    {
+      "Sid": "RunInstancesAncillary",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:%s::image/*",
+        "arn:aws:ec2:%s:%s:subnet/*",
+        "arn:aws:ec2:%s:%s:security-group/*",
+        "arn:aws:ec2:%s:%s:network-interface/*",
+        "arn:aws:ec2:%s:%s:volume/*",
+        "arn:aws:ec2:%s:%s:launch-template/*"
+      ]
+    },
+    {
+      "Sid": "TagOnCreate",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {"ec2:CreateAction": ["RunInstances", "CreateImage"]}
+      }
+    },
+    {
+      "Sid": "StopTerminateTagged",
+      "Effect": "Allow",
+      "Action": ["ec2:StopInstances", "ec2:TerminateInstances"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {"aws:ResourceTag/spill:owner": "ephemeral-ci"}
+      }
+    },
+    {
+      "Sid": "CreateImageTagged",
+      "Effect": "Allow",
+      "Action": "ec2:CreateImage",
+      "Resource": "arn:aws:ec2:%s:%s:instance/*",
+      "Condition": {
+        "StringEquals": {"aws:ResourceTag/spill:owner": "ephemeral-ci"}
+      }
+    },
+    {
+      "Sid": "CreateImageSnapshot",
+      "Effect": "Allow",
+      "Action": "ec2:CreateImage",
+      "Resource": [
+        "arn:aws:ec2:%s:%s:image/*",
+        "arn:aws:ec2:%s:%s:snapshot/*"
+      ]
+    },
+    {
+      "Sid": "DeregisterDeleteTagged",
+      "Effect": "Allow",
+      "Action": ["ec2:DeregisterImage", "ec2:DeleteSnapshot"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {"aws:ResourceTag/spill:owner": "ephemeral-ci"}
+      }
+    },
+    {
+      "Sid": "Describe",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeImages",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeLaunchTemplates",
+        "ec2:DescribeLaunchTemplateVersions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SSMSendCommandInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ec2:%s:%s:instance/*",
+      "Condition": {
+        "StringEquals": {"aws:ResourceTag/spill:owner": "ephemeral-ci"}
+      }
+    },
+    {
+      "Sid": "SSMSendCommandDocument",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": "arn:aws:ssm:%s::document/*"
+    },
+    {
+      "Sid": "SSMDescribe",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:DescribeInstanceInformation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "StsCallerIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    }
+  ]
+}' "$REGION" "$ACCOUNT_ID" \
+   "$REGION" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION" "$ACCOUNT_ID" \
+   "$REGION")"
+
+    aws_w iam create-role \
+        --role-name "$AMI_BUILD_ROLE_NAME" \
+        --assume-role-policy-document "$trust" \
+        --description "ephemeral-ci: AMI build role (EC2 + SSM + CreateImage/Deregister, tagged resources)" \
+        --tags "[{\"Key\":\"${TAG_KEY}\",\"Value\":\"${TAG_VALUE}\"}]" >/dev/null
+    if [ "$DRY_RUN" -eq 0 ]; then
+        aws iam put-role-policy \
+            --role-name "$AMI_BUILD_ROLE_NAME" \
+            --policy-name "ephemeral-ci-ami-build" \
+            --policy-document "$policy"
+    fi
+
+    local arn="arn:aws:iam::${ACCOUNT_ID}:role/${AMI_BUILD_ROLE_NAME}"
+    printf 'created: ami-build-role %s\n' "$arn" >&2
+    printf '%s' "$arn"
+}
+
+# ---------------------------------------------------------------------------
 # ensure_ci_test_role: read-only + simulate-principal-policy for CI tests.
 # Returns role ARN on stdout.
 # ---------------------------------------------------------------------------
@@ -639,7 +833,7 @@ ensure_launch_template() {
 # ---------------------------------------------------------------------------
 write_outputs() {
     local vpc_id="$1" subnet_id="$2" sg_id="$3" oidc_arn="$4" \
-          spill_role_arn="$5" ci_test_role_arn="$6" lt_id="$7"
+          spill_role_arn="$5" ami_build_role_arn="$6" ci_test_role_arn="$7" lt_id="$8"
     if [ "$DRY_RUN" -eq 1 ]; then
         printf 'dry-run: skipping outputs file write\n' >&2
         return 0
@@ -654,6 +848,7 @@ SECURITY_GROUP_ID=${sg_id}
 INSTANCE_PROFILE_NAME=${INSTANCE_PROFILE_NAME}
 OIDC_PROVIDER_ARN=${oidc_arn}
 SPILL_ROLE_ARN=${spill_role_arn}
+AMI_BUILD_ROLE_ARN=${ami_build_role_arn}
 CI_TEST_ROLE_ARN=${ci_test_role_arn}
 LAUNCH_TEMPLATE_ID=${lt_id}
 EOF
@@ -675,6 +870,7 @@ ensure_instance_profile
 
 oidc_arn="$(ensure_oidc_provider)"
 spill_role_arn="$(ensure_spill_role "$oidc_arn")"
+ami_build_role_arn="$(ensure_ami_build_role "$oidc_arn")"
 ci_test_role_arn="$(ensure_ci_test_role "$oidc_arn")"
 
 ensure_budget
@@ -682,6 +878,6 @@ ensure_budget
 lt_id="$(ensure_launch_template "$sg_id")"
 
 write_outputs "$vpc_id" "$subnet_id" "$sg_id" "$oidc_arn" \
-    "$spill_role_arn" "$ci_test_role_arn" "$lt_id"
+    "$spill_role_arn" "$ami_build_role_arn" "$ci_test_role_arn" "$lt_id"
 
 printf 'aws-bootstrap.sh: done\n' >&2
