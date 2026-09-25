@@ -76,11 +76,38 @@ jobs:
           echo "Latest green commit on main:"
           git log --oneline -1 "$found"
 
+  # Static check: the probe must pass every input that consumers pass to the
+  # actions. A missing input causes the probe to fail with a confusing error
+  # (TLS, auth, or a missing required variable) rather than naming the gap.
+  # Running this before the probe means a misconfigured probe is caught in
+  # seconds, not after a clone is leaked.
+  check-probe-inputs:
+    needs: find-green
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check probe passes all required action inputs
+        run: |
+          fail=0
+          for action in provision teardown; do
+            echo "--- ${action}/action.yml ---"
+            if ! bash scripts/check-action-inputs.sh \
+                 "${action}/action.yml" \
+                 ".github/workflows/advance-v1.yml"; then
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::The probe in advance-v1.yml is missing required inputs — update the probe to pass all required inputs before advancing v1."
+            exit 1
+          fi
+
   # Provisions a real VM using the candidate's own actions. A green CI run
   # proves the scripts pass unit tests; this proves they work end-to-end
   # against the real template and node.
   probe-provision:
-    needs: find-green
+    needs: [find-green, check-probe-inputs]
     runs-on: ubuntu-latest
     outputs:
       vmid:     ${{ steps.provision.outputs.vmid }}
@@ -101,6 +128,8 @@ jobs:
           pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
           pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
           pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-api-hostname:   ${{ vars.PVE_API_HOSTNAME }}
+          pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
 
@@ -129,6 +158,7 @@ jobs:
           pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
           pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
           pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-api-hostname:   ${{ vars.PVE_API_HOSTNAME }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}

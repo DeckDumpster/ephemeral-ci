@@ -59,6 +59,15 @@
 #   CRED_FILE      -- credential file to source (default: /etc/gh-ephemeral-runner/token)
 #   PVE_API_HOST   -- Proxmox API hostname or IP (default: localhost)
 #   PVE_API_PORT   -- Proxmox API port (default: 8006)
+#   PVE_API_HOSTNAME -- Hostname as it appears in the Proxmox TLS certificate.
+#                   When set, pvapi() connects to PVE_API_HOST but validates TLS
+#                   against this name. Required when PVE_API_HOST is an IP address
+#                   (the certificate carries no SAN for IPs).
+#   PVE_CA_CERT_FILE -- Path to the Proxmox cluster CA certificate (PEM).
+#                   Defaults to /etc/pve/pve-root-ca.pem (exists on the
+#                   hypervisor). Callers running off-node (e.g. GitHub-hosted
+#                   runners) must set this to a temp file written from
+#                   vars.PVE_CA_CERT.
 #   RUNNER_GROUP   -- runner group the guest registers into (default: ephemeral-ci)
 #   CAPACITY_UNCAPPED -- set to "1" to provision without any capacity check.
 #                   Must be set by the caller; provision.sh never sets it from a
@@ -84,9 +93,16 @@
 #                   (default: 0). Analogous to NODE_MEM_RESERVE_MIB.
 #
 # API transport notes:
-#   -k: loopback only. The request never leaves the host, so anyone positioned
-#       to intercept it already has local access. Do not copy this flag to a
-#       call that goes over the network.
+#   --cacert: TLS verification uses the cluster CA at $PVE_CA_CERT_FILE
+#       (default: /etc/pve/pve-root-ca.pem, which exists on the hypervisor;
+#       callers running off-node must set this to a temp file written from
+#       vars.PVE_CA_CERT). The token authenticates the caller; TLS verification
+#       authenticates the server the token is sent to. Neither substitutes for
+#       the other.
+#   --resolve: when PVE_API_HOSTNAME is set, curl connects to PVE_API_HOST (the
+#       tailnet IP) but validates the certificate against PVE_API_HOSTNAME (the
+#       node name in the cert). Required when PVE_API_HOST is an IP — the
+#       certificate carries no SAN for the IP address.
 #   -sS: -s suppresses the progress meter; -S restores curl's transport-error
 #       messages to stderr. Never use -s alone -- connection refused, TLS
 #       failure, and a malformed URL from an unset variable all produce empty
@@ -156,11 +172,20 @@ fi
 # ---------------------------------------------------------------------------
 pvapi() {
     local method="$1" path="$2"; shift 2
-    local body_file code _pvapi_body
+    local body_file code _pvapi_body _url_host _resolve_args
+    _url_host="${PVE_API_HOST}"
+    _resolve_args=()
+    if [ -n "${PVE_API_HOSTNAME:-}" ]; then
+        _url_host="${PVE_API_HOSTNAME}"
+        _resolve_args=(--resolve "${PVE_API_HOSTNAME}:${PVE_API_PORT}:${PVE_API_HOST}")
+    fi
     body_file="$(mktemp)"
-    code="$(curl -sS -k -o "$body_file" -w '%{http_code}' -X "$method" \
+    code="$(curl -sS \
+        --cacert "${PVE_CA_CERT_FILE:-/etc/pve/pve-root-ca.pem}" \
+        ${_resolve_args[@]+"${_resolve_args[@]}"} \
+        -o "$body_file" -w '%{http_code}' -X "$method" \
         -H "Authorization: PVEAPIToken=${PVE_TOKEN_ID}=${PVE_TOKEN_SECRET}" \
-        "https://${PVE_API_HOST}:${PVE_API_PORT}/api2/json${path}" "$@")" || {
+        "https://${_url_host}:${PVE_API_PORT}/api2/json${path}" "$@")" || {
         rm -f "$body_file"
         printf 'provision.sh: curl transport error (%s %s)\n' "$method" "$path" >&2
         return 1
