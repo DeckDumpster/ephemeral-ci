@@ -48,7 +48,9 @@ export CURL_ARGV_FILE="$SCRATCH/curl-argv"
 # Behaviour overrides:
 #   CURL_CLONE_EXITSTATUS   -- exitstatus in clone task poll response (default: OK)
 #   CURL_START_EXITSTATUS   -- exitstatus in start task poll response (default: OK)
-#   CURL_VMID_FREE_CODE     -- HTTP code for vmid free check (default: 404)
+#   CURL_VMID_FREE_CODE     -- HTTP code for status/current (default: 500, the real API's
+#                              response for a free VMID; provision.sh no longer uses this
+#                              path for the free check — see db-ueon)
 #   CURL_VMID_403_UNTIL     -- vmid probes for ids <= this return 403 (pool ACL)
 #   CURL_FILEWRITE_FAIL_N   -- first N agent/file-write calls return HTTP 500
 #   CURL_AGENT_PING_FAIL    -- if "1", agent/ping returns 500 (agent not ready)
@@ -84,8 +86,25 @@ http_code=200
 body=""
 
 case "$path" in
-    /cluster/nextid)
-        body='{"data":200}'
+    /cluster/nextid | /cluster/nextid[?]*)
+        # With no vmid param: return the next free id (200).
+        # With ?vmid=<n>: validate that id. If CURL_VMID_OCCUPIED matches, return
+        # HTTP 500 "already used" — mirroring the real Proxmox API's response when
+        # the VMID is taken. (db-ueon: assert_vmid_free was rewritten to use this
+        # endpoint instead of status/current, which the real API answers with 500
+        # for free VMIDs, not 404.)
+        _nextid_req_vmid=""
+        case "$path" in
+            *[?]vmid=*) _nextid_req_vmid="$(printf '%s' "${path#*[?]vmid=}" | sed 's/&.*//')" ;;
+        esac
+        if [ -n "${_nextid_req_vmid:-}" ] \
+           && [ -n "${CURL_VMID_OCCUPIED:-}" ] \
+           && [ "$_nextid_req_vmid" = "${CURL_VMID_OCCUPIED}" ]; then
+            http_code=500
+            body="{\"errors\":{\"vmid\":\"vmid ${_nextid_req_vmid} already used\"}}"
+        else
+            body='{"data":200}'
+        fi
         ;;
     /nodes/*/qemu/*/config)
         case "$method" in
@@ -131,15 +150,19 @@ case "$path" in
         body='{"data":"UPID:pve:00002:00002:00000066:qmstart:200:root@pam:"}'
         ;;
     /nodes/*/qemu/*/status/current)
-        # VMID free check added in db-spsp. Default 404 (VMID is free).
-        # CURL_VMID_OCCUPIED: if set to a VMID, that specific id returns 200.
+        # The real Proxmox API returns HTTP 500 with "Configuration file '...'
+        # does not exist" for a VMID with no VM, not 404. db-ueon fixed
+        # assert_vmid_free to use /cluster/nextid?vmid=<n> instead, so
+        # provision.sh no longer calls this path for the free check.
+        # CURL_VMID_FREE_CODE overrides the default. CURL_VMID_OCCUPIED still
+        # makes the matched id return 200 for tests that exercise this path.
         _cur_vmid="${path#/nodes/}"; _cur_vmid="${_cur_vmid#*/qemu/}"; _cur_vmid="${_cur_vmid%%/*}"
         if [ -n "${CURL_VMID_OCCUPIED:-}" ] && [ "$_cur_vmid" = "${CURL_VMID_OCCUPIED}" ]; then
             http_code=200
             body='{"data":{"status":"stopped","vmid":'"$_cur_vmid"'}}'
         else
-            http_code=404
-            body='{"errors":{"vmid":"VM not found"}}'
+            http_code="${CURL_VMID_FREE_CODE:-500}"
+            body='{"errors":{"vmid":"does not exist"}}'
         fi
         ;;
     /nodes/*/qemu/*/agent/ping)
@@ -1337,9 +1360,14 @@ export TEMPLATE_VMID=101
 #
 # /cluster/nextid can return a VMID still held by a stopped (not destroyed) VM.
 # The clone would then fail with an opaque permission error rather than a clear
-# message. provision.sh now checks status/current before cloning: a non-404
-# response means the VMID is occupied, and provision refuses before touching
-# the clone endpoint.
+# message. provision.sh checks /cluster/nextid?vmid=<n> before cloning: an
+# error response means the VMID is occupied, and provision refuses before
+# touching the clone endpoint.
+#
+# The original fix (db-spsp) probed status/current and treated 404 as free.
+# The real Proxmox API returns HTTP 500 (not 404) for a VMID with no VM, so
+# every free VMID was treated as occupied (db-ueon). Using nextid?vmid=<n> is
+# the authoritative check: 200 = free, error = occupied.
 #
 # (a) occupied VMID → refuse before cloning, name the VMID in the error
 # (b) free VMID (positive control) → provision completes normally
@@ -1369,7 +1397,7 @@ else
     ko "test-25a: error message does not name the occupied VMID (got: $(cat "$_err25"))"
 fi
 
-# (b) free VMID (default stub: status/current returns 404) → provision succeeds
+# (b) free VMID (nextid?vmid=200 returns 200 with no CURL_VMID_OCCUPIED) → provision succeeds
 rm -f "$CURL_ARGV_FILE"
 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
 if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
