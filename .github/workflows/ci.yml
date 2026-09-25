@@ -55,7 +55,8 @@ jobs:
               scripts/test-teardown.sh \
               scripts/test-reap.sh \
               scripts/test-template-substrate.sh \
-              scripts/test-advance-inputs.sh; do
+              scripts/test-advance-inputs.sh \
+              scripts/test-aws-bootstrap.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
           done
 
@@ -163,6 +164,30 @@ jobs:
                   print(f"{f}: '{expr % x}' is used but never declared"); bad += 1
           sys.exit(1 if bad else 0)
           PY
+
+  # Runs the real AWS bootstrap test against account 189923011121.
+  # Assumes the ephemeral-ci-ci-test role via OIDC — no stored keys.
+  #
+  # Prerequisites: run scripts/aws-bootstrap.sh once with an admin SSO session
+  # to create the CI test role. After that, this job self-authenticates via OIDC.
+  #
+  # This job is limited to the DeckDumpster/ephemeral-ci repository; forks
+  # cannot assume the role (the trust policy is scoped to this repo's OIDC sub).
+  test-aws-bootstrap:
+    runs-on: ubuntu-latest
+    if: github.repository == 'DeckDumpster/ephemeral-ci'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::189923011121:role/ephemeral-ci-ci-test
+          aws-region: us-west-2
+      - name: aws-bootstrap test
+        run: bash scripts/test-aws-bootstrap.sh
 
   # Only runs when `test` fails on a pull request. Checks whether the base
   # branch's most recent CI run is also failing, which would mean the red is
