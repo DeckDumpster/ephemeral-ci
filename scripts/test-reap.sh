@@ -1023,7 +1023,7 @@ echo "--- Test 15: leaked EC2 runner with finished run is terminated"
     printf 'test-reap: Test 15 instance: %s (runner %s)\n' "$_iid" "$_label" >&2
 
     # Ensure the instance is terminated even if the test fails.
-    trap "aws ec2 terminate-instances --region '$EC2_REGION' --instance-ids '$_iid' >/dev/null 2>&1 || true" EXIT
+    trap 'aws ec2 terminate-instances --region "$EC2_REGION" --instance-ids "$_iid" >/dev/null 2>&1 || true' EXIT
 
     # Wait for the instance to reach running state before handing it to the
     # reaper; a pending instance causes describe-instances to return a launch
@@ -1106,7 +1106,7 @@ for r in json.load(sys.stdin).get("runners",[]):
     fi
     printf 'test-reap: Test 16 instance: %s (runner %s)\n' "$_iid" "$_busy_runner" >&2
 
-    trap "aws ec2 terminate-instances --region '$EC2_REGION' --instance-ids '$_iid' >/dev/null 2>&1 || true" EXIT
+    trap 'aws ec2 terminate-instances --region "$EC2_REGION" --instance-ids "$_iid" >/dev/null 2>&1 || true' EXIT
 
     output=$(_run_reap_ec2 --dry-run 2>&1 || true)
 
@@ -1149,7 +1149,7 @@ echo "--- Test 17: orphaned EBS volume is deleted by the reaper"
     fi
     printf 'test-reap: Test 17 volume: %s\n' "$_vol_id" >&2
 
-    trap "aws ec2 delete-volume --region '$EC2_REGION' --volume-id '$_vol_id' >/dev/null 2>&1 || true" EXIT
+    trap 'aws ec2 delete-volume --region "$EC2_REGION" --volume-id "$_vol_id" >/dev/null 2>&1 || true' EXIT
 
     # Wait for the volume to reach available state.
     local_deadline=$(( $(date +%s) + 60 ))
@@ -1209,7 +1209,7 @@ echo "--- Test 18: stale AMI-builder instance is reaped (dry-run, age cutoff 0h)
     fi
     printf 'test-reap: Test 18 instance: %s\n' "$_iid" >&2
 
-    trap "aws ec2 terminate-instances --region '$EC2_REGION' --instance-ids '$_iid' >/dev/null 2>&1 || true" EXIT
+    trap 'aws ec2 terminate-instances --region "$EC2_REGION" --instance-ids "$_iid" >/dev/null 2>&1 || true' EXIT
 
     # Use --max-age-hours 0 so any instance (including one just launched) is
     # past the cutoff. Dry-run so nothing is actually terminated.
