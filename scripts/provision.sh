@@ -694,38 +694,22 @@ ec2_wait_ssm() {
     done
 }
 
-# Write the runner token to SSM Parameter Store (SecureString) tagged with this
-# run's vmtoken, then send an SSM Run Command to the instance.  The instance's
-# IAM policy (aws:ResourceTag/ephemeral-ci:vmtoken == ${aws:PrincipalTag/ephemeral-ci:vmtoken},
-# with instanceMetadataTags=enabled on the launch template) means the instance
-# can only access the parameter tagged with its own vmtoken.  The command text
-# contains only the parameter NAME, never the token value.
+# Deliver the runner token to the instance via SSM Send Command.  Nothing is
+# written to Parameter Store; the instance holds no SSM read permissions.
+# The token is base64-encoded so the raw value does not appear in the command
+# parameters that CloudTrail and ssm:ListCommandInvocations echo.
 ec2_deliver_token() {
-    local iid="$1" vmtoken="$2"
-    local param_name="/ephemeral-ci/runner-token/${iid}"
-
-    # Write the token tagged with the run's vmtoken so the IAM tag condition
-    # on the instance role restricts access to this run only.
-    aws ssm put-parameter \
-        --region "$SPILL_REGION" \
-        --name "$param_name" \
-        --value "$RUNNER_TOKEN" \
-        --type SecureString \
-        --tags "Key=ephemeral-ci:vmtoken,Value=${vmtoken}" \
-        --overwrite >/dev/null || {
-        printf '::error::provision.sh: failed to put SSM parameter %s\n' "$param_name" >&2
-        return 1
-    }
+    local iid="$1"
+    local token_b64
+    token_b64="$(printf '%s' "$RUNNER_TOKEN" | base64 | tr -d '\n')"
 
     local cmd
     cmd="$(printf 'set -e
-TOKEN=$(aws ssm get-parameter --region %s --name %s --with-decryption --query Parameter.Value --output text)
-aws ssm delete-parameter --region %s --name %s || true
-printf '"'"'RUNNER_LABEL=%s\nRUNNER_TOKEN=%%s\nRUNNER_URL=%s\nRUNNER_GROUP=%s\n'"'"' "$TOKEN" \
+RUNNER_TOKEN=$(printf '"'"'%%s'"'"' '"'"'%s'"'"' | base64 -d)
+printf '"'"'RUNNER_LABEL=%s\nRUNNER_TOKEN=%%s\nRUNNER_URL=%s\nRUNNER_GROUP=%s\n'"'"' "$RUNNER_TOKEN" \
     > /run/gh-runner-init.partial
 mv /run/gh-runner-init.partial /run/gh-runner-init' \
-        "$SPILL_REGION" "$param_name" \
-        "$SPILL_REGION" "$param_name" \
+        "$token_b64" \
         "$RUNNER_LABEL" "$RUNNER_URL" "${RUNNER_GROUP:-ephemeral-ci}")"
 
     local cmd_id
@@ -738,7 +722,6 @@ mv /run/gh-runner-init.partial /run/gh-runner-init' \
                   --query 'Command.CommandId' \
                   --output text 2>&1)" || {
         printf '::error::provision.sh: failed to send SSM command to %s: %s\n' "$iid" "$cmd_id" >&2
-        aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
         return 1
     }
 
@@ -818,7 +801,7 @@ if [ "$_spill_triggered" -eq 1 ]; then
     printf 'instance-id=%s\n' "$SPILL_INSTANCE_ID"
 
     ec2_wait_ssm "$SPILL_INSTANCE_ID"                    || exit 1
-    ec2_deliver_token "$SPILL_INSTANCE_ID" "$SPILL_VMTOKEN" || exit 1
+    ec2_deliver_token "$SPILL_INSTANCE_ID" || exit 1
 
     printf 'provision.sh: EC2 runner %s ready; token delivered via SSM\n' \
         "$SPILL_INSTANCE_ID" >&2

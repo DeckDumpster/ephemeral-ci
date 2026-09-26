@@ -63,34 +63,16 @@ export class SpillStack extends cdk.Stack {
       tags: [{ key: 'Name', value: 'ephemeral-ci-spill' }],
     });
 
-    // ── Instance role: SSM managed core + tag-scoped runner token access ────
+    // ── Instance role: SSM managed core only ─────────────────────────────────
+    // Token delivery is via ssm:SendCommand from the spill role; the instance
+    // reads nothing from Parameter Store.  AmazonSSMManagedInstanceCore is the
+    // only grant the instance needs for the SSM agent channel to work.
     const instanceRole = new iam.Role(this, 'InstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
       ],
     });
-
-    // GetParameter / DeleteParameter: scoped by the per-run vmtoken tag, not
-    // by path alone.  The instance is tagged ephemeral-ci:vmtoken=<vmtoken> at
-    // RunInstances; the SSM parameter is tagged with the same value at
-    // PutParameter.  IAM compares aws:ResourceTag/ephemeral-ci:vmtoken against
-    // ${aws:PrincipalTag/ephemeral-ci:vmtoken} (the instance's own tag,
-    // projected from IMDS when instanceMetadataTags=enabled) so each instance
-    // can only reach its own token.  A path wildcard without this condition
-    // lets every instance read or delete every concurrent run's token.
-    instanceRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['ssm:GetParameter', 'ssm:DeleteParameter'],
-      resources: ['arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/runner-token/*'],
-      conditions: {
-        StringEquals: {
-          'aws:ResourceTag/ephemeral-ci:vmtoken': '${aws:PrincipalTag/ephemeral-ci:vmtoken}',
-        },
-        Null: {
-          'aws:PrincipalTag/ephemeral-ci:vmtoken': 'false',
-        },
-      },
-    }));
 
     const instanceProfile = new iam.CfnInstanceProfile(this, 'InstanceProfile', {
       roles: [instanceRole.roleName],
@@ -228,24 +210,6 @@ export class SpillStack extends cdk.Stack {
       resources: [`arn:aws:cloudformation:us-west-2:189923011121:stack/EphemeralCiSpill/*`],
     }));
 
-    // PutParameter: write the runner token as a SecureString; the tag condition
-    // requires ephemeral-ci:vmtoken to be set so the instance role's condition
-    // can bind access to the correct run.
-    spillRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['ssm:PutParameter'],
-      resources: ['arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/runner-token/*'],
-      conditions: {
-        Null: {
-          'aws:RequestTag/ephemeral-ci:vmtoken': 'false',
-        },
-      },
-    }));
-
-    // DeleteParameter: clean up the parameter if token delivery fails
-    spillRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['ssm:DeleteParameter'],
-      resources: ['arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/runner-token/*'],
-    }));
 
     // ── CI test role: read-only + SimulatePrincipalPolicy for policy testing ─
     const ciTestRole = new iam.Role(this, 'CiTestRole', {
