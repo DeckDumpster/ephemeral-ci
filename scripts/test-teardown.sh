@@ -760,7 +760,7 @@ _run_ec2_teardown() {
     SPILL_REGION=us-west-2 \
     EC2_TERMINATE_TIMEOUT=5 \
     EC2_TERMINATE_POLL=0 \
-    bash "$TEARDOWN" "$@"
+    bash "$TEARDOWN"
 }
 
 _aws_called() { grep -q "$1" "$AWS_ARGV_FILE" 2>/dev/null; }
