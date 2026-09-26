@@ -44,6 +44,13 @@ jobs:
       #                   idiom. Rewriting 16 sites in scripts that destroy
       #                   virtual machines to satisfy a style check is a worse
       #                   trade than the check is worth.
+      #   SC2016          This repository's scripts build command strings for
+      #                   remote execution via SSH and SSM. The $ must survive
+      #                   unexpanded until the remote shell sees it, and printf
+      #                   format strings must not be expanded locally at all, so
+      #                   single quotes are the required spelling — not a mistake.
+      #                   Per-line directives were rejected because the idiom
+      #                   appears in every new script that touches SSM or SSH.
       # The spira gate command (repo-map) names the same scripts this CI runs.
       # This step keeps them honest: if a gate clause names a script that does
       # not exist yet, this step fails here instead of blocking every branch at
@@ -63,7 +70,7 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -e SC1091,SC1090,SC2034,SC2015 scripts/*.sh scripts/guest/*.sh
+          shellcheck -e SC1091,SC1090,SC2034,SC2015,SC2016 scripts/*.sh scripts/guest/*.sh
 
       - name: provision
         run: bash scripts/test-provision.sh
