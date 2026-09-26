@@ -63,13 +63,20 @@ export class SpillStack extends cdk.Stack {
       tags: [{ key: 'Name', value: 'ephemeral-ci-spill' }],
     });
 
-    // ── Instance role: ONLY AmazonSSMManagedInstanceCore, no inline policy ───
+    // ── Instance role: SSM managed core + fetch/delete runner token ─────────
     const instanceRole = new iam.Role(this, 'InstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
       ],
     });
+
+    // GetParameter: decrypt and read the token written by the spill role
+    // DeleteParameter: clean up after reading so the token is single-use
+    instanceRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter', 'ssm:DeleteParameter'],
+      resources: ['arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/runner-token/*'],
+    }));
 
     const instanceProfile = new iam.CfnInstanceProfile(this, 'InstanceProfile', {
       roles: [instanceRole.roleName],
@@ -188,6 +195,26 @@ export class SpillStack extends cdk.Stack {
         'ssm:DescribeInstanceInformation',
       ],
       resources: ['*'],
+    }));
+
+    // DescribeImages: find the newest spill AMI by tag
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeImages'],
+      resources: ['*'],
+    }));
+
+    // DescribeStacks: load SpillStack outputs (subnet, SG, launch template)
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudformation:DescribeStacks'],
+      resources: [`arn:aws:cloudformation:us-west-2:189923011121:stack/EphemeralCiSpill/*`],
+    }));
+
+    // PutParameter: write the runner token as a SecureString; instance reads and
+    // deletes it.  Path-scoped to /ephemeral-ci/runner-token/ so it cannot be
+    // misused for other parameter namespaces.
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:PutParameter'],
+      resources: ['arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/runner-token/*'],
     }));
 
     // ── CI test role: read-only + SimulatePrincipalPolicy for policy testing ─

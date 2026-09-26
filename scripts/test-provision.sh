@@ -1506,6 +1506,189 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Tests 27-29: EC2 spill path
+#
+# Pattern follows test-ami-build.sh: a stub aws binary handles all calls in
+# the offline tests; online tests skip gracefully without credentials.  The
+# stub records every call to AWS_ARGV_FILE so tests can verify what ran.
+#
+# The stub is placed in $SCRATCH/bin (already first on PATH) and stays there
+# for all three tests.  Existing tests never call aws (SPILL=off is the
+# default), so the stub's presence does not affect them.
+# ---------------------------------------------------------------------------
+
+export AWS_ARGV_FILE="$SCRATCH/aws-argv"
+
+cat > "$SCRATCH/bin/aws" << 'AWSSTUB'
+#!/usr/bin/env bash
+# Record this invocation (one arg per line, calls separated by ---).
+{
+    printf '%s\n' "$@"
+    echo '---'
+} >> "${AWS_ARGV_FILE:?AWS_ARGV_FILE not set}"
+
+# Return the value provision.sh expects for each subcommand.  The real CLI
+# applies --query and --output before returning; the stub returns the
+# already-selected value directly.
+case "$1 $2" in
+    "cloudformation describe-stacks")
+        # provision.sh passes output through python3 as a JSON array of
+        # {OutputKey, OutputValue} objects.
+        printf '[{"OutputKey":"SubnetId","OutputValue":"subnet-spill00001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-spill000001"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-spill000001"}]'
+        ;;
+    "ec2 describe-images")
+        # sort_by(Images, &CreationDate)[-1].ImageId as --output text
+        printf 'ami-spill000001\n'
+        ;;
+    "ec2 describe-instances")
+        # length(Reservations[].Instances[]) as --output text (ceiling check)
+        printf '0\n'
+        ;;
+    "ec2 run-instances")
+        # Instances[0].InstanceId as --output text
+        printf 'i-spill00000001\n'
+        ;;
+    "ssm describe-instance-information")
+        # InstanceInformationList[0].PingStatus as --output text
+        printf 'Online\n'
+        ;;
+    "ssm put-parameter")   ;;
+    "ssm send-command")
+        # Command.CommandId as --output text
+        printf 'ssm-cmd-test0001\n'
+        ;;
+    "ssm get-command-invocation")
+        # Status as --output text
+        printf 'Success\n'
+        ;;
+    "ssm delete-parameter"|"ec2 terminate-instances") ;;
+    *) ;;
+esac
+AWSSTUB
+chmod +x "$SCRATCH/bin/aws"
+
+# Node capacity setup for this section.
+export CURL_NODE_TOTAL_MIB=131072
+export CURL_TEMPLATE_MIB=16384
+
+# ---------------------------------------------------------------------------
+# Test 27: SPILL=off (default) -- capacity failure still exits non-zero
+# ---------------------------------------------------------------------------
+rm -f "$AWS_ARGV_FILE" "$CURL_ARGV_FILE"
+export CAPACITY_POLL=1 CAPACITY_TIMEOUT=3
+_err27="$SCRATCH/err27"
+CURL_NODE_ALLOC_MIB=120000 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>"$_err27" && _rc27=0 || _rc27=$?
+
+if [ "$_rc27" -ne 0 ]; then
+    ok "test-27: SPILL=off capacity failure exits non-zero (default behavior unchanged)"
+else
+    ko "test-27: SPILL=off capacity failure should exit non-zero"
+fi
+if [ ! -s "$AWS_ARGV_FILE" ]; then
+    ok "test-27: SPILL=off makes no aws calls"
+else
+    ko "test-27: SPILL=off made unexpected aws calls: $(cat "$AWS_ARGV_FILE")"
+fi
+unset CAPACITY_POLL CAPACITY_TIMEOUT
+
+# ---------------------------------------------------------------------------
+# Test 28: SPILL=ec2 but Proxmox has room -- Proxmox wins, no EC2 calls
+# ---------------------------------------------------------------------------
+rm -f "$AWS_ARGV_FILE" "$CURL_ARGV_FILE"
+_out28="$SCRATCH/out28"
+SPILL=ec2 CURL_NODE_ALLOC_MIB=65536 run_provision valid-label test-token \
+    https://github.com/owner/repo > "$_out28"
+
+if grep -qx 'backend=proxmox' "$_out28"; then
+    ok "test-28: SPILL=ec2 with Proxmox room emits backend=proxmox"
+else
+    ko "test-28: backend=proxmox not in stdout (got: $(cat "$_out28"))"
+fi
+if [ ! -s "$AWS_ARGV_FILE" ]; then
+    ok "test-28: SPILL=ec2 with Proxmox room makes no aws calls (EC2 path not taken)"
+else
+    ko "test-28: SPILL=ec2 with Proxmox room made unexpected aws calls: $(cat "$AWS_ARGV_FILE")"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 29: SPILL=ec2 and Proxmox has no room -- EC2 path taken
+# ---------------------------------------------------------------------------
+rm -f "$AWS_ARGV_FILE" "$CURL_ARGV_FILE"
+_out29="$SCRATCH/out29"
+_err29="$SCRATCH/err29"
+export CAPACITY_POLL=1 CAPACITY_TIMEOUT=3
+SPILL=ec2 CURL_NODE_ALLOC_MIB=120000 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo > "$_out29" 2>"$_err29" && _rc29=0 || _rc29=$?
+
+if [ "$_rc29" -eq 0 ]; then
+    ok "test-29: SPILL=ec2 Proxmox exhausted exits 0 via EC2"
+else
+    ko "test-29: SPILL=ec2 Proxmox exhausted exited non-zero (err: $(cat "$_err29"))"
+fi
+if grep -qx 'backend=ec2' "$_out29"; then
+    ok "test-29: backend=ec2 on stdout"
+else
+    ko "test-29: backend=ec2 not in stdout (got: $(cat "$_out29"))"
+fi
+if grep -qx 'instance-id=i-spill00000001' "$_out29"; then
+    ok "test-29: instance-id on stdout"
+else
+    ko "test-29: instance-id not in stdout (got: $(cat "$_out29"))"
+fi
+if grep -qx 'vmid=' "$_out29"; then
+    ok "test-29: vmid= is empty (no Proxmox VM was cloned)"
+else
+    ko "test-29: vmid= line missing or non-empty in stdout (got: $(cat "$_out29"))"
+fi
+if grep -qE '^vmtoken=[a-f0-9]{32}$' "$_out29"; then
+    ok "test-29: vmtoken on stdout (so teardown can track the run)"
+else
+    ko "test-29: vmtoken missing or malformed in stdout (got: $(cat "$_out29"))"
+fi
+# The token is delivered to the instance via SSM Parameter Store (SecureString).
+# Two properties must hold:
+#
+#   1. run-instances carries no --user-data (token never in instance metadata)
+#   2. send-command's --parameters text contains the SSM PARAMETER NAME only,
+#      not the token VALUE
+#
+# Note: put-parameter --value <token> IS a legitimate aws call; the real CLI
+# redacts SecureString values in CloudTrail.  That call's presence is expected
+# and is not a security concern here.
+if ! grep -qxF -- '--user-data' "$AWS_ARGV_FILE" 2>/dev/null; then
+    ok "test-29: run-instances carries no --user-data flag"
+else
+    ko "test-29: run-instances included --user-data"
+fi
+# Parse AWS_ARGV_FILE to find the send-command block and verify the token value
+# does not appear in it.  The file records one arg per line; '---' separates calls.
+_token_in_send_cmd=0
+_in_send_cmd=0
+while IFS= read -r _line; do
+    case "$_line" in
+        'send-command') _in_send_cmd=1 ;;
+        '---') _in_send_cmd=0 ;;
+    esac
+    if [ "$_in_send_cmd" -eq 1 ]; then
+        printf '%s' "$_line" | grep -qF 'test-token' && _token_in_send_cmd=1
+    fi
+done < "$AWS_ARGV_FILE"
+if [ "$_token_in_send_cmd" -eq 0 ]; then
+    ok "test-29: send-command args contain SSM param name only, not the token value"
+else
+    ko "test-29: token value appeared in the send-command call"
+fi
+# ssm put-parameter must be called (token stored as SecureString).
+if grep -qx 'put-parameter' "$AWS_ARGV_FILE" 2>/dev/null; then
+    ok "test-29: ssm put-parameter called to store the token"
+else
+    ko "test-29: ssm put-parameter not called"
+fi
+unset CAPACITY_POLL CAPACITY_TIMEOUT SPILL
+unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CURL_NODE_ALLOC_MIB
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))

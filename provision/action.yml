@@ -115,12 +115,45 @@ inputs:
       per-repo share cannot enforce fairness across the fleet (2026-09-23).
     required: false
     default: '0'
+  spill:
+    description: >-
+      EC2 overflow backend.  'ec2' enables the spill path: when Proxmox has no
+      room (capacity wait expires), provision falls through to launching an EC2
+      spot instance (on-demand fallback) and delivering the runner token via SSM
+      Parameter Store.  'off' keeps the existing behaviour for all consumers
+      that have not opted in.
+    required: false
+    default: 'off'
+  spill-after-seconds:
+    description: >-
+      How long to wait for Proxmox capacity before falling through to EC2.
+      0 (default) means exhaust the full capacity-timeout-seconds on Proxmox
+      first.  Any value less than capacity-timeout-seconds shortens only the
+      Proxmox wait; the EC2 spill ceiling wait still uses the full timeout.
+    required: false
+    default: '0'
+  spill-max-instances:
+    description: >-
+      Maximum number of EC2 spill instances allowed to run concurrently across
+      all consumers sharing the same AWS account.  Provision blocks (printing a
+      ceiling message) until a slot is free.  Default 4; 0 disables the ceiling
+      check.
+    required: false
+    default: '4'
+  aws-role-to-assume:
+    description: >-
+      ARN of the AWS IAM role to assume via OIDC before launching the EC2 spill
+      instance.  Required when spill is 'ec2'.  The role must be assumable from
+      this repository's OIDC subject (repo:<owner>/<repo>:*).
+    required: false
+    default: ''
 
 outputs:
   vmid:
     description: >-
-      The provisioned VM's id, or empty if the clone itself never happened.
-      ALWAYS pass this to the teardown action under `if: always()`.
+      The provisioned VM's id, or empty if the clone itself never happened
+      (EC2 spill path sets it empty).  ALWAYS pass this to the teardown action
+      under `if: always()`.
     value: ${{ steps.provision.outputs.vmid }}
   label:
     description: The unique runner label to put in the test job's `runs-on`.
@@ -131,6 +164,12 @@ outputs:
       to the teardown action's vm-token input so Guard 4b can verify the
       teardown caller participated in this specific provision.
     value: ${{ steps.provision.outputs.vm-token }}
+  backend:
+    description: Which backend provisioned the runner (proxmox | ec2).
+    value: ${{ steps.provision.outputs.backend }}
+  instance-id:
+    description: EC2 instance id when backend=ec2, empty string otherwise.
+    value: ${{ steps.provision.outputs.instance-id }}
 
 runs:
   using: composite
@@ -148,6 +187,16 @@ runs:
       run: |
         repo='${{ github.event.repository.name }}'
         echo "label=ci-${repo}-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+    # Only configured when spill is enabled.  aws-actions/configure-aws-credentials
+    # sets AWS_* env vars that the provision step inherits, so the subsequent
+    # aws CLI calls in the EC2 spill path pick up the credentials automatically.
+    - name: Configure AWS credentials for EC2 spill
+      if: inputs.spill != 'off'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws-role-to-assume }}
+        aws-region: us-west-2
 
     - name: Connect to Tailscale
       uses: tailscale/github-action@v4
@@ -200,6 +249,9 @@ runs:
         FLEET_SHARE_PER_REPO: ${{ inputs.fleet-share-per-repo }}
         REPO_SLUG: ${{ github.repository }}
         CRED_FILE: /dev/null
+        SPILL: ${{ inputs.spill }}
+        SPILL_AFTER_SECONDS: ${{ inputs.spill-after-seconds }}
+        SPILL_MAX_INSTANCES: ${{ inputs.spill-max-instances }}
       run: |
         set +e
         OUT=$(bash "${{ github.action_path }}/../scripts/provision.sh" \
@@ -208,10 +260,14 @@ runs:
                 "${{ github.server_url }}/${{ github.repository_owner }}")
         RC=$?
         set -e
-        VMID=$(printf '%s\n' "$OUT" | sed -n 's/^vmid=\([0-9]\+\)$/\1/p' | head -1)
+        VMID=$(printf '%s\n' "$OUT" | sed -n 's/^vmid=\([0-9]*\)$/\1/p' | head -1)
         [ -n "$VMID" ] && echo "vmid=$VMID" >> "$GITHUB_OUTPUT"
         VMTOKEN=$(printf '%s\n' "$OUT" | sed -n 's/^vmtoken=\([a-f0-9]*\)$/\1/p' | head -1)
         [ -n "$VMTOKEN" ] && echo "vm-token=$VMTOKEN" >> "$GITHUB_OUTPUT"
+        BACKEND=$(printf '%s\n' "$OUT" | sed -n 's/^backend=\(.*\)$/\1/p' | head -1)
+        [ -n "$BACKEND" ] && echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
+        INSTANCE_ID=$(printf '%s\n' "$OUT" | sed -n 's/^instance-id=\(i-[a-f0-9]*\)$/\1/p' | head -1)
+        [ -n "$INSTANCE_ID" ] && echo "instance-id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
         exit "$RC"
 
     # WRITING THE FILE IS NOT PROOF OF REGISTRATION. agent/file-write returns
@@ -239,6 +295,15 @@ runs:
         done
         echo "::error::runner $LABEL never registered within ${TIMEOUT}s"
         exit 1
+
+    # Written to the job summary so operators can see at a glance that a run used
+    # the EC2 overflow path.  Only fires when the EC2 path was taken.
+    - name: EC2 spill cost note
+      if: steps.provision.outputs.backend == 'ec2'
+      shell: bash
+      run: |
+        printf '**EC2 spill runner** · instance `%s` · spot instance (on-demand fallback available) · tagged `spill:owner=ephemeral-ci`\n' \
+            "${{ steps.provision.outputs.instance-id }}" >> "$GITHUB_STEP_SUMMARY"
 
     # Runs only when something above failed, and before teardown destroys the
     # VM. A registration failure is otherwise completely blind: the guest is on

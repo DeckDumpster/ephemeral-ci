@@ -177,7 +177,7 @@ PODMAN_PKGS=(podman uidmap fuse-overlayfs slirp4netns passt catatonit)
 BUILD_PKGS=(build-essential pkg-config)
 
 # The runner itself and the scripts every consumer's CI calls directly.
-BASE_PKGS=(git curl ca-certificates jq)
+BASE_PKGS=(git curl ca-certificates jq awscli)
 
 check_podman() {
     command -v podman >/dev/null 2>&1 || { lack podman "every consumer runs containers"; return 1; }
