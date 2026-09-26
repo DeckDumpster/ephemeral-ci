@@ -410,6 +410,26 @@ if [ -n "${REPO_SLUG:-}" ]; then
     REPO_TAG="repo-${_slug_sanitized#-}"
 fi
 
+# ── EC2 spill settings ────────────────────────────────────────────────────────
+#   SPILL               off | ec2
+#   SPILL_AFTER_SECONDS seconds of Proxmox capacity wait before falling through
+#                       to EC2; 0 means exhaust the full CAPACITY_TIMEOUT first
+#   SPILL_MAX_INSTANCES global ceiling on concurrently running spill instances;
+#                       provision blocks (with a ceiling message) when at the cap
+#   SPILL_REGION        AWS region where the spill infrastructure lives
+#   SPILL_STACK_NAME    CloudFormation stack that holds VPC/SG/launch template
+#   SPILL_INSTANCE_TYPE EC2 instance type; must match the IAM policy allowlist
+#                       (c7i.* or c8i.* families as of the SpillStack)
+#   SPILL_SSM_WAIT_SECONDS how long to wait for the SSM agent to go Online after
+#                       launch before giving up and terminating the instance
+SPILL="${SPILL:-off}"
+SPILL_AFTER_SECONDS="${SPILL_AFTER_SECONDS:-0}"
+SPILL_MAX_INSTANCES="${SPILL_MAX_INSTANCES:-4}"
+SPILL_REGION="${SPILL_REGION:-us-west-2}"
+SPILL_STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
+SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.xlarge}"
+SPILL_SSM_WAIT_SECONDS="${SPILL_SSM_WAIT_SECONDS:-300}"
+
 # Prints "<total_mib> <total_cpus> <alloc_mib> <template_mib> <alloc_cpus> <template_cpus>"
 # for the node, or nothing if the token cannot see them.
 #
@@ -524,7 +544,286 @@ wait_for_capacity() {
     done
 }
 
-wait_for_capacity || exit 1
+# ── EC2 spill functions ───────────────────────────────────────────────────────
+# These functions are only called when SPILL=ec2 AND Proxmox capacity is
+# exhausted.  All AWS CLI calls use SPILL_REGION so they are region-agnostic.
+
+# Load the CloudFormation stack outputs (SubnetId, SecurityGroupId,
+# LaunchTemplateId) into SPILL_SUBNET_ID, SPILL_SG_ID, SPILL_LT_ID globals.
+ec2_load_stack() {
+    local raw
+    raw="$(aws cloudformation describe-stacks \
+               --region "$SPILL_REGION" \
+               --stack-name "$SPILL_STACK_NAME" \
+               --query 'Stacks[0].Outputs' \
+               --output json 2>&1)" || {
+        printf '::error::provision.sh: cannot read CloudFormation stack %s: %s\n' \
+            "$SPILL_STACK_NAME" "$raw" >&2
+        return 1
+    }
+    SPILL_SUBNET_ID="$(printf '%s' "$raw" | python3 -c \
+        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SubnetId"])')" || return 1
+    SPILL_SG_ID="$(printf '%s' "$raw" | python3 -c \
+        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SecurityGroupId"])')" || return 1
+    SPILL_LT_ID="$(printf '%s' "$raw" | python3 -c \
+        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["LaunchTemplateId"])')" || return 1
+    printf 'provision.sh: spill stack %s loaded (subnet=%s sg=%s lt=%s)\n' \
+        "$SPILL_STACK_NAME" "$SPILL_SUBNET_ID" "$SPILL_SG_ID" "$SPILL_LT_ID" >&2
+}
+
+# Print the count of pending/running spill instances.
+ec2_count_instances() {
+    local n
+    n="$(aws ec2 describe-instances \
+             --region "$SPILL_REGION" \
+             --filters \
+               'Name=tag:spill:owner,Values=ephemeral-ci' \
+               'Name=instance-state-name,Values=pending,running' \
+             --query 'length(Reservations[].Instances[])' \
+             --output text 2>/dev/null)" || { printf '0'; return 0; }
+    case "$n" in
+        ''|None) printf '0' ;;
+        *)       printf '%s' "$n" ;;
+    esac
+}
+
+# Block until there is room under SPILL_MAX_INSTANCES.
+ec2_wait_ceiling() {
+    local waited=0 count
+    while true; do
+        count="$(ec2_count_instances)"
+        if [ "${count:-0}" -lt "$SPILL_MAX_INSTANCES" ]; then
+            return 0
+        fi
+        if [ "$waited" -ge "$CAPACITY_TIMEOUT" ]; then
+            printf '::error::provision.sh: EC2 spill ceiling reached (%s/%s running); waited %ss. Raise spill-max-instances or wait for instances to terminate.\n' \
+                "$count" "$SPILL_MAX_INSTANCES" "$waited" >&2
+            return 1
+        fi
+        printf 'provision.sh: EC2 spill ceiling reached (%s/%s instances running); waiting (%ss/%ss)\n' \
+            "$count" "$SPILL_MAX_INSTANCES" "$waited" "$CAPACITY_TIMEOUT" >&2
+        sleep "$CAPACITY_POLL"
+        waited=$(( waited + CAPACITY_POLL ))
+    done
+}
+
+# Print the AMI id of the newest AMI tagged spill:owner=ephemeral-ci.
+ec2_find_ami() {
+    local ami
+    ami="$(aws ec2 describe-images \
+               --region "$SPILL_REGION" \
+               --filters \
+                 'Name=tag:spill:owner,Values=ephemeral-ci' \
+                 'Name=state,Values=available' \
+               --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+               --output text 2>/dev/null)" || {
+        printf '::error::provision.sh: cannot find spill AMI\n' >&2
+        return 1
+    }
+    if [ -z "$ami" ] || [ "$ami" = "None" ]; then
+        printf '::error::provision.sh: no available AMI tagged spill:owner=ephemeral-ci in %s; run ami-build.sh first\n' \
+            "$SPILL_REGION" >&2
+        return 1
+    fi
+    printf '%s' "$ami"
+}
+
+# Launch a spot instance (on-demand fallback on capacity error).
+# Receives the AMI id and the per-run vmtoken; tags the instance with the
+# vmtoken so the instance role's IAM condition can bind parameter access.
+ec2_launch() {
+    local ami="$1" vmtoken="$2" iid
+    local spot_opts='{"MarketType":"spot","SpotOptions":{"SpotInstanceType":"one-time","InstanceInterruptionBehavior":"terminate"}}'
+
+    iid="$(aws ec2 run-instances \
+               --region "$SPILL_REGION" \
+               --launch-template "LaunchTemplateId=${SPILL_LT_ID}" \
+               --instance-type "$SPILL_INSTANCE_TYPE" \
+               --image-id "$ami" \
+               --subnet-id "$SPILL_SUBNET_ID" \
+               --security-group-ids "$SPILL_SG_ID" \
+               --instance-market-options "$spot_opts" \
+               --tag-specifications \
+                   "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
+               --query 'Instances[0].InstanceId' \
+               --output text 2>&1)" || {
+        printf 'provision.sh: spot launch failed (%s); retrying as on-demand\n' "$iid" >&2
+        iid="$(aws ec2 run-instances \
+                   --region "$SPILL_REGION" \
+                   --launch-template "LaunchTemplateId=${SPILL_LT_ID}" \
+                   --instance-type "$SPILL_INSTANCE_TYPE" \
+                   --image-id "$ami" \
+                   --subnet-id "$SPILL_SUBNET_ID" \
+                   --security-group-ids "$SPILL_SG_ID" \
+                   --tag-specifications \
+                       "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
+                   --query 'Instances[0].InstanceId' \
+                   --output text 2>&1)" || {
+            printf '::error::provision.sh: on-demand launch also failed: %s\n' "$iid" >&2
+            return 1
+        }
+    }
+    printf '%s' "$iid"
+}
+
+# Wait until the SSM agent on the given instance reports Online.
+ec2_wait_ssm() {
+    local iid="$1" waited=0
+    while true; do
+        local status
+        status="$(aws ssm describe-instance-information \
+                      --region "$SPILL_REGION" \
+                      --filters "Key=InstanceIds,Values=${iid}" \
+                      --query 'InstanceInformationList[0].PingStatus' \
+                      --output text 2>/dev/null || true)"
+        if [ "$status" = "Online" ]; then
+            printf 'provision.sh: SSM agent on %s is Online after %ss\n' "$iid" "$waited" >&2
+            return 0
+        fi
+        if [ "$waited" -ge "$SPILL_SSM_WAIT_SECONDS" ]; then
+            printf '::error::provision.sh: SSM agent on %s never came Online after %ss (last status: %s)\n' \
+                "$iid" "$waited" "${status:-none}" >&2
+            aws ec2 terminate-instances --region "$SPILL_REGION" \
+                --instance-ids "$iid" >/dev/null 2>&1 || true
+            return 1
+        fi
+        printf 'provision.sh: waiting for SSM agent on %s (status=%s, %ss/%ss)\n' \
+            "$iid" "${status:-none}" "$waited" "$SPILL_SSM_WAIT_SECONDS" >&2
+        sleep 10
+        waited=$(( waited + 10 ))
+    done
+}
+
+# Write the runner token to SSM Parameter Store (SecureString) tagged with this
+# run's vmtoken, then send an SSM Run Command to the instance.  The instance's
+# IAM policy (aws:ResourceTag/ephemeral-ci:vmtoken == ${aws:PrincipalTag/ephemeral-ci:vmtoken},
+# with instanceMetadataTags=enabled on the launch template) means the instance
+# can only access the parameter tagged with its own vmtoken.  The command text
+# contains only the parameter NAME, never the token value.
+ec2_deliver_token() {
+    local iid="$1" vmtoken="$2"
+    local param_name="/ephemeral-ci/runner-token/${iid}"
+
+    # Write the token tagged with the run's vmtoken so the IAM tag condition
+    # on the instance role restricts access to this run only.
+    aws ssm put-parameter \
+        --region "$SPILL_REGION" \
+        --name "$param_name" \
+        --value "$RUNNER_TOKEN" \
+        --type SecureString \
+        --tags "Key=ephemeral-ci:vmtoken,Value=${vmtoken}" \
+        --overwrite >/dev/null || {
+        printf '::error::provision.sh: failed to put SSM parameter %s\n' "$param_name" >&2
+        return 1
+    }
+
+    local cmd
+    cmd="$(printf 'set -e
+TOKEN=$(aws ssm get-parameter --region %s --name %s --with-decryption --query Parameter.Value --output text)
+aws ssm delete-parameter --region %s --name %s || true
+printf '"'"'RUNNER_LABEL=%s\nRUNNER_TOKEN=%%s\nRUNNER_URL=%s\nRUNNER_GROUP=%s\n'"'"' "$TOKEN" \
+    > /run/gh-runner-init.partial
+mv /run/gh-runner-init.partial /run/gh-runner-init' \
+        "$SPILL_REGION" "$param_name" \
+        "$SPILL_REGION" "$param_name" \
+        "$RUNNER_LABEL" "$RUNNER_URL" "${RUNNER_GROUP:-ephemeral-ci}")"
+
+    local cmd_id
+    cmd_id="$(aws ssm send-command \
+                  --region "$SPILL_REGION" \
+                  --instance-ids "$iid" \
+                  --document-name 'AWS-RunShellScript' \
+                  --parameters "{\"commands\":[$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$cmd")]}" \
+                  --cloud-watch-output-config 'CloudWatchOutputEnabled=false' \
+                  --query 'Command.CommandId' \
+                  --output text 2>&1)" || {
+        printf '::error::provision.sh: failed to send SSM command to %s: %s\n' "$iid" "$cmd_id" >&2
+        aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
+        return 1
+    }
+
+    local waited=0
+    while true; do
+        local status
+        status="$(aws ssm get-command-invocation \
+                      --region "$SPILL_REGION" \
+                      --command-id "$cmd_id" \
+                      --instance-id "$iid" \
+                      --query 'Status' \
+                      --output text 2>/dev/null || printf 'Pending')"
+        case "$status" in
+            Success) return 0 ;;
+            Failed|Cancelled|TimedOut|Undeliverable|Terminated)
+                printf '::error::provision.sh: SSM command %s on %s finished with status %s\n' \
+                    "$cmd_id" "$iid" "$status" >&2
+                return 1
+                ;;
+        esac
+        if [ "$waited" -ge 120 ]; then
+            printf '::error::provision.sh: SSM command %s on %s did not finish within 120s\n' \
+                "$cmd_id" "$iid" >&2
+            return 1
+        fi
+        sleep 5
+        waited=$(( waited + 5 ))
+    done
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Reduce CAPACITY_TIMEOUT when spilling: only wait SPILL_AFTER_SECONDS on
+# Proxmox before falling through to EC2.  Restore afterwards so
+# ec2_wait_ceiling can use the full budget.
+_cap_timeout_orig="$CAPACITY_TIMEOUT"
+if [ "${SPILL:-off}" = "ec2" ] \
+   && [ "${SPILL_AFTER_SECONDS:-0}" -gt 0 ] \
+   && [ "${SPILL_AFTER_SECONDS}" -lt "$CAPACITY_TIMEOUT" ]; then
+    CAPACITY_TIMEOUT="$SPILL_AFTER_SECONDS"
+fi
+
+_spill_triggered=0
+if ! wait_for_capacity; then
+    CAPACITY_TIMEOUT="$_cap_timeout_orig"
+    if [ "${SPILL:-off}" = "ec2" ]; then
+        _spill_triggered=1
+    else
+        exit 1
+    fi
+fi
+CAPACITY_TIMEOUT="$_cap_timeout_orig"
+
+if [ "$_spill_triggered" -eq 1 ]; then
+    # ── EC2 spill path ────────────────────────────────────────────────────────
+    printf 'provision.sh: Proxmox capacity exhausted; spilling to EC2 (type=%s)\n' \
+        "$SPILL_INSTANCE_TYPE" >&2
+
+    ec2_load_stack   || exit 1
+    ec2_wait_ceiling || exit 1
+    SPILL_AMI="$(ec2_find_ami)" || exit 1
+
+    RUNNER_TOKEN="$2"
+    RUNNER_LABEL="$1"
+    RUNNER_URL="$3"
+
+    # Generate vmtoken before launch: it must tag both the instance and the
+    # SSM parameter so the IAM condition binds each instance to its own token.
+    SPILL_VMTOKEN="$(python3 -c 'import os,binascii; print(binascii.hexlify(os.urandom(16)).decode())')"
+
+    SPILL_INSTANCE_ID="$(ec2_launch "$SPILL_AMI" "$SPILL_VMTOKEN")" || exit 1
+
+    # Emit outputs before SSM delivery so teardown can terminate even on failure.
+    printf 'vmid=\n'
+    printf 'vmtoken=%s\n' "$SPILL_VMTOKEN"
+    printf 'backend=ec2\n'
+    printf 'instance-id=%s\n' "$SPILL_INSTANCE_ID"
+
+    ec2_wait_ssm "$SPILL_INSTANCE_ID"                    || exit 1
+    ec2_deliver_token "$SPILL_INSTANCE_ID" "$SPILL_VMTOKEN" || exit 1
+
+    printf 'provision.sh: EC2 runner %s ready; token delivered via SSM\n' \
+        "$SPILL_INSTANCE_ID" >&2
+    exit 0
+fi
 
 # --- Generate an ownership token ---
 #
@@ -831,3 +1130,4 @@ agent_retry 5 POST "/nodes/${PVE_NODE}/qemu/${VMID}/agent/exec" \
     --data-urlencode "command=/run/gh-runner-init" >/dev/null || exit 1
 
 printf 'provision.sh: VM %s started; runner credentials delivered via guest agent\n' "$VMID" >&2
+printf 'backend=proxmox\n'

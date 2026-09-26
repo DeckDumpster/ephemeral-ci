@@ -30,6 +30,80 @@ test('launch template sets HttpTokens=required', () => {
   });
 });
 
+test('instance role ssm parameter access requires per-run tag condition, not path alone', () => {
+  // Any policy attached to the EC2 instance role that grants ssm:GetParameter
+  // or ssm:DeleteParameter on a wildcard resource MUST carry a condition that
+  // compares the parameter's ephemeral-ci:vmtoken tag against the calling
+  // instance's own tag (projected from IMDS).  A plain path wildcard without
+  // this condition lets any instance read or delete any concurrent run's token
+  // — the cross-run identity theft this bead (db-ayf5) exists to close.
+  //
+  // The spill role has an intentionally unconditioned ssm:DeleteParameter for
+  // cleanup when token delivery fails; that is a GitHub Actions OIDC role,
+  // not an EC2 instance, so it is excluded from this assertion.
+  const instanceRoles = template.findResources('AWS::IAM::Role', {
+    Properties: {
+      AssumeRolePolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Principal: { Service: 'ec2.amazonaws.com' },
+          }),
+        ]),
+      },
+    },
+  });
+  const instanceRoleIds = Object.keys(instanceRoles);
+  expect(instanceRoleIds).toHaveLength(1);
+  const instanceRoleId = instanceRoleIds[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  const violations: string[] = [];
+
+  for (const [id, policyRaw] of Object.entries(allPolicies)) {
+    const policy = policyRaw as {
+      Properties: {
+        PolicyDocument: { Statement: Array<Record<string, unknown>> };
+        Roles: unknown[];
+      };
+    };
+    // Only check policies attached to the EC2 instance role.
+    const attachedRoles: unknown[] = ([] as unknown[]).concat(policy.Properties.Roles ?? []);
+    const attachedToInstance = attachedRoles.some((r) => {
+      if (typeof r === 'string') return r === instanceRoleId;
+      if (r && typeof r === 'object' && 'Ref' in (r as object)) {
+        return (r as { Ref: string }).Ref === instanceRoleId;
+      }
+      return false;
+    });
+    if (!attachedToInstance) continue;
+
+    for (const stmt of policy.Properties.PolicyDocument.Statement) {
+      const actions: string[] = ([] as string[]).concat(
+        stmt['Action'] as string | string[],
+      );
+      const hasParamAccess = actions.some(
+        (a) => a === 'ssm:GetParameter' || a === 'ssm:DeleteParameter',
+      );
+      if (!hasParamAccess) continue;
+
+      const resources: unknown[] = ([] as unknown[]).concat(stmt['Resource'] as unknown);
+      const hasWildcard = resources.some((r) => typeof r === 'string' && r.includes('*'));
+      if (!hasWildcard) continue;
+
+      // Wildcard + no per-run tag condition = any instance reads any run's token.
+      const cond = (stmt['Condition'] ?? {}) as Record<string, Record<string, unknown>>;
+      const tagCondVal = (cond['StringEquals'] ?? {})['aws:ResourceTag/ephemeral-ci:vmtoken'];
+      if (!tagCondVal || !String(tagCondVal).includes('aws:PrincipalTag')) {
+        violations.push(
+          `${id}: ${actions.join(',')} on wildcard resource without per-run tag condition`,
+        );
+      }
+    }
+  }
+
+  expect(violations).toHaveLength(0);
+});
+
 test('instance role managed policy is only AmazonSSMManagedInstanceCore', () => {
   const roles = template.findResources('AWS::IAM::Role', {
     Properties: {
