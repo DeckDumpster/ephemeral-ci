@@ -247,6 +247,13 @@ export class SpillStack extends cdk.Stack {
     // management account (up to 24h propagation, no CloudFormation support).
     // The account is dedicated to this purpose so account-wide is both simpler
     // and correct on day one.
+    const alertEmail = this.node.tryGetContext('alertEmail') as string | undefined;
+    if (!alertEmail) {
+      throw new Error(
+        'CDK context key "alertEmail" is required. Pass it with -c alertEmail=<address>.',
+      );
+    }
+
     new budgets.CfnBudget(this, 'MonthlyBudget', {
       budget: {
         budgetName: 'ephemeral-ci-monthly',
@@ -257,6 +264,26 @@ export class SpillStack extends cdk.Stack {
           unit: 'USD',
         },
       },
+      notificationsWithSubscribers: [
+        {
+          notification: {
+            notificationType: 'ACTUAL',
+            comparisonOperator: 'GREATER_THAN',
+            threshold: 80,
+            thresholdType: 'PERCENTAGE',
+          },
+          subscribers: [{ subscriptionType: 'EMAIL', address: alertEmail }],
+        },
+        {
+          notification: {
+            notificationType: 'FORECASTED',
+            comparisonOperator: 'GREATER_THAN',
+            threshold: 100,
+            thresholdType: 'PERCENTAGE',
+          },
+          subscribers: [{ subscriptionType: 'EMAIL', address: alertEmail }],
+        },
+      ],
     });
 
     // ── Outputs: consumed by later spill scripts via describe-stacks ─────────
