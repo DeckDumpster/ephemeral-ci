@@ -79,6 +79,20 @@ test('spill role trust policy carries OIDC condition with expected sub', () => {
   ).toBe('repo:DeckDumpster/ephemeral-ci:*');
 });
 
+test('budget does not declare a BudgetName', () => {
+  // BudgetName must stay absent. AWS::Budgets::Budget forces a replacement whenever
+  // notificationsWithSubscribers changes (threshold tuned, subscriber added, etc.).
+  // CloudFormation creates the new resource before deleting the old; a fixed name collides
+  // with the one still standing and the deploy fails with "same name but different
+  // internalId". A generated name cannot collide, making every future notification edit
+  // safe. See db-sbvl for the incident that established this rule.
+  const budgetResources = template.findResources('AWS::Budgets::Budget');
+  const budget = Object.values(budgetResources)[0] as {
+    Properties: { Budget: Record<string, unknown> };
+  };
+  expect(budget.Properties.Budget['BudgetName']).toBeUndefined();
+});
+
 test('budget is 100 USD MONTHLY account-wide', () => {
   template.hasResourceProperties('AWS::Budgets::Budget', {
     Budget: {

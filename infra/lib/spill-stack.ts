@@ -256,7 +256,6 @@ export class SpillStack extends cdk.Stack {
 
     new budgets.CfnBudget(this, 'MonthlyBudget', {
       budget: {
-        budgetName: 'ephemeral-ci-monthly',
         budgetType: 'COST',
         timeUnit: 'MONTHLY',
         budgetLimit: {
