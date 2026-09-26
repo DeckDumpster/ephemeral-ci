@@ -1680,11 +1680,19 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ko "test-29: run-instances missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep run-instances "$AWS_ARGV_FILE" || true))"
     fi
 
-    # put-parameter must carry the vmtoken tag
-    if [ -n "$_vmtoken29" ] && grep "put-parameter" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci:vmtoken,Value=${_vmtoken29}"; then
-        ok "test-29: put-parameter includes ephemeral-ci:vmtoken tag matching stdout vmtoken"
+    # put-parameter must NOT be called: token is delivered directly via
+    # send-command (base64-encoded), nothing is written to Parameter Store.
+    if ! grep -q "put-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
+        ok "test-29: put-parameter not called — token delivered via send-command only"
     else
-        ko "test-29: put-parameter missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep put-parameter "$AWS_ARGV_FILE" || true))"
+        ko "test-29: put-parameter was called — token must not be written to Parameter Store"
+    fi
+
+    # send-command must be called (positive control for delivery path)
+    if grep -q "send-command" "$AWS_ARGV_FILE" 2>/dev/null; then
+        ok "test-29: send-command called to deliver token"
+    else
+        ko "test-29: send-command not called — token delivery did not happen"
     fi
 else
     ko "test-29: no AWS calls were made on EC2 spill path"
