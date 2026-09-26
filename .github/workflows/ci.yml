@@ -72,6 +72,29 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck -e SC1091,SC1090,SC2034,SC2015,SC2016 scripts/*.sh scripts/guest/*.sh
 
+      # A tracked .sh with a shebang but no execute bit cannot be run by an
+      # operator without an explicit `bash` prefix — the two facts disagree about
+      # whether the file is a program. An executable .sh without a shebang is
+      # the mirror: the OS will reject it at exec. Both are caught here.
+      # The shebang test requires a `/` after `#!` so that inline-block markers
+      # like `#!maxpar-begin` are not mistaken for interpreter lines.
+      - name: script mode consistency
+        run: |
+          bad=$(git ls-files -s -- '*.sh' | while read -r mode _ _ path; do
+            if head -1 "$path" | grep -q '^#!.*/'; then shebang=1; else shebang=0; fi
+            if [ "$mode" = "100755" ]; then exec_bit=1; else exec_bit=0; fi
+            if [ "$shebang" = 1 ] && [ "$exec_bit" = 0 ]; then
+              echo "has shebang but not executable: $path"
+            fi
+            if [ "$shebang" = 0 ] && [ "$exec_bit" = 1 ]; then
+              echo "executable but no shebang: $path"
+            fi
+          done)
+          if [ -n "$bad" ]; then
+            echo "$bad"
+            exit 1
+          fi
+
       - name: provision
         run: bash scripts/test-provision.sh
 
