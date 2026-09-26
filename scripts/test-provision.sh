@@ -1506,6 +1506,191 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Tests 27-29: EC2 spill path
+#
+# These tests stub the AWS CLI so no real AWS calls are made.  Each invocation
+# is recorded to AWS_ARGV_FILE so assertions can inspect what was passed.
+# ---------------------------------------------------------------------------
+
+# AWS CLI stub: records every invocation to $AWS_ARGV_FILE, one line per arg
+# (separated by a record separator, \x1e), then returns canned output based on
+# the first few arguments.
+AWS_ARGV_FILE="$SCRATCH/aws-argv"
+AWS_BIN="$SCRATCH/aws"
+cat > "$AWS_BIN" << 'AWSSTUB'
+#!/bin/sh
+SEP=$(printf '\x1e')
+printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
+# Route by subcommand
+case "$1 $2" in
+    "cloudformation describe-stacks")
+        printf '[{"OutputKey":"SubnetId","OutputValue":"subnet-test123"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-test456"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-test789"}]\n'
+        ;;
+    "ec2 describe-instances")
+        printf '0\n'
+        ;;
+    "ec2 describe-images")
+        printf 'ami-testdeadbeef\n'
+        ;;
+    "ec2 run-instances")
+        printf 'i-testinstance001\n'
+        ;;
+    "ssm describe-instance-information")
+        printf 'Online\n'
+        ;;
+    "ssm put-parameter")
+        ;;
+    "ssm send-command")
+        printf 'cmd-testcmd001\n'
+        ;;
+    "ssm get-command-invocation")
+        printf 'Success\n'
+        ;;
+    "ssm delete-parameter")
+        ;;
+    *)
+        printf 'aws-stub: unhandled: %s\n' "$*" >&2
+        exit 1
+        ;;
+esac
+AWSSTUB
+chmod +x "$AWS_BIN"
+export PATH="$SCRATCH:$PATH"
+export AWS_ARGV_FILE
+
+# ---------------------------------------------------------------------------
+# Test 27: SPILL=off — capacity failure exits non-zero, no AWS calls
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_out27="$SCRATCH/out27"
+_err27="$SCRATCH/err27"
+# Node is at capacity: CURL_NODE_ALLOC_MIB=131072 exhausts all memory.
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=off \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$_out27" 2>"$_err27" && _rc27=0 || _rc27=$?
+
+if [ "$_rc27" -ne 0 ]; then
+    ok "test-27: SPILL=off capacity failure exits non-zero"
+else
+    ko "test-27: SPILL=off capacity failure should exit non-zero"
+fi
+if [ ! -f "$AWS_ARGV_FILE" ] || [ ! -s "$AWS_ARGV_FILE" ]; then
+    ok "test-27: SPILL=off makes no AWS calls"
+else
+    ko "test-27: SPILL=off made unexpected AWS calls: $(cat "$AWS_ARGV_FILE")"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 28: SPILL=ec2, Proxmox has room → uses Proxmox, no AWS calls,
+#          backend=proxmox on stdout
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_out28="$SCRATCH/out28"
+_err28="$SCRATCH/err28"
+SPILL=ec2 SPILL_AFTER_SECONDS=0 CAPACITY_TIMEOUT=3600 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$_out28" 2>"$_err28" && _rc28=0 || _rc28=$?
+
+if [ "$_rc28" -eq 0 ]; then
+    ok "test-28: SPILL=ec2 with Proxmox room succeeds"
+else
+    ko "test-28: SPILL=ec2 with Proxmox room failed (rc=$_rc28; err: $(cat "$_err28"))"
+fi
+if [ ! -f "$AWS_ARGV_FILE" ] || [ ! -s "$AWS_ARGV_FILE" ]; then
+    ok "test-28: Proxmox path makes no AWS calls"
+else
+    ko "test-28: Proxmox path made unexpected AWS calls: $(cat "$AWS_ARGV_FILE")"
+fi
+if grep -q "^backend=proxmox$" "$_out28"; then
+    ok "test-28: stdout contains backend=proxmox"
+else
+    ko "test-28: stdout missing backend=proxmox (got: $(cat "$_out28"))"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 29: SPILL=ec2, Proxmox exhausted → EC2 path
+#   - backend=ec2 on stdout
+#   - instance-id on stdout
+#   - vmid= empty (not a Proxmox VMID)
+#   - vmtoken on stdout
+#   - run-instances has no --user-data
+#   - send-command does not contain the token value
+#   - run-instances carries ephemeral-ci:vmtoken tag matching stdout vmtoken
+#   - put-parameter includes Key=ephemeral-ci:vmtoken tag matching stdout vmtoken
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_out29="$SCRATCH/out29"
+_err29="$SCRATCH/err29"
+# Node is at capacity: CURL_NODE_ALLOC_MIB=131072 exhausts all memory.
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$_out29" 2>"$_err29" && _rc29=0 || _rc29=$?
+
+if [ "$_rc29" -eq 0 ]; then
+    ok "test-29: EC2 spill path exits zero"
+else
+    ko "test-29: EC2 spill path failed (rc=$_rc29; err: $(cat "$_err29"))"
+fi
+
+_vmtoken29="$(grep "^vmtoken=" "$_out29" | sed 's/^vmtoken=//')"
+_iid29="$(grep "^instance-id=" "$_out29" | sed 's/^instance-id=//')"
+_vmid29="$(grep "^vmid=" "$_out29" | sed 's/^vmid=//')"
+_backend29="$(grep "^backend=" "$_out29" | sed 's/^backend=//')"
+
+if [ "$_backend29" = "ec2" ]; then
+    ok "test-29: backend=ec2 on stdout"
+else
+    ko "test-29: expected backend=ec2, got '${_backend29}' (stdout: $(cat "$_out29"))"
+fi
+if [ -n "$_iid29" ]; then
+    ok "test-29: instance-id on stdout (${_iid29})"
+else
+    ko "test-29: instance-id missing from stdout"
+fi
+if [ -z "$_vmid29" ]; then
+    ok "test-29: vmid= is empty (EC2 path)"
+else
+    ko "test-29: expected empty vmid=, got '${_vmid29}'"
+fi
+if [ -n "$_vmtoken29" ]; then
+    ok "test-29: vmtoken on stdout"
+else
+    ko "test-29: vmtoken missing from stdout"
+fi
+
+if [ -f "$AWS_ARGV_FILE" ]; then
+    # run-instances must NOT contain --user-data
+    if grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--user-data"; then
+        ko "test-29: run-instances should not carry --user-data (token must travel via SSM)"
+    else
+        ok "test-29: run-instances carries no --user-data"
+    fi
+
+    # send-command must not contain the token value "test-token"
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "test-token"; then
+        ko "test-29: send-command must not contain the raw token value"
+    else
+        ok "test-29: send-command does not contain the raw token value"
+    fi
+
+    # run-instances must carry the vmtoken tag
+    if [ -n "$_vmtoken29" ] && grep "run-instances" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci:vmtoken,Value=${_vmtoken29}"; then
+        ok "test-29: run-instances carries ephemeral-ci:vmtoken tag matching stdout vmtoken"
+    else
+        ko "test-29: run-instances missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep run-instances "$AWS_ARGV_FILE" || true))"
+    fi
+
+    # put-parameter must carry the vmtoken tag
+    if [ -n "$_vmtoken29" ] && grep "put-parameter" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci:vmtoken,Value=${_vmtoken29}"; then
+        ok "test-29: put-parameter includes ephemeral-ci:vmtoken tag matching stdout vmtoken"
+    else
+        ko "test-29: put-parameter missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep put-parameter "$AWS_ARGV_FILE" || true))"
+    fi
+else
+    ko "test-29: no AWS calls were made on EC2 spill path"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))

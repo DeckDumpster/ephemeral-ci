@@ -115,22 +115,55 @@ inputs:
       per-repo share cannot enforce fairness across the fleet (2026-09-23).
     required: false
     default: '0'
+  spill:
+    description: >-
+      Set to "ec2" to enable EC2 spill when Proxmox capacity is exhausted.
+      Any other value (or absent) disables spill.
+    required: false
+    default: 'off'
+  spill-after-seconds:
+    description: >-
+      Seconds to wait for Proxmox capacity before spilling to EC2. 0 means
+      exhaust the full capacity-timeout-seconds before spilling.
+    required: false
+    default: '0'
+  spill-max-instances:
+    description: Maximum concurrent EC2 spill instances allowed.
+    required: false
+    default: '4'
+  aws-role-to-assume:
+    description: >-
+      IAM role ARN to assume via OIDC before running EC2 spill operations.
+      Required when spill=ec2.
+    required: false
+    default: ''
 
 outputs:
   vmid:
     description: >-
-      The provisioned VM's id, or empty if the clone itself never happened.
-      ALWAYS pass this to the teardown action under `if: always()`.
+      The provisioned VM's id, or empty if the clone itself never happened or
+      the runner was provisioned on EC2. ALWAYS pass this to the teardown
+      action under `if: always()`.
     value: ${{ steps.provision.outputs.vmid }}
   label:
     description: The unique runner label to put in the test job's `runs-on`.
     value: ${{ steps.label.outputs.label }}
   vm-token:
     description: >-
-      Ownership token stamped into the VM description at clone time. Pass this
-      to the teardown action's vm-token input so Guard 4b can verify the
-      teardown caller participated in this specific provision.
+      Ownership token stamped into the VM description at clone time (Proxmox)
+      or generated per-run (EC2). Pass this to the teardown action's vm-token
+      input so Guard 4b can verify the teardown caller participated in this
+      specific provision.
     value: ${{ steps.provision.outputs.vm-token }}
+  backend:
+    description: >-
+      "proxmox" or "ec2", indicating which backend provisioned the runner.
+    value: ${{ steps.provision.outputs.backend }}
+  instance-id:
+    description: >-
+      EC2 instance id when backend=ec2, empty otherwise. Pass to teardown
+      so it can terminate the instance.
+    value: ${{ steps.provision.outputs.instance-id }}
 
 runs:
   using: composite
@@ -148,6 +181,15 @@ runs:
       run: |
         repo='${{ github.event.repository.name }}'
         echo "label=ci-${repo}-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
+    # Only runs when spill=ec2. The role must carry the permissions defined in
+    # SpillStack (ec2:RunInstances, ssm:PutParameter, ssm:SendCommand, etc.).
+    - name: Configure AWS credentials for EC2 spill
+      if: inputs.spill == 'ec2' && inputs.aws-role-to-assume != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws-role-to-assume }}
+        aws-region: us-west-2
 
     - name: Connect to Tailscale
       uses: tailscale/github-action@v4
@@ -200,6 +242,9 @@ runs:
         FLEET_SHARE_PER_REPO: ${{ inputs.fleet-share-per-repo }}
         REPO_SLUG: ${{ github.repository }}
         CRED_FILE: /dev/null
+        SPILL: ${{ inputs.spill }}
+        SPILL_AFTER_SECONDS: ${{ inputs.spill-after-seconds }}
+        SPILL_MAX_INSTANCES: ${{ inputs.spill-max-instances }}
       run: |
         set +e
         OUT=$(bash "${{ github.action_path }}/../scripts/provision.sh" \
@@ -208,10 +253,16 @@ runs:
                 "${{ github.server_url }}/${{ github.repository_owner }}")
         RC=$?
         set -e
-        VMID=$(printf '%s\n' "$OUT" | sed -n 's/^vmid=\([0-9]\+\)$/\1/p' | head -1)
-        [ -n "$VMID" ] && echo "vmid=$VMID" >> "$GITHUB_OUTPUT"
+        # vmid= may be empty on the EC2 path; export it either way so teardown
+        # can distinguish "clone never happened" from "EC2 runner"
+        VMID=$(printf '%s\n' "$OUT" | sed -n 's/^vmid=\(.*\)$/\1/p' | head -1)
+        echo "vmid=${VMID}" >> "$GITHUB_OUTPUT"
         VMTOKEN=$(printf '%s\n' "$OUT" | sed -n 's/^vmtoken=\([a-f0-9]*\)$/\1/p' | head -1)
         [ -n "$VMTOKEN" ] && echo "vm-token=$VMTOKEN" >> "$GITHUB_OUTPUT"
+        BACKEND=$(printf '%s\n' "$OUT" | sed -n 's/^backend=\(.*\)$/\1/p' | head -1)
+        [ -n "$BACKEND" ] && echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
+        IID=$(printf '%s\n' "$OUT" | sed -n 's/^instance-id=\(.*\)$/\1/p' | head -1)
+        [ -n "$IID" ] && echo "instance-id=$IID" >> "$GITHUB_OUTPUT"
         exit "$RC"
 
     # WRITING THE FILE IS NOT PROOF OF REGISTRATION. agent/file-write returns
@@ -257,3 +308,16 @@ runs:
         PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
         CRED_FILE: /dev/null
       run: bash "${{ github.action_path }}/../scripts/guest-diag.sh" "${{ steps.provision.outputs.vmid }}"
+
+    # Emit a job summary note when an EC2 instance was launched so the cost
+    # is visible in the Actions UI. On-demand c7i.xlarge in us-west-2 is
+    # roughly $0.20/hr; spot is typically half that.  Teardown must terminate
+    # the instance; if teardown is skipped the instance runs until its runner
+    # service exits (configured with --ephemeral).
+    - name: Note EC2 spill cost
+      if: steps.provision.outputs.backend == 'ec2'
+      shell: bash
+      run: |
+        echo "## EC2 spill" >> "$GITHUB_STEP_SUMMARY"
+        echo "Runner provisioned on EC2 instance \`${{ steps.provision.outputs.instance-id }}\` (Proxmox capacity was exhausted)." >> "$GITHUB_STEP_SUMMARY"
+        echo "Instance type: \`${SPILL_INSTANCE_TYPE:-c7i.xlarge}\` — ensure teardown terminates it to avoid ongoing cost." >> "$GITHUB_STEP_SUMMARY"
