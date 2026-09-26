@@ -129,7 +129,7 @@ apt_install() {
     [ "$CAN_ELEVATE" -eq 1 ] || { note "cannot elevate to install: ${want[*]}"; return 1; }
     if [ "$APT_UPDATED" = 0 ]; then
         # shellcheck disable=SC2086
-        $SUDO apt-get update -qq $APT_LOCK_WAIT || true
+        $SUDO apt-get update -qq $APT_LOCK_WAIT
         APT_UPDATED=1
     fi
     note "installing ${want[*]}"
@@ -306,14 +306,19 @@ check_unattended() {
 RUNNER_MEM_MIB=6144
 
 check_mem_size() {
-    local memtotal_mib lo hi
+    local memtotal_mib lo hi remedy
     [ -r /proc/meminfo ] || return 0
     memtotal_mib="$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)"
     [ -n "$memtotal_mib" ] || return 0
     lo=$(( RUNNER_MEM_MIB * 4 / 5 ))
     hi=$(( RUNNER_MEM_MIB * 6 / 5 ))
+    if command -v qm >/dev/null 2>&1; then
+        remedy="qm set <VMID> --memory ${RUNNER_MEM_MIB}"
+    else
+        remedy="use an instance type with ≥${RUNNER_MEM_MIB}MiB RAM (e.g. c7i.xlarge)"
+    fi
     if [ "$memtotal_mib" -lt "$lo" ] || [ "$memtotal_mib" -gt "$hi" ]; then
-        lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; declared ${RUNNER_MEM_MIB}MiB (±20% window ${lo}–${hi}MiB); resize with: qm set <VMID> --memory ${RUNNER_MEM_MIB}"
+        lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; declared ${RUNNER_MEM_MIB}MiB (±20% window ${lo}–${hi}MiB); resize with: ${remedy}"
         return 1
     fi
     note "mem ${memtotal_mib}MiB (declared ${RUNNER_MEM_MIB}MiB)"
@@ -359,6 +364,27 @@ fi
 # --------------------------------- install ---------------------------------
 note "applying substrate for ${RUNUSER} on $(hostname)"
 
+# Mask apt automation BEFORE the first apt-get update. On a freshly booted
+# instance unattended-upgrades runs at the same moment provisioning does;
+# it can hold the dpkg lock when apt-get update runs, causing universe
+# package lists to be absent from the cache while main (already cached on
+# the AMI) still resolves. The masking was previously done after apt_install,
+# which was too late to prevent that race.
+if command -v systemctl >/dev/null 2>&1; then
+    for _apt_unit in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do
+        case "$(systemctl is-enabled "$_apt_unit" 2>/dev/null)" in
+            ''|masked|'not-found') ;;
+            *)
+                note "masking $_apt_unit (apt automation races provisioning for the dpkg lock)"
+                $SUDO systemctl disable --now "$_apt_unit" \
+                    || note "could not disable $_apt_unit"
+                $SUDO systemctl mask "$_apt_unit" \
+                    || note "could not mask $_apt_unit"
+                ;;
+        esac
+    done
+fi
+
 apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}"
 
 if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null \
@@ -381,21 +407,6 @@ if [ -n "$(sysctl -n "$APPARMOR_SYSCTL" 2>/dev/null)" ]; then
     printf '%s = 0\n' "$APPARMOR_SYSCTL" | $SUDO tee "$SYSCTL_FILE" >/dev/null \
         || note "could not write ${SYSCTL_FILE}"
     $SUDO sysctl -q -w "${APPARMOR_SYSCTL}=0" || note "could not set ${APPARMOR_SYSCTL} live"
-fi
-
-if command -v systemctl >/dev/null 2>&1; then
-    for _apt_unit in unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer; do
-        case "$(systemctl is-enabled "$_apt_unit" 2>/dev/null)" in
-            ''|masked|'not-found') ;;
-            *)
-                note "masking $_apt_unit (apt automation races provisioning for the dpkg lock)"
-                $SUDO systemctl disable --now "$_apt_unit" \
-                    || note "could not disable $_apt_unit"
-                $SUDO systemctl mask "$_apt_unit" \
-                    || note "could not mask $_apt_unit"
-                ;;
-        esac
-    done
 fi
 
 # Re-check and report. A partial apply is a failure here rather than a surprise

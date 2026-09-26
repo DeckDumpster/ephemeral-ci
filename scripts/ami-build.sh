@@ -13,8 +13,10 @@
 #   headroom over the measured minimum. The Proxmox template uses 40 GiB,
 #   but that was not derived from measurement.
 #
-# INSTANCE TYPE: c7i.large (2 vCPU, 4 GiB). AMI builds are serial work
-# (apt install, runner unpack). A small builder keeps build cost low.
+# INSTANCE TYPE: c7i.xlarge (4 vCPU, 8 GiB). Must match the spill runner
+# type so that template-substrate.sh's memory contract is validated on the
+# machine that will actually run CI, not on a smaller builder that passes the
+# build and fails the check on first use.
 #
 # DELIVERY: template-substrate.sh is sent to the build instance via SSM
 # RunShellScript as base64. No credential or secret ever appears in
@@ -51,7 +53,7 @@ ACCOUNT_ID="189923011121"
 TAG_KEY="spill:owner"
 TAG_VALUE="ephemeral-ci"
 AMI_NAME_PREFIX="ephemeral-ci-runner"
-BUILDER_TYPE="c7i.large"
+BUILDER_TYPE="c7i.xlarge"
 ROOT_DISK_GIB=32
 RETAIN_COUNT=3
 # Budget for build instance to register with SSM after launch.

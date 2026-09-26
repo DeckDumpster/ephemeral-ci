@@ -335,7 +335,7 @@ printf '\ntest-ami-build: launching test instance from %s...\n' "$new_ami_id" >&
 
 test_instance_id="$(aws ec2 run-instances \
     --image-id "$new_ami_id" \
-    --instance-type "c7i.large" \
+    --instance-type "c7i.xlarge" \
     --subnet-id "${SUBNET_ID}" \
     --security-group-ids "${SECURITY_GROUP_ID}" \
     --iam-instance-profile "Name=${INSTANCE_PROFILE_NAME}" \
