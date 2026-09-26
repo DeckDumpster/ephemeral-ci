@@ -551,3 +551,274 @@ if [ "$unknown_age" -gt 0 ]; then
     echo "reap.sh: $unknown_age VM(s) had unknown age and were skipped — investigate" >&2
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# EC2 spill reaping
+#
+# Terminates EC2 instances tagged spill:owner=ephemeral-ci when the owning
+# run has finished (early collection) or when the instance exceeds
+# MAX_AGE_HOURS. Instances whose runner is currently busy are kept.
+#
+# Falls back to age-only mode when the ephemeral-ci:runner tag is absent;
+# provision.sh must tag runner instances with that key for the busy check
+# and early-collection path to function.
+#
+# Also terminates:
+#   - stale AMI-builder instances (Name=ephemeral-ci-runner, age-only)
+#   - orphaned EBS volumes tagged spill:owner=ephemeral-ci in available state
+#
+# Skipped gracefully when the aws CLI is unavailable or credentials are not
+# configured.
+#
+# Environment variables:
+#   SPILL_REGION — AWS region (default: us-west-2)
+# ---------------------------------------------------------------------------
+
+SPILL_REGION="${SPILL_REGION:-us-west-2}"
+
+# Return the on-demand cost estimate string for <age_seconds> of <instance_type>.
+# Prints "~$N.NNNN" for known types or "<N.Nh> (rate unknown for <type>)" otherwise.
+_ec2_cost_estimate() {
+    local age_s="$1" itype="$2"
+    python3 - "$age_s" "$itype" <<'EOF'
+import sys
+age = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+itype = sys.argv[2] if len(sys.argv) > 2 else ""
+rates = {
+    "c7i.xlarge":  0.2013, "c7i.large":   0.1007, "c7i.2xlarge": 0.4026,
+    "c7i.4xlarge": 0.8052, "c8i.xlarge":  0.2112, "c8i.large":   0.1056,
+    "c8i.2xlarge": 0.4224, "t3.micro":    0.0104, "t3.small":    0.0208,
+    "t3.medium":   0.0416, "t3.large":    0.0832,
+}
+rate = rates.get(itype, 0)
+hours = age / 3600.0
+if rate > 0:
+    print("~$%.4f (%s, %.1fh)" % (hours * rate, itype, hours))
+else:
+    print("%.1fh (rate unknown for %s)" % (hours, itype))
+EOF
+}
+
+# Convert an EC2 ISO-8601 LaunchTime string to a Unix epoch integer.
+# Prints 0 on parse failure.
+_ec2_launch_epoch() {
+    python3 - "$1" <<'EOF'
+import sys
+from datetime import datetime, timezone
+t = sys.argv[1] if len(sys.argv) > 1 else ""
+if not t:
+    print(0); sys.exit(0)
+try:
+    dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+    print(int(dt.timestamp()))
+except Exception:
+    print(0)
+EOF
+}
+
+if ! command -v aws >/dev/null 2>&1; then
+    echo "reap.sh: aws CLI not found; EC2 reaping skipped" >&2
+elif ! aws sts get-caller-identity >/dev/null 2>&1; then
+    echo "reap.sh: AWS credentials not configured; EC2 reaping skipped" >&2
+else
+
+ec2_reaped=0
+ec2_skipped=0
+ec2_unknown_launch=0
+
+# Enumerate non-terminated instances carrying the spill tag.
+# A hard failure here (API error) is propagated as a script error: we cannot
+# reap safely if we cannot enumerate, just as with the Proxmox section.
+EC2_LIST_JSON=""
+if ! EC2_LIST_JSON="$(aws ec2 describe-instances \
+        --region "$SPILL_REGION" \
+        --filters \
+            "Name=tag:spill:owner,Values=ephemeral-ci" \
+            "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+        --query 'Reservations[*].Instances[*].{id:InstanceId,state:State.Name,launch:LaunchTime,type:InstanceType,tags:Tags}' \
+        --output json 2>&1)"; then
+    echo "reap.sh: EC2 describe-instances failed: $EC2_LIST_JSON" >&2
+    exit 1
+fi
+
+# Flatten [[batch], [batch], ...] → [instance, ...]
+EC2_INSTANCES="$(python3 -c \
+    'import json,sys; d=json.load(sys.stdin); print(json.dumps([x for b in d for x in b]))' \
+    <<< "$EC2_LIST_JSON")"
+
+EC2_COUNT="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' \
+    <<< "$EC2_INSTANCES")"
+
+if [ "${EC2_COUNT:-0}" -eq 0 ]; then
+    echo "reap.sh: EC2: no tagged instances (pending/running/stopping/stopped)" >&2
+else
+    echo "reap.sh: EC2: $EC2_COUNT tagged instance(s) to evaluate" >&2
+fi
+
+while IFS= read -r _ec2_line; do
+    [ -z "$_ec2_line" ] && continue
+
+    _ec2_tag() {
+        python3 - "$_ec2_line" "$1" <<'PYEOF'
+import json,sys
+d=json.loads(sys.argv[1])
+tags=d.get('tags',[]) or []
+print(next((t['Value'] for t in tags if t['Key']==sys.argv[2]),''))
+PYEOF
+    }
+
+    EC2_IID="$(python3      -c "import json,sys; print(json.loads(sys.argv[1]).get('id',''))"     "$_ec2_line")"
+    EC2_STATE="$(python3    -c "import json,sys; print(json.loads(sys.argv[1]).get('state',''))"  "$_ec2_line")"
+    EC2_LAUNCH="$(python3   -c "import json,sys; print(json.loads(sys.argv[1]).get('launch',''))" "$_ec2_line")"
+    EC2_TYPE="$(python3     -c "import json,sys; print(json.loads(sys.argv[1]).get('type',''))"   "$_ec2_line")"
+    EC2_NAME="$(_ec2_tag Name)"
+    EC2_RUNNER_LABEL="$(_ec2_tag "ephemeral-ci:runner")"
+
+    EC2_LAUNCH_EPOCH="$(_ec2_launch_epoch "$EC2_LAUNCH")"
+
+    if [ "${EC2_LAUNCH_EPOCH:-0}" -eq 0 ]; then
+        echo "reap.sh: EC2 $EC2_IID ($EC2_NAME): cannot parse LaunchTime '$EC2_LAUNCH' — skipping" >&2
+        (( ec2_skipped++ )) || true
+        (( ec2_unknown_launch++ )) || true
+        continue
+    fi
+
+    EC2_AGE_SECONDS=$(( NOW - EC2_LAUNCH_EPOCH ))
+    EC2_AGE_HOURS=$(( EC2_AGE_SECONDS / 3600 ))
+    EC2_COST="$(_ec2_cost_estimate "$EC2_AGE_SECONDS" "$EC2_TYPE")"
+
+    # AMI-builder instances (Name=ephemeral-ci-runner): age cutoff only.
+    # Builder instances do not register a GitHub runner so busy/run checks
+    # do not apply.
+    if [ "$EC2_NAME" = "ephemeral-ci-runner" ]; then
+        if [ "$EC2_LAUNCH_EPOCH" -gt "$CUTOFF" ]; then
+            echo "reap.sh: EC2 builder $EC2_IID (${EC2_AGE_HOURS}h, $EC2_COST): within age cutoff — keeping" >&2
+            (( ec2_skipped++ )) || true
+            continue
+        fi
+        if "$DRY_RUN"; then
+            echo "reap.sh: DRY RUN — would terminate EC2 builder $EC2_IID (${EC2_AGE_HOURS}h, $EC2_COST)" >&2
+            (( ec2_reaped++ )) || true
+            continue
+        fi
+        echo "reap.sh: terminating stale EC2 builder $EC2_IID (${EC2_AGE_HOURS}h, $EC2_COST)" >&2
+        if aws ec2 terminate-instances \
+                --region "$SPILL_REGION" \
+                --instance-ids "$EC2_IID" >/dev/null 2>&1; then
+            echo "reap.sh: EC2 builder $EC2_IID terminated" >&2
+            (( ec2_reaped++ )) || true
+        else
+            echo "reap.sh: EC2 builder $EC2_IID: terminate failed" >&2
+            (( ec2_skipped++ )) || true
+        fi
+        continue
+    fi
+
+    # Runner instances: busy check + owning-run check + age cutoff.
+    if [ -n "$EC2_RUNNER_LABEL" ]; then
+        # A busy runner must not be reaped regardless of age.
+        if github_runner_busy "$EC2_RUNNER_LABEL"; then
+            echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, runner $EC2_RUNNER_LABEL, ${EC2_AGE_HOURS}h): runner busy — keeping" >&2
+            (( ec2_skipped++ )) || true
+            continue
+        fi
+
+        # Early collection: reap an instance younger than MAX_AGE_HOURS when
+        # its owning run has already reached a terminal state and the grace
+        # period has elapsed. Same logic as the Proxmox VM path.
+        EC2_ORPHAN_BY_RUN=0
+        if [ "$EC2_LAUNCH_EPOCH" -gt "$CUTOFF" ] && owning_run_finished "$EC2_RUNNER_LABEL"; then
+            echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, runner $EC2_RUNNER_LABEL, ${EC2_AGE_HOURS}h): owning run finished — early collection" >&2
+            EC2_ORPHAN_BY_RUN=1
+        fi
+
+        if [ "$EC2_LAUNCH_EPOCH" -gt "$CUTOFF" ] && [ "$EC2_ORPHAN_BY_RUN" -eq 0 ]; then
+            echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, runner $EC2_RUNNER_LABEL, ${EC2_AGE_HOURS}h): within age cutoff — keeping" >&2
+            (( ec2_skipped++ )) || true
+            continue
+        fi
+    else
+        # Degraded mode: the ephemeral-ci:runner tag is absent.
+        # provision.sh must set this tag so the busy check and early
+        # collection can function; without it only the age cutoff protects
+        # running jobs, and the owning-run early-collection path is disabled.
+        echo "reap.sh: EC2 $EC2_IID ($EC2_NAME): no ephemeral-ci:runner tag — degraded mode (age-only). provision.sh must tag runner instances." >&2
+        if [ "$EC2_LAUNCH_EPOCH" -gt "$CUTOFF" ]; then
+            echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, ${EC2_AGE_HOURS}h): within age cutoff — keeping" >&2
+            (( ec2_skipped++ )) || true
+            continue
+        fi
+    fi
+
+    if "$DRY_RUN"; then
+        echo "reap.sh: DRY RUN — would terminate EC2 $EC2_IID ($EC2_NAME, ${EC2_AGE_HOURS}h, $EC2_COST)" >&2
+        (( ec2_reaped++ )) || true
+        continue
+    fi
+
+    echo "reap.sh: terminating EC2 instance $EC2_IID ($EC2_NAME, ${EC2_AGE_HOURS}h, $EC2_COST)" >&2
+    if aws ec2 terminate-instances \
+            --region "$SPILL_REGION" \
+            --instance-ids "$EC2_IID" >/dev/null 2>&1; then
+        echo "reap.sh: EC2 instance $EC2_IID terminated" >&2
+        (( ec2_reaped++ )) || true
+    else
+        echo "reap.sh: EC2 instance $EC2_IID: terminate failed" >&2
+        (( ec2_skipped++ )) || true
+    fi
+
+done < <(python3 -c \
+    'import json,sys; [print(json.dumps(x)) for x in json.load(sys.stdin)]' \
+    <<< "$EC2_INSTANCES")
+
+# ---- Orphaned EBS volumes ----
+# Volumes tagged spill:owner=ephemeral-ci in the available state are not
+# attached to any instance; they were left behind when an instance was
+# terminated without first detaching them (or when terminate-on-delete was
+# not set). Delete them unconditionally — an unattached spill volume has
+# no useful state.
+EC2_VOL_JSON=""
+ec2_vols_reaped=0
+if EC2_VOL_JSON="$(aws ec2 describe-volumes \
+        --region "$SPILL_REGION" \
+        --filters \
+            "Name=tag:spill:owner,Values=ephemeral-ci" \
+            "Name=status,Values=available" \
+        --query 'Volumes[*].{id:VolumeId,size:Size}' \
+        --output json 2>/dev/null)"; then
+    while IFS= read -r _vol_line; do
+        [ -z "$_vol_line" ] && continue
+        _vol_id="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('id',''))" "$_vol_line")"
+        _vol_gib="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('size',0))" "$_vol_line")"
+        if "$DRY_RUN"; then
+            echo "reap.sh: DRY RUN — would delete orphaned EBS volume $_vol_id (${_vol_gib} GiB)" >&2
+            (( ec2_vols_reaped++ )) || true
+            continue
+        fi
+        echo "reap.sh: deleting orphaned EBS volume $_vol_id (${_vol_gib} GiB)" >&2
+        if aws ec2 delete-volume \
+                --region "$SPILL_REGION" \
+                --volume-id "$_vol_id" >/dev/null 2>&1; then
+            echo "reap.sh: EBS volume $_vol_id deleted" >&2
+            (( ec2_vols_reaped++ )) || true
+        else
+            echo "reap.sh: EBS volume $_vol_id: delete failed" >&2
+        fi
+    done < <(python3 -c \
+        'import json,sys; [print(json.dumps(x)) for x in json.load(sys.stdin)]' \
+        <<< "$EC2_VOL_JSON")
+fi
+
+# ---- EC2 summary ----
+if "$DRY_RUN"; then
+    echo "reap.sh: EC2 DRY RUN complete — would terminate $ec2_reaped instance(s), skip $ec2_skipped, delete $ec2_vols_reaped volume(s)" >&2
+else
+    echo "reap.sh: EC2 done — terminated $ec2_reaped instance(s), kept $ec2_skipped, deleted $ec2_vols_reaped volume(s)" >&2
+fi
+
+if [ "$ec2_unknown_launch" -gt 0 ]; then
+    echo "reap.sh: EC2: $ec2_unknown_launch instance(s) had unparseable launch time — investigate" >&2
+    exit 1
+fi
+
+fi  # end: aws CLI available block
