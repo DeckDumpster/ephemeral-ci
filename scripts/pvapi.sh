@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+# shellcheck shell=bash
 #
 # Proxmox HTTP API wrapper — sourced by scripts in this directory.
 #
