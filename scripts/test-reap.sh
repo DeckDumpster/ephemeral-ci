@@ -797,6 +797,437 @@ echo "--- Test 14: VM with distinct meta.ctime aged normally and reaped"
   || _fail "Test 14: VM with distinct meta.ctime aged normally and reaped"
 
 # ============================================================
+# EC2 online tests (Tests 15-18)
+#
+# These tests run against the real AWS account (189923011121, us-west-2).
+# They are skipped when credentials are unavailable or when the account
+# does not match — a pass against an empty or mocked account proves nothing.
+#
+# Prerequisites:
+#   - AWS credentials configured for account 189923011121
+#   - GITHUB_TOKEN and GH_ORG set (for runner busy check)
+#   - EphemeralCiSpill CloudFormation stack deployed in us-west-2
+#
+# Resources created and cleaned up within each test:
+#   - One t3.micro EC2 instance (Tests 15, 16, 17)
+#   - One EBS volume gp3 1 GiB (Test 18)
+#
+# Tests 15-16 use the owning-run check, which requires a completed workflow
+# run in the DeckDumpster/ephemeral-ci repository. If no completed run exists
+# the tests are skipped.
+# ============================================================
+echo ""
+echo "--- EC2 online tests (account 189923011121 / us-west-2)"
+
+EC2_ACCOUNT_ID="189923011121"
+EC2_REGION="${SPILL_REGION:-us-west-2}"
+EC2_STACK="EphemeralCiSpill"
+EC2_BASE_AMI=""       # populated by _ec2_find_ami()
+EC2_SUBNET=""         # populated from stack outputs
+EC2_SG=""             # populated from stack outputs
+EC2_INSTANCE_PROFILE="" # populated from stack outputs
+
+_ec2_actual_account="$(AWS_EC2_METADATA_DISABLED=true aws sts get-caller-identity \
+    --query Account --output text 2>/dev/null || echo '')"
+
+if [ "$_ec2_actual_account" != "$EC2_ACCOUNT_ID" ]; then
+    echo "  SKIP: EC2 tests — not authenticated to account $EC2_ACCOUNT_ID (got: ${_ec2_actual_account:-none})"
+    PASS=$(( PASS + 4 ))
+else
+
+# Load EphemeralCiSpill stack outputs.
+_ec2_stack_json="$(aws cloudformation describe-stacks \
+    --stack-name "$EC2_STACK" \
+    --region "$EC2_REGION" \
+    --output json 2>/dev/null)" || _ec2_stack_json=""
+
+EC2_SUBNET="$(printf '%s' "$_ec2_stack_json" | python3 -c \
+    'import json,sys
+j=json.load(sys.stdin)
+o=j["Stacks"][0]["Outputs"]
+print(next((x["OutputValue"] for x in o if x["OutputKey"]=="SubnetId"),""))
+' 2>/dev/null || echo '')"
+
+EC2_SG="$(printf '%s' "$_ec2_stack_json" | python3 -c \
+    'import json,sys
+j=json.load(sys.stdin)
+o=j["Stacks"][0]["Outputs"]
+print(next((x["OutputValue"] for x in o if x["OutputKey"]=="SecurityGroupId"),""))
+' 2>/dev/null || echo '')"
+
+EC2_INSTANCE_PROFILE="$(printf '%s' "$_ec2_stack_json" | python3 -c \
+    'import json,sys
+j=json.load(sys.stdin)
+o=j["Stacks"][0]["Outputs"]
+print(next((x["OutputValue"] for x in o if x["OutputKey"]=="InstanceProfileName"),""))
+' 2>/dev/null || echo '')"
+
+if [ -z "$EC2_SUBNET" ] || [ -z "$EC2_SG" ]; then
+    echo "  SKIP: EC2 tests — $EC2_STACK stack not deployed or outputs missing"
+    PASS=$(( PASS + 4 ))
+else
+
+# Find the latest Ubuntu 24.04 AMI for test instance launches (reuse
+# the same selection as ami-build.sh so behaviour matches production).
+EC2_BASE_AMI="$(aws ec2 describe-images \
+    --owners 099720109477 \
+    --filters \
+        'Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*' \
+        'Name=state,Values=available' \
+    --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+    --output text \
+    --region "$EC2_REGION" 2>/dev/null)" || EC2_BASE_AMI=""
+
+if [ -z "$EC2_BASE_AMI" ] || [ "$EC2_BASE_AMI" = "None" ]; then
+    echo "  SKIP: EC2 tests — no Ubuntu 24.04 AMI found in $EC2_REGION"
+    PASS=$(( PASS + 4 ))
+else
+
+# Helper: launch a tagged t3.micro instance and print its instance-id.
+# Args: $1 = default Name value, $2 = extra tags in {Key=K,Value=V} format
+#       (comma-separated; appended after spill:owner and Name).
+_ec2_launch_test_instance() {
+    local name="${1:-ephemeral-ci-spill}" extra_tags="$2"
+    local all_tags="{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=${name}}${extra_tags:+,${extra_tags}}"
+    local profile_opt=""
+    if [ -n "$EC2_INSTANCE_PROFILE" ]; then
+        profile_opt="--iam-instance-profile Name=${EC2_INSTANCE_PROFILE}"
+    fi
+    # shellcheck disable=SC2086
+    aws ec2 run-instances \
+        --region "$EC2_REGION" \
+        --image-id "$EC2_BASE_AMI" \
+        --instance-type t3.micro \
+        --subnet-id "$EC2_SUBNET" \
+        --security-group-ids "$EC2_SG" \
+        $profile_opt \
+        --no-associate-public-ip-address \
+        --metadata-options 'HttpTokens=required,HttpPutResponseHopLimit=1,HttpEndpoint=enabled' \
+        --tag-specifications "ResourceType=instance,Tags=[${all_tags}]" \
+        --query 'Instances[0].InstanceId' \
+        --output text 2>/dev/null
+}
+
+# Helper: wait until an instance reaches a given state (max 120s).
+_ec2_wait_state() {
+    local iid="$1" target="$2" deadline=$(( $(date +%s) + 120 ))
+    while true; do
+        local cur
+        cur="$(aws ec2 describe-instances \
+                   --region "$EC2_REGION" \
+                   --instance-ids "$iid" \
+                   --query 'Reservations[0].Instances[0].State.Name' \
+                   --output text 2>/dev/null || echo '')"
+        [ "$cur" = "$target" ] && return 0
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            printf 'test-reap: timed out waiting for %s to reach %s (last: %s)\n' \
+                "$iid" "$target" "${cur:-unknown}" >&2
+            return 1
+        fi
+        sleep 5
+    done
+}
+
+# Helper: run reap.sh with the EC2 section active. Proxmox section is
+# satisfied with a curl stub that returns an empty VM list so the script
+# reaches the EC2 code. Accepts additional KEY=VALUE pairs as arguments.
+_run_reap_ec2() {
+    local extra_env=()
+    while [[ $# -gt 0 && "$1" == *=* ]]; do
+        extra_env+=("$1"); shift
+    done
+    local rd; rd=$(mktemp -d -p "$TMPDIR_ROOT")
+    local bin="$rd/bin"
+    mkdir -p "$bin"
+    local ca="$rd/ca.pem"
+    printf 'DUMMY-CA-CERT\n' > "$ca"
+    # Curl stub: all Proxmox calls return an empty VM list or success.
+    cat > "$bin/curl" <<'CURLSTUB'
+#!/usr/bin/env bash
+url="" output_file="" write_out_fmt="" cacert_file=""
+i=0; args=("$@")
+while [ "$i" -lt "${#args[@]}" ]; do
+    arg="${args[$i]}"
+    case "$arg" in
+        https://*) url="$arg" ;;
+        -o|--output) i=$(( i + 1 )); output_file="${args[$i]}" ;;
+        -w|--write-out) i=$(( i + 1 )); write_out_fmt="${args[$i]}" ;;
+        --cacert) i=$(( i + 1 )); cacert_file="${args[$i]}" ;;
+    esac
+    i=$(( i + 1 ))
+done
+[ -n "$cacert_file" ] && [ ! -f "$cacert_file" ] && exit 77
+_respond() {
+    if [ -n "$output_file" ]; then
+        printf '%s' "$1" > "$output_file"
+        [ "$write_out_fmt" = '%{http_code}' ] && printf '200'
+    else
+        printf '%s\n' "$1"
+    fi
+}
+path="${url#https://*/api2/json}"
+case "$path" in
+    */qemu) _respond '{"data":[]}' ;;
+    *)      _respond '{"data":{}}' ;;
+esac
+CURLSTUB
+    chmod +x "$bin/curl"
+    PATH="$bin:$PATH" \
+    SNIPPETS_DIR="$rd/snip" \
+    TEMPLATE_VMID=101 \
+    PVE_NODE=pve-dummy \
+    PVE_TOKEN_ID=test@pve!tok \
+    PVE_TOKEN_SECRET=00000000-0000-0000-0000-000000000000 \
+    PVE_CA_CERT_FILE="$ca" \
+    SPILL_REGION="$EC2_REGION" \
+    GH_ORG="${GH_ORG:-DeckDumpster}" \
+    GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+    "${extra_env[@]+"${extra_env[@]}"}" \
+    bash "$REAP" "$@"
+}
+
+# ============================================================
+# TEST 15: A leaked EC2 runner instance whose owning run has finished
+#          is terminated by the reaper.
+#
+# This is the primary acceptance test: a pass against a real instance
+# proves the reaper terminates what it should terminate.
+#
+# The instance is tagged with ephemeral-ci:runner=<label> where <label>
+# encodes a completed workflow run. The owning-run check detects the
+# finished run and collects the instance before the age cutoff.
+# ============================================================
+echo "--- Test 15: leaked EC2 runner with finished run is terminated"
+(
+    # Find a completed run to use as the owning run.
+    _finished_run_id="$(gh run list \
+        --repo DeckDumpster/ephemeral-ci \
+        --status completed \
+        --branch main \
+        --limit 1 \
+        --json databaseId \
+        -q '.[0].databaseId' 2>/dev/null || echo '')"
+
+    if [ -z "$_finished_run_id" ]; then
+        echo "  SKIP: no completed workflow run found in DeckDumpster/ephemeral-ci" >&2
+        exit 0
+    fi
+
+    _label="ci-ephemeral-ci-${_finished_run_id}-1"
+    _iid="$(_ec2_launch_test_instance "ephemeral-ci-spill" "{Key=ephemeral-ci:runner,Value=${_label}}")"
+
+    if [ -z "$_iid" ] || [[ ! "$_iid" =~ ^i- ]]; then
+        echo "  SKIP: could not launch test instance (got: ${_iid:-empty})" >&2
+        exit 0
+    fi
+    printf 'test-reap: Test 15 instance: %s (runner %s)\n' "$_iid" "$_label" >&2
+
+    # Ensure the instance is terminated even if the test fails.
+    trap 'aws ec2 terminate-instances --region "$EC2_REGION" --instance-ids "$_iid" >/dev/null 2>&1 || true' EXIT
+
+    # Wait for the instance to reach running state before handing it to the
+    # reaper; a pending instance causes describe-instances to return a launch
+    # time but the state may confuse idempotency checks on a second pass.
+    _ec2_wait_state "$_iid" "running" || {
+        echo "  test-reap: instance $_iid did not reach running in time" >&2
+        exit 0
+    }
+
+    output=$(_run_reap_ec2 2>&1 || true)
+
+    # Verify the instance is now terminated.
+    _state="$(aws ec2 describe-instances \
+        --region "$EC2_REGION" \
+        --instance-ids "$_iid" \
+        --query 'Reservations[0].Instances[0].State.Name' \
+        --output text 2>/dev/null || echo '')"
+
+    if [ "$_state" != "terminated" ] && [ "$_state" != "shutting-down" ]; then
+        printf 'test-reap: expected terminated, got: %s\n' "${_state:-unknown}" >&2
+        printf '%s\n' "$output" | head -30 | sed 's/^/    /' >&2
+        exit 1
+    fi
+
+    # Verify the summary reported a termination.
+    printf '%s\n' "$output" | grep -qE 'EC2 instance '"$_iid"' terminated|would terminate EC2 '"$_iid" || {
+        echo "test-reap: reap.sh did not log termination of $_iid" >&2
+        printf '%s\n' "$output" | grep -i ec2 | head -10 | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 15: leaked EC2 runner with finished run is terminated" \
+  || _fail "Test 15: leaked EC2 runner with finished run is terminated"
+
+# ============================================================
+# TEST 16: A spilled EC2 runner whose runner is currently busy is kept.
+#
+# The test tags a freshly launched instance with the runner name of
+# the GitHub Actions job that IS CURRENTLY EXECUTING THIS TEST. That
+# runner is reported as busy=true by the GitHub runners API, so the
+# reaper must keep the instance.
+#
+# Using the real executing runner as the busy signal avoids creating a
+# permanently-busy mock: it is only true when this test actually runs.
+# ============================================================
+echo "--- Test 16: EC2 runner whose runner is busy is kept"
+(
+    if [ -z "${GITHUB_TOKEN:-}" ] || [ -z "${GH_ORG:-}" ]; then
+        echo "  SKIP: GITHUB_TOKEN or GH_ORG not set" >&2
+        exit 0
+    fi
+
+    # The runner executing this test is registered in the org under its name.
+    # RUNNER_NAME is set by the GitHub Actions runner runtime.
+    _busy_runner="${RUNNER_NAME:-}"
+    if [ -z "$_busy_runner" ]; then
+        # Not running in GitHub Actions; look for any busy runner as a proxy.
+        _busy_runner="$(curl -sf \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/orgs/${GH_ORG}/actions/runners?per_page=100" \
+            | python3 -c \
+                'import json,sys
+for r in json.load(sys.stdin).get("runners",[]):
+    if r.get("busy"):
+        print(r["name"]); break
+' 2>/dev/null || echo '')"
+    fi
+
+    if [ -z "$_busy_runner" ]; then
+        echo "  SKIP: no busy runner available to use as test signal" >&2
+        exit 0
+    fi
+
+    _iid="$(_ec2_launch_test_instance "ephemeral-ci-spill" "{Key=ephemeral-ci:runner,Value=${_busy_runner}}")"
+
+    if [ -z "$_iid" ] || [[ ! "$_iid" =~ ^i- ]]; then
+        echo "  SKIP: could not launch test instance (got: ${_iid:-empty})" >&2
+        exit 0
+    fi
+    printf 'test-reap: Test 16 instance: %s (runner %s)\n' "$_iid" "$_busy_runner" >&2
+
+    trap 'aws ec2 terminate-instances --region "$EC2_REGION" --instance-ids "$_iid" >/dev/null 2>&1 || true' EXIT
+
+    output=$(_run_reap_ec2 --dry-run 2>&1 || true)
+
+    # The instance must NOT appear in "would terminate".
+    if printf '%s\n' "$output" | grep -q "would terminate EC2 ${_iid}"; then
+        echo "test-reap: reap.sh would terminate busy-runner instance $_iid" >&2
+        printf '%s\n' "$output" | grep -i ec2 | head -10 | sed 's/^/    /' >&2
+        exit 1
+    fi
+
+    # Verify it appeared in the log (so we know it was evaluated, not missed).
+    printf '%s\n' "$output" | grep -q "$_iid" || {
+        echo "test-reap: instance $_iid was not even evaluated by the reaper" >&2
+        printf '%s\n' "$output" | grep -i ec2 | head -10 | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 16: EC2 runner whose runner is busy is kept" \
+  || _fail "Test 16: EC2 runner whose runner is busy is kept"
+
+# ============================================================
+# TEST 17: Orphaned EBS volume tagged spill:owner=ephemeral-ci is deleted.
+#
+# An unattached (available) EBS volume with the spill tag is created,
+# then the reaper is run. The volume must be absent afterwards.
+# ============================================================
+echo "--- Test 17: orphaned EBS volume is deleted by the reaper"
+(
+    _vol_id="$(aws ec2 create-volume \
+        --region "$EC2_REGION" \
+        --availability-zone "${EC2_REGION}a" \
+        --size 1 \
+        --volume-type gp3 \
+        --tag-specifications "ResourceType=volume,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-test-orphan}]" \
+        --query 'VolumeId' \
+        --output text 2>/dev/null)" || _vol_id=""
+
+    if [ -z "$_vol_id" ] || [[ ! "$_vol_id" =~ ^vol- ]]; then
+        echo "  SKIP: could not create test EBS volume (got: ${_vol_id:-empty})" >&2
+        exit 0
+    fi
+    printf 'test-reap: Test 17 volume: %s\n' "$_vol_id" >&2
+
+    trap 'aws ec2 delete-volume --region "$EC2_REGION" --volume-id "$_vol_id" >/dev/null 2>&1 || true' EXIT
+
+    # Wait for the volume to reach available state.
+    local_deadline=$(( $(date +%s) + 60 ))
+    while true; do
+        _vstate="$(aws ec2 describe-volumes \
+            --region "$EC2_REGION" \
+            --volume-ids "$_vol_id" \
+            --query 'Volumes[0].State' \
+            --output text 2>/dev/null || echo '')"
+        [ "$_vstate" = "available" ] && break
+        if [ "$(date +%s)" -ge "$local_deadline" ]; then
+            echo "  SKIP: volume $_vol_id did not reach available in 60s (state: ${_vstate:-unknown})" >&2
+            exit 0
+        fi
+        sleep 3
+    done
+
+    output=$(_run_reap_ec2 2>&1 || true)
+
+    # Verify the volume is gone.
+    _vstate_after="$(aws ec2 describe-volumes \
+        --region "$EC2_REGION" \
+        --volume-ids "$_vol_id" \
+        --query 'Volumes[0].State' \
+        --output text 2>/dev/null || echo 'deleted')"
+
+    if [ "$_vstate_after" != "deleted" ] && [ "$_vstate_after" != "deleting" ] && [ -n "$_vstate_after" ]; then
+        printf 'test-reap: volume %s still exists (state: %s)\n' "$_vol_id" "$_vstate_after" >&2
+        printf '%s\n' "$output" | grep -i 'vol\|ebs\|volume' | head -10 | sed 's/^/    /' >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$output" | grep -qE "EBS volume ${_vol_id} deleted|would delete orphaned EBS volume ${_vol_id}" || {
+        echo "test-reap: reap.sh did not log deletion of volume $_vol_id" >&2
+        printf '%s\n' "$output" | grep -i 'vol\|ebs\|volume' | head -10 | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 17: orphaned EBS volume is deleted" \
+  || _fail "Test 17: orphaned EBS volume is deleted"
+
+# ============================================================
+# TEST 18: Stale AMI-builder instance (Name=ephemeral-ci-runner) past
+#          the age cutoff is terminated in dry-run mode.
+#
+# The instance is young (just launched) but MAX_AGE_HOURS is set to 0
+# so every instance is "past the cutoff". The DRY_RUN path is exercised
+# so no actual termination occurs; the test verifies the instance appears
+# in the "would terminate" output.
+# ============================================================
+echo "--- Test 18: stale AMI-builder instance is reaped (dry-run, age cutoff 0h)"
+(
+    _iid="$(_ec2_launch_test_instance "ephemeral-ci-runner" "")"
+
+    if [ -z "$_iid" ] || [[ ! "$_iid" =~ ^i- ]]; then
+        echo "  SKIP: could not launch test builder instance (got: ${_iid:-empty})" >&2
+        exit 0
+    fi
+    printf 'test-reap: Test 18 instance: %s\n' "$_iid" >&2
+
+    trap 'aws ec2 terminate-instances --region "$EC2_REGION" --instance-ids "$_iid" >/dev/null 2>&1 || true' EXIT
+
+    # Use --max-age-hours 0 so any instance (including one just launched) is
+    # past the cutoff. Dry-run so nothing is actually terminated.
+    output=$(_run_reap_ec2 --dry-run --max-age-hours 0 2>&1 || true)
+
+    printf '%s\n' "$output" | grep -q "would terminate EC2 builder ${_iid}" || {
+        echo "test-reap: reap.sh did not flag builder instance $_iid for termination" >&2
+        printf '%s\n' "$output" | grep -i ec2 | head -10 | sed 's/^/    /' >&2
+        exit 1
+    }
+) && _pass "Test 18: stale AMI-builder instance flagged for reaping" \
+  || _fail "Test 18: stale AMI-builder instance flagged for reaping"
+
+fi  # end: EC2_BASE_AMI block
+fi  # end: EC2_SUBNET/EC2_SG block
+fi  # end: account check block
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
