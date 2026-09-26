@@ -5,7 +5,7 @@ import { SpillStack } from '../lib/spill-stack';
 let template: Template;
 
 beforeAll(() => {
-  const app = new cdk.App();
+  const app = new cdk.App({ context: { alertEmail: 'test@example.com' } });
   const stack = new SpillStack(app, 'TestStack', {
     env: { account: '189923011121', region: 'us-west-2' },
   });
@@ -95,4 +95,55 @@ test('budget is 100 USD MONTHLY account-wide', () => {
     Properties: { Budget: Record<string, unknown> };
   };
   expect(budget.Properties.Budget['CostFilters']).toBeUndefined();
+});
+
+type NotificationEntry = {
+  Notification: {
+    NotificationType: string;
+    ComparisonOperator: string;
+    Threshold: number;
+  };
+  Subscribers: Array<{ SubscriptionType: string }>;
+};
+
+function getBudgetNotifications(): NotificationEntry[] {
+  const budgetResources = template.findResources('AWS::Budgets::Budget');
+  const budget = Object.values(budgetResources)[0] as {
+    Properties: { NotificationsWithSubscribers: NotificationEntry[] };
+  };
+  return budget.Properties.NotificationsWithSubscribers;
+}
+
+test('budget has exactly two notifications', () => {
+  expect(getBudgetNotifications()).toHaveLength(2);
+});
+
+test('budget has ACTUAL notification at 80% GREATER_THAN with one EMAIL subscriber', () => {
+  const actual = getBudgetNotifications().find(
+    (n) => n.Notification.NotificationType === 'ACTUAL',
+  );
+  expect(actual).toBeDefined();
+  expect(actual!.Notification.ComparisonOperator).toBe('GREATER_THAN');
+  expect(actual!.Notification.Threshold).toBe(80);
+  expect(actual!.Subscribers).toHaveLength(1);
+  expect(actual!.Subscribers[0].SubscriptionType).toBe('EMAIL');
+});
+
+test('budget has FORECASTED notification at 100% with one EMAIL subscriber', () => {
+  const forecasted = getBudgetNotifications().find(
+    (n) => n.Notification.NotificationType === 'FORECASTED',
+  );
+  expect(forecasted).toBeDefined();
+  expect(forecasted!.Notification.Threshold).toBe(100);
+  expect(forecasted!.Subscribers).toHaveLength(1);
+  expect(forecasted!.Subscribers[0].SubscriptionType).toBe('EMAIL');
+});
+
+test('synth fails when alertEmail is absent', () => {
+  const appNoEmail = new cdk.App();
+  expect(() => {
+    new SpillStack(appNoEmail, 'NoEmailStack', {
+      env: { account: '189923011121', region: 'us-west-2' },
+    });
+  }).toThrow(/alertEmail/);
 });
