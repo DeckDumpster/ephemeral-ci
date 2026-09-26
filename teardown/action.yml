@@ -1,13 +1,15 @@
 name: Destroy an ephemeral CI runner
 description: >-
-  Destroy the per-run Proxmox VM and remove the runner registration it left
-  behind. Call under `if: always()` -- a cancelled or failed job otherwise
-  leaves the VM running and the scheduled reaper becomes the only thing that
-  cleans up, which is a backstop, not a plan.
+  Destroy the per-run Proxmox VM (or EC2 instance) and remove the runner
+  registration it left behind. Call under `if: always()` -- a cancelled or
+  failed job otherwise leaves the runner alive and the scheduled reaper becomes
+  the only thing that cleans up, which is a backstop, not a plan.
 
 inputs:
   vmid:
-    description: The VMID emitted by the provision action. Empty means nothing was cloned.
+    description: >-
+      The VMID emitted by the provision action. Empty on the EC2 path (provision
+      emits vmid= with no value). When non-empty, the Proxmox path runs.
     required: true
   label:
     description: >-
@@ -63,12 +65,10 @@ inputs:
   vm-token:
     description: >-
       Ownership token emitted by the provision action (outputs.vm-token).
-      teardown.sh Guard 4b verifies that the VM description carries this exact
-      token before destroying. When absent, Guard 4b degrades: a VM that also
-      carries no token is allowed through with a warning; a VM that DOES carry
-      a token is refused — so a new-provision/old-teardown pair still refuses
-      correctly. Pass it when wiring provision and teardown in the same
-      workflow to get the full recycled-VMID protection (db-ogjn, db-rzdr).
+      On the Proxmox path, teardown.sh Guard 4b verifies that the VM description
+      carries this exact token before destroying (db-ogjn, db-rzdr). On the EC2
+      path, teardown.sh verifies the ephemeral-ci:vmtoken tag on the instance
+      before terminating. Always wire this from provision's vm-token output.
     required: false
     default: ''
   consumer-result:
@@ -78,13 +78,41 @@ inputs:
       is destroyed -- that window is the only opportunity to capture evidence
       of a mid-job death (dmesg OOM entries, the runner service journal, load
       and memory at the moment of failure). Has no effect on success; omit it
-      and the dump never runs.
+      and the dump never runs. Proxmox path only.
+    required: false
+    default: ''
+  backend:
+    description: >-
+      "ec2" when the runner was provisioned on EC2 (provision outputs.backend).
+      Empty or "proxmox" for the Proxmox path. Controls which teardown path runs.
+    required: false
+    default: ''
+  instance-id:
+    description: >-
+      EC2 instance id when backend=ec2 (provision outputs.instance-id).
+      teardown.sh verifies the ephemeral-ci:vmtoken tag before terminating.
+    required: false
+    default: ''
+  aws-role-to-assume:
+    description: >-
+      IAM role ARN to assume for EC2 teardown (spill IAM role). Required when
+      backend=ec2. Passed to aws-actions/configure-aws-credentials.
     required: false
     default: ''
 
 runs:
   using: composite
   steps:
+    # AWS credentials for EC2 teardown. Only runs when the runner was on EC2.
+    # The spill role needs ec2:DescribeInstances and ec2:TerminateInstances
+    # scoped to instances tagged spill:owner=ephemeral-ci.
+    - name: Configure AWS credentials (EC2 path)
+      if: inputs.backend == 'ec2' && inputs.aws-role-to-assume != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws-role-to-assume }}
+        aws-region: us-west-2
+
     - name: Connect to Tailscale
       uses: tailscale/github-action@v4
       with:
@@ -105,8 +133,10 @@ runs:
     # evidence is needed and the guest may have died mid-job with nothing
     # capturing it. Never fails the teardown job: continue-on-error is set and
     # guest-diag.sh itself never returns non-zero for a broken guest.
+    # Proxmox path only: EC2 instances are not reachable over the tailnet after
+    # the job ends.
     - name: Dump guest state on job failure
-      if: inputs.vmid != '' && (inputs.consumer-result == 'failure' || inputs.consumer-result == 'cancelled')
+      if: inputs.vmid != '' && inputs.backend != 'ec2' && (inputs.consumer-result == 'failure' || inputs.consumer-result == 'cancelled')
       continue-on-error: true
       shell: bash
       env:
@@ -119,7 +149,7 @@ runs:
       run: bash "${{ github.action_path }}/../scripts/guest-diag.sh" "${{ inputs.vmid }}"
 
     - name: Destroy the runner VM
-      if: inputs.vmid != ''
+      if: inputs.vmid != '' && inputs.backend != 'ec2'
       shell: bash
       env:
         PVE_API_HOST: ${{ inputs.pve-api-host }}
@@ -131,6 +161,18 @@ runs:
         VM_TOKEN: ${{ inputs.vm-token }}
         CRED_FILE: /dev/null
       run: bash "${{ github.action_path }}/../scripts/teardown.sh" "${{ inputs.vmid }}"
+
+    # Terminate the EC2 instance. teardown.sh verifies the ownership token before
+    # terminating, waits for terminated state, and writes cost to GITHUB_STEP_SUMMARY.
+    - name: Terminate the EC2 runner instance
+      if: inputs.backend == 'ec2' && inputs.instance-id != ''
+      shell: bash
+      env:
+        BACKEND: ec2
+        INSTANCE_ID: ${{ inputs.instance-id }}
+        VM_TOKEN: ${{ inputs.vm-token }}
+        SPILL_REGION: us-west-2
+      run: bash "${{ github.action_path }}/../scripts/teardown.sh"
 
     # DESTROYING THE VM DOES NOT DEREGISTER THE RUNNER.
     #
