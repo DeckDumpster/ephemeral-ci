@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
 #
-# Destroy an ephemeral GitHub Actions runner VM via the Proxmox HTTP API.
-# Exits zero if the VM is already gone — teardown runs under if: always()
+# Destroy an ephemeral GitHub Actions runner — Proxmox VM or EC2 instance.
+# Exits zero if the runner is already gone — teardown runs under if: always()
 # and must be idempotent, or every cancelled run reports a spurious failure.
 #
 # Usage:
-#   teardown.sh <vmid>
+#   teardown.sh <vmid>        (Proxmox path, BACKEND unset or != ec2)
+#   teardown.sh               (EC2 path, BACKEND=ec2, INSTANCE_ID must be set)
 #
+# ── EC2 path (BACKEND=ec2) ────────────────────────────────────────────────────
+# When BACKEND=ec2, teardown.sh terminates the EC2 instance identified by
+# INSTANCE_ID, behind an ownership check:
+#   1. INSTANCE_ID not set or malformed → exit non-zero.
+#   2. Instance does not exist or is already terminated → exit 0 (idempotent).
+#   3. Instance's ephemeral-ci:vmtoken tag does not match VM_TOKEN → refuse,
+#      naming the mismatch. Both the stored tag and the caller's token are
+#      printed so the mismatch can be diagnosed from the log.
+#   4. Terminate the instance. Wait for state == terminated.
+#   5. Record actual instance-seconds and estimated cost in the job summary
+#      (written to GITHUB_STEP_SUMMARY if set).
+#
+# ── Proxmox path (BACKEND unset) ─────────────────────────────────────────────
 # Guards, applied in order:
 #   1. Empty or non-numeric argument → exit non-zero, API is never called.
 #      A provision job that dies before emitting its output leaves the caller's
@@ -41,7 +55,16 @@
 #      stale, cannot vanish with a runner, and cannot be forged by anything
 #      this workflow controls.
 #
-# Environment variables:
+# Environment variables (EC2 path):
+#   BACKEND                — must be "ec2" to activate this path
+#   INSTANCE_ID            — EC2 instance id (required, e.g. i-0abc1234def56789a)
+#   VM_TOKEN               — ownership token from provision; must match the
+#                            ephemeral-ci:vmtoken tag on the instance
+#   SPILL_REGION           — AWS region (default: us-west-2)
+#   EC2_TERMINATE_TIMEOUT  — seconds to wait for terminated state (default: 120)
+#   EC2_TERMINATE_POLL     — seconds between state polls (default: 5)
+#
+# Environment variables (Proxmox path):
 #   TEMPLATE_VMID          — source VM template id; required, no default
 #   PVE_POOL               — pool every runner VM must belong to
 #                            (default: ephemeral-ci)
@@ -79,15 +102,141 @@ if [ -f "$CRED_FILE" ]; then
     . "$CRED_FILE"
 fi
 
-PVE_POOL="${PVE_POOL:-ephemeral-ci}"
-CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
-STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
-STOP_POLL_INTERVAL="${STOP_POLL_INTERVAL:-2}"
-FORCE_STOP_WAIT="${FORCE_STOP_WAIT:-5}"
-JOURNAL_TIMEOUT="${JOURNAL_TIMEOUT:-30}"
-JOURNAL_POLL_INTERVAL="${JOURNAL_POLL_INTERVAL:-1}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── EC2 path ──────────────────────────────────────────────────────────────────
+if [ "${BACKEND:-}" = "ec2" ]; then
+    SPILL_REGION="${SPILL_REGION:-us-west-2}"
+    EC2_TERMINATE_TIMEOUT="${EC2_TERMINATE_TIMEOUT:-120}"
+    EC2_TERMINATE_POLL="${EC2_TERMINATE_POLL:-5}"
+
+    if [ -z "${INSTANCE_ID:-}" ]; then
+        echo "teardown.sh: BACKEND=ec2 but INSTANCE_ID is not set" >&2
+        exit 1
+    fi
+    if ! [[ "$INSTANCE_ID" =~ ^i-[a-f0-9]+$ ]]; then
+        printf 'teardown.sh: INSTANCE_ID does not look like an EC2 instance id: %s\n' \
+            "$INSTANCE_ID" >&2
+        exit 1
+    fi
+
+    # Describe the instance to get its current state, tags, and launch time.
+    _raw_info=""
+    if ! _raw_info="$(aws ec2 describe-instances \
+                          --region "$SPILL_REGION" \
+                          --instance-ids "$INSTANCE_ID" \
+                          --query 'Reservations[0].Instances[0]' \
+                          --output json 2>&1)"; then
+        printf 'teardown.sh: EC2 describe-instances failed: %s\n' "$_raw_info" >&2
+        exit 1
+    fi
+
+    _ec2_state="$(printf '%s' "$_raw_info" | python3 -c \
+        'import json,sys; d=json.load(sys.stdin) or {}; print(d.get("State",{}).get("Name",""))' \
+        2>/dev/null || true)"
+
+    # Already gone — idempotent exit.
+    if [ -z "$_ec2_state" ] || [ "$_ec2_state" = "terminated" ]; then
+        printf 'teardown.sh: EC2 instance %s is already terminated (state: %s)\n' \
+            "$INSTANCE_ID" "${_ec2_state:-not found}" >&2
+        exit 0
+    fi
+
+    # Ownership check: the ephemeral-ci:vmtoken tag must match VM_TOKEN.
+    _stored_token="$(printf '%s' "$_raw_info" | python3 -c \
+        'import json,sys
+d=json.load(sys.stdin) or {}
+tags=d.get("Tags",[]) or []
+t=next((t["Value"] for t in tags if t["Key"]=="ephemeral-ci:vmtoken"),"")
+print(t)' 2>/dev/null || true)"
+
+    if [ -z "${VM_TOKEN:-}" ]; then
+        printf 'teardown.sh: EC2 instance %s: VM_TOKEN is not set — refusing\n' \
+            "$INSTANCE_ID" >&2
+        exit 1
+    fi
+    if [ "$_stored_token" != "$VM_TOKEN" ]; then
+        printf 'teardown.sh: EC2 instance %s ownership token mismatch: instance has "%s", caller has "%s" — refusing\n' \
+            "$INSTANCE_ID" "${_stored_token:-<none>}" "$VM_TOKEN" >&2
+        exit 1
+    fi
+
+    # Extract launch time before terminate so we have it for the cost record.
+    _launch_time="$(printf '%s' "$_raw_info" | python3 -c \
+        'import json,sys; d=json.load(sys.stdin) or {}; print(d.get("LaunchTime",""))' \
+        2>/dev/null || true)"
+
+    # Terminate the instance.
+    printf 'teardown.sh: terminating EC2 instance %s\n' "$INSTANCE_ID" >&2
+    if ! aws ec2 terminate-instances \
+            --region "$SPILL_REGION" \
+            --instance-ids "$INSTANCE_ID" >/dev/null 2>&1; then
+        printf 'teardown.sh: EC2 terminate-instances call failed\n' >&2
+        exit 1
+    fi
+
+    # Wait for terminated state. The API reflects the request immediately but
+    # the instance takes a few seconds to reach terminated; polling is required
+    # before the runner registration is removed, so we know the instance is
+    # truly gone and cannot pick up another job.
+    printf 'teardown.sh: waiting for %s to reach terminated state (timeout %ss)\n' \
+        "$INSTANCE_ID" "$EC2_TERMINATE_TIMEOUT" >&2
+    _terminate_deadline=$(( $(date +%s) + EC2_TERMINATE_TIMEOUT ))
+    while true; do
+        _cur_state="$(aws ec2 describe-instances \
+                          --region "$SPILL_REGION" \
+                          --instance-ids "$INSTANCE_ID" \
+                          --query 'Reservations[0].Instances[0]' \
+                          --output json 2>/dev/null \
+                      | python3 -c \
+                          'import json,sys; d=json.load(sys.stdin) or {}; print(d.get("State",{}).get("Name",""))' \
+                          2>/dev/null || true)"
+        if [ "$_cur_state" = "terminated" ]; then
+            printf 'teardown.sh: EC2 instance %s is terminated\n' "$INSTANCE_ID" >&2
+            break
+        fi
+        if [ "$(date +%s)" -ge "$_terminate_deadline" ]; then
+            printf 'teardown.sh: EC2 instance %s did not reach terminated after %ss (last state: %s)\n' \
+                "$INSTANCE_ID" "$EC2_TERMINATE_TIMEOUT" "${_cur_state:-unknown}" >&2
+            exit 1
+        fi
+        sleep "$EC2_TERMINATE_POLL"
+    done
+
+    # Record instance-seconds and estimated cost.
+    _now_epoch="$(date +%s)"
+    _instance_seconds=0
+    if [ -n "$_launch_time" ]; then
+        _launch_epoch="$(python3 -c \
+            "from datetime import datetime,timezone
+t=datetime.fromisoformat('${_launch_time}'.replace('Z','+00:00'))
+print(int(t.timestamp()))" 2>/dev/null || echo 0)"
+        if [ "${_launch_epoch:-0}" -gt 0 ]; then
+            _instance_seconds=$(( _now_epoch - _launch_epoch ))
+        fi
+    fi
+    _instance_minutes=$(( (_instance_seconds + 59) / 60 ))
+    # On-demand c7i.xlarge us-west-2: $0.2013/hr
+    _cost_usd="$(python3 -c \
+        "print('%.4f' % ($_instance_seconds / 3600.0 * 0.2013))" 2>/dev/null || echo '?')"
+
+    printf 'teardown.sh: EC2 instance %s ran for %ss (%s min); estimated cost ~$%s USD (on-demand c7i.xlarge)\n' \
+        "$INSTANCE_ID" "$_instance_seconds" "$_instance_minutes" "$_cost_usd" >&2
+
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        {
+            echo "## EC2 spill teardown"
+            printf -- '- Instance: `%s`\n' "$INSTANCE_ID"
+            printf -- '- Instance-seconds: %s (%s minutes)\n' "$_instance_seconds" "$_instance_minutes"
+            printf -- '- Estimated cost: ~\$%s USD (on-demand c7i.xlarge in %s)\n' \
+                "$_cost_usd" "$SPILL_REGION"
+        } >> "$GITHUB_STEP_SUMMARY"
+    fi
+
+    exit 0
+fi
+
+# ── Proxmox path ──────────────────────────────────────────────────────────────
 # shellcheck source=pvapi.sh
 . "${PVAPI_SH:-${SCRIPT_DIR}/pvapi.sh}"
 
@@ -97,6 +246,14 @@ if [ -f "$CRED_FILE" ]; then
     # shellcheck source=/dev/null
     . "$CRED_FILE"
 fi
+
+PVE_POOL="${PVE_POOL:-ephemeral-ci}"
+CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
+STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
+STOP_POLL_INTERVAL="${STOP_POLL_INTERVAL:-2}"
+FORCE_STOP_WAIT="${FORCE_STOP_WAIT:-5}"
+JOURNAL_TIMEOUT="${JOURNAL_TIMEOUT:-30}"
+JOURNAL_POLL_INTERVAL="${JOURNAL_POLL_INTERVAL:-1}"
 
 _require_env() {
     local var="$1"

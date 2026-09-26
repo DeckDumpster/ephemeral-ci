@@ -692,6 +692,173 @@ echo "--- Test 20: GET config returns HTTP 500, VM_TOKEN unset → names VMID + 
 ) && _pass "Test 20" || _fail "Test 20"
 
 # ============================================================
+# EC2 PATH TESTS (Tests 21-26)
+#
+# These tests exercise the BACKEND=ec2 path in teardown.sh.
+# All AWS CLI calls are intercepted by a stub binary that records
+# invocations and returns canned output.
+# ============================================================
+
+# AWS stub directory and helper — written once, reused across all EC2 tests.
+EC2_SCRATCH=$(mktemp -d -p "$TMPDIR_ROOT")
+
+# _ec2_setup <test-number> writes a fresh AWS_ARGV_FILE and builds the stub.
+# The stub is parameterised via env vars set before calling teardown:
+#   EC2_STUB_STATE         — state returned for the first describe-instances call
+#   EC2_STUB_TOKEN         — vmtoken tag value returned for the first describe
+#   EC2_STUB_LAUNCH_TIME   — LaunchTime value in the first describe response
+#   EC2_STUB_TERM_STATE    — state returned for the second (post-terminate) describe
+_ec2_setup() {
+    AWS_ARGV_FILE="$EC2_SCRATCH/aws-argv-$1"
+    AWS_BIN="$EC2_SCRATCH/aws"
+    : > "$AWS_ARGV_FILE"
+    cat > "$AWS_BIN" << 'AWSSTUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
+case "$1 $2" in
+    "ec2 describe-instances")
+        # First call (no previous terminate): return a running instance.
+        # Second call (after terminate): return terminated.
+        _n=$(wc -l < "$AWS_ARGV_FILE")
+        if [ "$_n" -le 1 ]; then
+            # First describe: use EC2_STUB_STATE, EC2_STUB_TOKEN, EC2_STUB_LAUNCH_TIME
+            _state="${EC2_STUB_STATE:-running}"
+            _token="${EC2_STUB_TOKEN:-aabbccdd11223344aabbccdd11223344}"
+            _lt="${EC2_STUB_LAUNCH_TIME:-2026-09-26T00:00:00Z}"
+            printf '{"State":{"Name":"%s"},"Tags":[{"Key":"ephemeral-ci:vmtoken","Value":"%s"}],"LaunchTime":"%s"}\n' \
+                "$_state" "$_token" "$_lt"
+        else
+            # Subsequent describes: return terminated.
+            _term="${EC2_STUB_TERM_STATE:-terminated}"
+            printf '{"State":{"Name":"%s"},"Tags":[],"LaunchTime":"2026-09-26T00:00:00Z"}\n' "$_term"
+        fi
+        ;;
+    "ec2 terminate-instances")
+        printf '{"TerminatingInstances":[{"CurrentState":{"Name":"shutting-down"}}]}\n'
+        ;;
+    *)
+        printf 'aws-stub: unhandled: %s\n' "$*" >&2
+        exit 1
+        ;;
+esac
+AWSSTUB
+    chmod +x "$AWS_BIN"
+    export AWS_ARGV_FILE AWS_BIN
+    export PATH="$EC2_SCRATCH:$PATH"
+}
+
+_run_ec2_teardown() {
+    # Use ${VAR-default} (not :-) so callers can pass empty string to test
+    # the "unset" guard without the default swallowing it.
+    BACKEND=ec2 \
+    INSTANCE_ID="${INSTANCE_ID-i-0aabbccdd11223344}" \
+    VM_TOKEN="${VM_TOKEN-aabbccdd11223344aabbccdd11223344}" \
+    EC2_STUB_STATE="${EC2_STUB_STATE-running}" \
+    EC2_STUB_TOKEN="${EC2_STUB_TOKEN-aabbccdd11223344aabbccdd11223344}" \
+    EC2_STUB_LAUNCH_TIME="${EC2_STUB_LAUNCH_TIME-2026-09-26T00:00:00Z}" \
+    EC2_STUB_TERM_STATE="${EC2_STUB_TERM_STATE-terminated}" \
+    SPILL_REGION=us-west-2 \
+    EC2_TERMINATE_TIMEOUT=5 \
+    EC2_TERMINATE_POLL=0 \
+    bash "$TEARDOWN"
+}
+
+_aws_called() { grep -q "$1" "$AWS_ARGV_FILE" 2>/dev/null; }
+_aws_not_called() { ! grep -q "$1" "$AWS_ARGV_FILE" 2>/dev/null; }
+
+# ============================================================
+# TEST 21: normal EC2 teardown → rc=0, instance terminated, cost recorded
+# ============================================================
+echo "--- Test 21: EC2 path — running instance with matching token → terminated, rc=0"
+(
+    _ec2_setup 21
+    rc=0
+    output=$(_run_ec2_teardown 2>&1) || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && _aws_called "ec2 terminate-instances" \
+        || { echo "  FAIL: terminate-instances not called" >&2; exit 1; } \
+    && echo "$output" | grep -qi "terminated" \
+        || { echo "  FAIL: 'terminated' not in output" >&2; exit 1; } \
+    && echo "$output" | grep -qi "instance-seconds\|ran for" \
+        || { echo "  FAIL: cost/seconds not reported" >&2; exit 1; }
+) && _pass "Test 21" || _fail "Test 21"
+
+# ============================================================
+# TEST 22: instance already terminated → rc=0, no terminate call (idempotency)
+# ============================================================
+echo "--- Test 22: EC2 path — already terminated → rc=0, no terminate call"
+(
+    _ec2_setup 22
+    rc=0
+    EC2_STUB_STATE=terminated _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+
+    _assert_rc "exit code" "$rc" 0 \
+    && _aws_not_called "ec2 terminate-instances" \
+        || { echo "  FAIL: terminate-instances called on already-terminated instance" >&2; exit 1; }
+) && _pass "Test 22" || _fail "Test 22"
+
+# ============================================================
+# TEST 23: token mismatch → rc≠0, no terminate call
+# ============================================================
+echo "--- Test 23: EC2 path — token mismatch → rc≠0, no terminate"
+(
+    _ec2_setup 23
+    rc=0
+    EC2_STUB_TOKEN="deadbeef00000000deadbeef00000000" \
+        _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero on token mismatch" >&2; exit 1; }
+    _aws_not_called "ec2 terminate-instances" \
+        || { echo "  FAIL: terminate-instances called despite token mismatch" >&2; exit 1; }
+) && _pass "Test 23" || _fail "Test 23"
+
+# ============================================================
+# TEST 24: token mismatch — output names both tokens
+# ============================================================
+echo "--- Test 24: EC2 path — token mismatch output names both tokens"
+(
+    _ec2_setup 24
+    rc=0
+    output=$(EC2_STUB_TOKEN="deadbeef00000000deadbeef00000000" \
+        _run_ec2_teardown 2>&1) || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero" >&2; exit 1; }
+    echo "$output" | grep -q "deadbeef00000000deadbeef00000000" \
+        || { echo "  FAIL: stored token not in mismatch message" >&2; exit 1; }
+    echo "$output" | grep -q "aabbccdd11223344aabbccdd11223344" \
+        || { echo "  FAIL: caller token not in mismatch message" >&2; exit 1; }
+) && _pass "Test 24" || _fail "Test 24"
+
+# ============================================================
+# TEST 25: VM_TOKEN unset → rc≠0, no terminate call
+# ============================================================
+echo "--- Test 25: EC2 path — VM_TOKEN unset → rc≠0, no terminate"
+(
+    _ec2_setup 25
+    rc=0
+    VM_TOKEN="" _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero when VM_TOKEN unset" >&2; exit 1; }
+    _aws_not_called "ec2 terminate-instances" \
+        || { echo "  FAIL: terminate-instances called without VM_TOKEN" >&2; exit 1; }
+) && _pass "Test 25" || _fail "Test 25"
+
+# ============================================================
+# TEST 26: INSTANCE_ID missing → rc≠0, no AWS call
+# ============================================================
+echo "--- Test 26: EC2 path — INSTANCE_ID missing → rc≠0"
+(
+    _ec2_setup 26
+    rc=0
+    INSTANCE_ID="" _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+
+    [ "$rc" -ne 0 ] || { echo "  FAIL: expected non-zero when INSTANCE_ID missing" >&2; exit 1; }
+    _aws_not_called "ec2 describe-instances" \
+        || { echo "  FAIL: describe-instances called without INSTANCE_ID" >&2; exit 1; }
+) && _pass "Test 26" || _fail "Test 26"
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
