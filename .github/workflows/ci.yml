@@ -55,7 +55,8 @@ jobs:
               scripts/test-teardown.sh \
               scripts/test-reap.sh \
               scripts/test-template-substrate.sh \
-              scripts/test-advance-inputs.sh; do
+              scripts/test-advance-inputs.sh \
+              scripts/test-ami-build.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
           done
 
@@ -100,6 +101,13 @@ jobs:
       # and passes candidates that add only optional or defaulted inputs.
       - name: advance-v1 input diff
         run: bash scripts/test-advance-inputs.sh
+
+      # ami-build offline section: stubs describe-stacks to verify that
+      # ami-build.sh reads the EphemeralCiSpill stack outputs correctly and
+      # fails with a clear message when the stack is absent or not complete.
+      # No AWS credentials are needed; online tests skip gracefully without them.
+      - name: ami-build stack outputs
+        run: bash scripts/test-ami-build.sh
 
       # A second reap suite, in Python, inherited from deckdumpster. It covers
       # the age and enumeration paths against a stubbed Proxmox API; the bash
