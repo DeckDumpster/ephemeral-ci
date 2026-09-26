@@ -211,6 +211,7 @@ fi
 # ---------------------------------------------------------------------------
 # 8. Launch template: IMDSv2 required, gp3, tag propagation
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2016 -- $Default is AWS's literal version alias, not a shell variable
 lt_version="$(aws ec2 describe-launch-template-versions \
     --launch-template-id "${LAUNCH_TEMPLATE_ID}" \
     --versions '$Default' \

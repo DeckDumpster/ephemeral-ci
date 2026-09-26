@@ -572,6 +572,7 @@ ensure_budget() {
     aws_w budgets create-budget \
         --account-id "$ACCOUNT_ID" \
         --budget "$budget" >/dev/null
+    # shellcheck disable=SC2016 -- $100 is a literal dollar amount in the format string, not a variable
     printf 'created: budget %s ($100/month on %s=%s)\n' "$BUDGET_NAME" "$TAG_KEY" "$TAG_VALUE" >&2
 }
 
