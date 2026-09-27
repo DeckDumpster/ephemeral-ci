@@ -331,6 +331,108 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 0d-0e. Offline: SSM failure path -- StandardErrorContent visible, --keep-on-failure
+#
+# Creates a stub environment that simulates a successful launch followed by
+# an SSM command that returns Failed. Uses this to verify:
+#   0d: default path terminates the instance and mentions --keep-on-failure
+#   0e: --keep-on-failure preserves the instance and prints start-session
+# ---------------------------------------------------------------------------
+
+# Helper: write aws + curl stubs into a tempdir.
+# The aws stub bakes $term_file into the terminate-instances arm at write time
+# so the stub can record calls without needing environment variables at runtime.
+_make_ssm_fail_stub() {
+    local d term_file="$1"
+    d="$(mktemp -d)"
+    # Unquoted heredoc: $term_file expands now; \$... vars expand in the stub at runtime.
+    cat > "${d}/aws" <<STUB
+#!/usr/bin/env bash
+_sub="\$1 \$2"
+_all="\$*"
+case "\$_sub" in
+    "sts get-caller-identity")
+        printf '189923011121' ;;
+    "cloudformation describe-stacks")
+        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetId","OutputValue":"subnet-stub0001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub0001"},{"OutputKey":"InstanceProfileName","OutputValue":"prof-stub0001"}]}]}' ;;
+    "ec2 describe-images")
+        printf 'ami-stubbase001' ;;
+    "ec2 run-instances")
+        printf 'i-stubinstance001' ;;
+    "ec2 describe-instances")
+        printf '10.0.1.100' ;;
+    "ec2 terminate-instances")
+        printf 'called\n' >> "${term_file}" ;;
+    "ssm describe-instance-information")
+        printf 'Online' ;;
+    "ssm send-command")
+        printf 'stub-cmd-id-001' ;;
+    "ssm get-command-invocation")
+        case "\$_all" in
+            *StandardErrorContent*)  printf 'E: stub-apt-error: universe list fetch failed' ;;
+            *StandardOutputContent*) printf '' ;;
+            *)                       printf 'Failed' ;;
+        esac
+        ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "${d}/aws"
+    cat > "${d}/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '{"tag_name":"v2.322.0"}'
+STUB
+    chmod +x "${d}/curl"
+    printf '%s' "$d"
+}
+
+# 0d. Default path: terminates instance, mentions --keep-on-failure, shows error content
+_term_d="$(mktemp)"
+_sd="$(_make_ssm_fail_stub "$_term_d")"
+_out_d="$(PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" 2>&1)" || true
+rm -rf "$_sd"
+
+if grep -q 'keep-on-failure' <<<"$_out_d"; then
+    ok "ssm-fail default: failure message mentions --keep-on-failure"
+else
+    ko "ssm-fail default: failure message does not mention --keep-on-failure (got: $(printf '%s' "$_out_d" | tail -3))"
+fi
+if grep -q 'stub-apt-error' <<<"$_out_d"; then
+    ok "ssm-fail default: StandardErrorContent appears in output"
+else
+    ko "ssm-fail default: StandardErrorContent not visible (got: $(printf '%s' "$_out_d" | tail -5))"
+fi
+if [ -s "$_term_d" ]; then
+    ok "ssm-fail default: terminate-instances called"
+else
+    ko "ssm-fail default: terminate-instances was not called"
+fi
+rm -f "$_term_d"
+
+# 0e. --keep-on-failure: no termination, prints instance id and start-session command
+_term_e="$(mktemp)"
+_sd="$(_make_ssm_fail_stub "$_term_e")"
+_out_e="$(PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --keep-on-failure 2>&1)" || true
+rm -rf "$_sd"
+
+if grep -q 'i-stubinstance001' <<<"$_out_e" && grep -q 'start-session' <<<"$_out_e"; then
+    ok "ssm-fail keep-on-failure: output contains instance id and start-session command"
+else
+    ko "ssm-fail keep-on-failure: output missing instance id or start-session (got: $(printf '%s' "$_out_e" | tail -5))"
+fi
+if [ ! -s "$_term_e" ]; then
+    ok "ssm-fail keep-on-failure: terminate-instances not called"
+else
+    ko "ssm-fail keep-on-failure: terminate-instances was called but should not have been"
+fi
+if grep -q 'stub-apt-error' <<<"$_out_e"; then
+    ok "ssm-fail keep-on-failure: StandardErrorContent appears in output"
+else
+    ko "ssm-fail keep-on-failure: StandardErrorContent not visible (got: $(printf '%s' "$_out_e" | tail -5))"
+fi
+rm -f "$_term_e"
+
+# ---------------------------------------------------------------------------
 # Online tests (sections 1-6): skip when not authenticated to account 189923011121
 # ---------------------------------------------------------------------------
 actual_account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)" || true
