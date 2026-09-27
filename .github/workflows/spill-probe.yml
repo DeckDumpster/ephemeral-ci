@@ -1,0 +1,88 @@
+name: EC2 spill probe
+
+# Manual probe for the EC2 spill path. Provisions a runner with SPILL=ec2-only
+# (bypassing Proxmox entirely), runs a trivial job on the provisioned runner to
+# confirm it actually works, then tears down.
+#
+# DO NOT add push:, pull_request:, or schedule: triggers. A probe that fires
+# automatically spends money automatically. This workflow exists to be triggered
+# on demand, not to run on every commit.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write  # OIDC token for assuming the AWS spill role
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    outputs:
+      vmid:        ${{ steps.provision.outputs.vmid }}
+      label:       ${{ steps.provision.outputs.label }}
+      vm-token:    ${{ steps.provision.outputs.vm-token }}
+      backend:     ${{ steps.provision.outputs.backend }}
+      instance-id: ${{ steps.provision.outputs.instance-id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision EC2 runner (ec2-only)
+        id: provision
+        uses: ./provision
+        with:
+          ts-oauth-client-id:  ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret:     ${{ secrets.TS_OAUTH_SECRET }}
+          runner-reg-pat:      ${{ secrets.RUNNER_REG_PAT }}
+          pve-token-id:        ${{ secrets.PVE_TOKEN_ID }}
+          pve-token-secret:    ${{ secrets.PVE_TOKEN_SECRET }}
+          pve-api-host:        ${{ vars.PVE_API_HOST }}
+          pve-api-hostname:    ${{ vars.PVE_API_HOSTNAME }}
+          pve-ca-cert:         ${{ vars.PVE_CA_CERT }}
+          pve-node:            ${{ vars.PVE_NODE }}
+          template-vmid:       ${{ vars.TEMPLATE_VMID }}
+          spill:               ec2-only
+          aws-role-to-assume:  ${{ secrets.AWS_SPILL_ROLE_ARN }}
+
+  # Runs a trivial command on the provisioned EC2 runner. If this job never
+  # starts, the runner did not register despite provision exiting zero —
+  # launch and registration are two separate failure modes.
+  verify:
+    needs: [provision]
+    runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
+    steps:
+      - name: Verify runner is operational
+        run: |
+          echo "EC2 runner ${{ needs.provision.outputs.instance-id }} is operational"
+          uname -a
+          df -h /
+
+  # Terminates the EC2 instance regardless of earlier job outcomes.
+  # if: always() ensures this runs even when provision or verify failed.
+  teardown:
+    needs: [provision, verify]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tear down EC2 runner
+        uses: ./teardown
+        with:
+          vmid:               ${{ needs.provision.outputs.vmid }}
+          label:              ${{ needs.provision.outputs.label }}
+          vm-token:           ${{ needs.provision.outputs.vm-token }}
+          backend:            ${{ needs.provision.outputs.backend }}
+          instance-id:        ${{ needs.provision.outputs.instance-id }}
+          runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
+          ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
+          pve-token-id:       ${{ secrets.PVE_TOKEN_ID }}
+          pve-token-secret:   ${{ secrets.PVE_TOKEN_SECRET }}
+          pve-api-host:       ${{ vars.PVE_API_HOST }}
+          pve-api-hostname:   ${{ vars.PVE_API_HOSTNAME }}
+          pve-node:           ${{ vars.PVE_NODE }}
+          template-vmid:      ${{ vars.TEMPLATE_VMID }}
+          pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
+          aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
+          consumer-result:    ${{ needs.verify.result }}
