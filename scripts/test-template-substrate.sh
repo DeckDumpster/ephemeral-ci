@@ -384,18 +384,21 @@ fi
 rm -rf "$_TSTUBS"
 
 echo
-echo "memory check is one-sided where memory is not declared (no qm):"
+echo "memory check: SUBSTRATE_MEM_DECLARED controls one-sided vs two-sided window:"
 
-# Without qm the cloud/EC2 path applies: only the floor matters. An instance
-# with MORE RAM than RUNNER_MEM_MIB must pass; one below the 20%-floor must fail.
 # MEMINFO_FILE lets the test inject a specific MemTotal without root or mocking awk.
+# SUBSTRATE_MEM_DECLARED=1 (the default) applies both bounds; =0 applies the floor only.
 _mc_dir="$(mktemp -d)"
 _check_mem() {
-    local mib="$1" expect="$2" desc="$3"
+    local mib="$1" expect="$2" desc="$3" declared="${4-unset}"
     local minfo="$_mc_dir/meminfo"
     printf 'MemTotal:       %d kB\n' $(( mib * 1024 )) > "$minfo"
     local out
-    out="$(MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
+    if [ "$declared" = "unset" ]; then
+        out="$(env -u SUBSTRATE_MEM_DECLARED MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
+    else
+        out="$(SUBSTRATE_MEM_DECLARED="$declared" MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
+    fi
     if [ "$expect" = pass ]; then
         if printf '%s' "$out" | grep -q 'MISSING mem~'; then
             bad "$desc" "$(printf '%s' "$out" | grep 'MISSING mem~' | head -1)"
@@ -410,9 +413,25 @@ _check_mem() {
         fi
     fi
 }
-_check_mem 6144 pass "memory check passes at 6144MiB (declared size, no qm)"
-_check_mem 7775 pass "memory check passes at 7775MiB (c7i.xlarge RAM, no qm)"
-_check_mem 3812 fail "memory check fails at 3812MiB (under floor, no qm)"
+
+# declared=1: both bounds enforced
+_check_mem 6144 pass "declared=1: 6144MiB passes (within ±20% window)" 1
+_check_mem 7775 fail "declared=1: 7775MiB fails (ceiling enforced; this was the regression)" 1
+_check_mem 3812 fail "declared=1: 3812MiB fails (below floor)" 1
+
+echo
+echo "memory check: declared=0 (cloud/EC2) is one-sided (floor only):"
+
+# declared=0: only the floor matters; instances with more RAM than the declared size pass.
+_check_mem 7775 pass "declared=0: 7775MiB passes (no ceiling on cloud)" 0
+_check_mem 3812 fail "declared=0: 3812MiB fails (below floor)" 0
+
+echo
+echo "memory check: unset SUBSTRATE_MEM_DECLARED defaults to strict (declared=1):"
+
+# The default must be the STRICTER check: a missing signal produces a visible false
+# failure rather than a silently absent assertion.
+_check_mem 7775 fail "unset SUBSTRATE_MEM_DECLARED: 7775MiB fails (defaults to strict)" unset
 rm -rf "$_mc_dir"
 
 echo
