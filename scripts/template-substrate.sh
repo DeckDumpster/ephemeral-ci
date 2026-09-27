@@ -323,13 +323,13 @@ check_unattended() {
 # measurement table and the fleet concurrency math.
 #
 # The check reads MemTotal from /proc/meminfo (which is 1-5% below the allocation
-# due to reserved memory). On Proxmox the check is two-sided (±20%): the template
-# has a declared size and drift in either direction is a violation. On cloud/EC2
-# there is no declared size; only the floor matters — an instance type with more
-# RAM than the minimum is not a violation, and a ceiling would reject it.
-# qm (the Proxmox VM manager) is the discriminant: it is only present on the
-# hypervisor, never on EC2. Do not infer the platform from the aws binary or any
-# other cloud marker; qm's absence is sufficient.
+# due to reserved memory). When the caller declares a fixed allocation
+# (SUBSTRATE_MEM_DECLARED=1, the default), the check is two-sided (±20%): drift
+# in either direction is a violation. On cloud/EC2 the caller sets
+# SUBSTRATE_MEM_DECLARED=0 because instance type sets RAM; only the floor matters
+# there. Defaulting to 1 is intentional: a missing or misspelled signal must fall
+# back to the STRICTER check so forgetting to pass it produces a visible false
+# failure rather than a silently absent assertion.
 RUNNER_MEM_MIB=6144
 
 check_mem_size() {
@@ -339,17 +339,22 @@ check_mem_size() {
     memtotal_mib="$(awk '/^MemTotal:/{printf "%d", $2/1024}' "$_meminfo" 2>/dev/null)"
     [ -n "$memtotal_mib" ] || return 0
     lo=$(( RUNNER_MEM_MIB * 4 / 5 ))
-    if command -v qm >/dev/null 2>&1; then
-        # PROXMOX: declared guest size; both bounds matter.
+    if [ "${SUBSTRATE_MEM_DECLARED:-1}" = "1" ]; then
+        # Fixed allocation (Proxmox template or any host where size is declared);
+        # both bounds matter.
         local hi
         hi=$(( RUNNER_MEM_MIB * 6 / 5 ))
-        remedy="qm set <VMID> --memory ${RUNNER_MEM_MIB}"
+        if command -v qm >/dev/null 2>&1; then
+            remedy="qm set <VMID> --memory ${RUNNER_MEM_MIB}"
+        else
+            remedy="on the Proxmox host: qm set <VMID> --memory ${RUNNER_MEM_MIB}"
+        fi
         if [ "$memtotal_mib" -lt "$lo" ] || [ "$memtotal_mib" -gt "$hi" ]; then
             lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; declared ${RUNNER_MEM_MIB}MiB (±20% window ${lo}–${hi}MiB); resize with: ${remedy}"
             return 1
         fi
     else
-        # CLOUD/EC2 (no qm): instance type sets RAM; only the floor matters.
+        # CLOUD/EC2 (SUBSTRATE_MEM_DECLARED=0): instance type sets RAM; only the floor matters.
         remedy="use an instance type with ≥${RUNNER_MEM_MIB}MiB RAM (e.g. c7i.xlarge)"
         if [ "$memtotal_mib" -lt "$lo" ]; then
             lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; need at least ${lo}MiB (${RUNNER_MEM_MIB}MiB − 20%); resize with: ${remedy}"

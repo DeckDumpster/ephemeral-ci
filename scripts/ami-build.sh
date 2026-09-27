@@ -300,7 +300,7 @@ set -euo pipefail
 
 # ---- substrate ----
 printf '%s' "${substrate_b64}" | base64 -d > /tmp/template-substrate.sh
-sudo bash /tmp/template-substrate.sh
+sudo env SUBSTRATE_MEM_DECLARED=0 bash /tmp/template-substrate.sh
 rm -f /tmp/template-substrate.sh
 
 # ---- runner user (Ubuntu cloud images have no 'runner' user by default) ----
