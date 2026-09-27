@@ -31,13 +31,10 @@ test('launch template sets HttpTokens=required', () => {
 });
 
 test('instance role carries no inline policy', () => {
-  // Token delivery is via ssm:SendCommand from the spill role; the instance
-  // reads nothing from SSM and holds no inline grants.  Any inline policy
-  // added to the instance role — regardless of the conditions it carries —
-  // should fail this assertion.  A well-formed condition on a key that IAM
-  // never populates for EC2 instance profiles (aws:PrincipalTag) is still
-  // a broken policy; checking condition spelling cannot catch that failure,
-  // which is why the previous shape-of-condition test was replaced here.
+  // Token delivery uses a custom SSM document with {{ssm-secure:}} references.
+  // The SSM service expands the reference using the spill role's credentials;
+  // the instance sees the decrypted value injected by SSM and never calls the
+  // SSM API directly.  No inline policy on the instance role is needed.
   const instanceRoles = template.findResources('AWS::IAM::Role', {
     Properties: {
       AssumeRolePolicyDocument: {
@@ -62,35 +59,86 @@ test('instance role carries no inline policy', () => {
   expect(attached).toHaveLength(0);
 });
 
-test('spill role does not grant ssm:PutParameter', () => {
-  // Token delivery is via ssm:SendCommand — nothing is written to Parameter
-  // Store.  Re-adding ssm:PutParameter to the spill role should fail here.
+test('spill role grants ssm:PutParameter, ssm:DeleteParameter, ssm:GetParameter scoped to runner-token prefix', () => {
+  // Token delivery: the spill role writes the token to Parameter Store before
+  // send-command, passes it as {{ssm-secure:/path}} in --parameters (GetParameter
+  // is used by SSM to expand the reference using the caller's credentials), and
+  // deletes the entry after the command completes.  All three actions must be
+  // scoped to /ephemeral-ci/runner-token/* only.
   const spillRoleId = Object.keys(
     template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
   )[0];
 
   const allPolicies = template.findResources('AWS::IAM::Policy');
-  const putParams = Object.entries(allPolicies).flatMap(([id, pRaw]) => {
-    const p = pRaw as {
-      Properties: {
-        Roles: unknown[];
-        PolicyDocument: { Statement: Array<Record<string, unknown>> };
-      };
+
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: { Statement: Array<{ Action: string | string[]; Resource: string | string[] }> };
     };
+  };
+
+  const spillStatements = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
+    const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
+      if (typeof r === 'string') return r === spillRoleId;
+      return r != null && typeof r === 'object' && 'Ref' in r &&
+        (r as { Ref: string }).Ref === spillRoleId;
+    });
+    return isSpill ? p.Properties.PolicyDocument.Statement : [];
+  });
+
+  const putStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action).includes('ssm:PutParameter'),
+  );
+  const deleteStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action).includes('ssm:DeleteParameter'),
+  );
+  const getStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action).includes('ssm:GetParameter'),
+  );
+
+  expect(putStmts).toHaveLength(1);
+  expect(deleteStmts).toHaveLength(1);
+  expect(getStmts).toHaveLength(1);
+
+  const putResources = ([] as string[]).concat(putStmts[0].Resource);
+  const deleteResources = ([] as string[]).concat(deleteStmts[0].Resource);
+  const getResources = ([] as string[]).concat(getStmts[0].Resource);
+  expect(putResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
+  expect(deleteResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
+  expect(getResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
+});
+
+test('spill role does not grant ssm:ListCommandInvocations', () => {
+  // provision.sh polls command status via ssm:GetCommandInvocation only;
+  // ssm:ListCommandInvocations is not used and should not be granted.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: { Statement: Array<Record<string, unknown>> };
+    };
+  };
+  const found = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
     const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
       if (typeof r === 'string') return r === spillRoleId;
       return r != null && typeof r === 'object' && 'Ref' in r &&
         (r as { Ref: string }).Ref === spillRoleId;
     });
     if (!isSpill) return [];
-    return p.Properties.PolicyDocument.Statement.filter((stmt) =>
+    return p.Properties.PolicyDocument.Statement.filter((s) =>
       ([] as string[])
-        .concat(stmt['Action'] as string | string[])
-        .some((a) => a === 'ssm:PutParameter'),
-    ).map(() => `${id}: ssm:PutParameter found on spill role`);
+        .concat(s['Action'] as string | string[])
+        .includes('ssm:ListCommandInvocations'),
+    );
   });
-
-  expect(putParams).toHaveLength(0);
+  expect(found).toHaveLength(0);
 });
 
 test('instance role managed policy is only AmazonSSMManagedInstanceCore', () => {
@@ -111,6 +159,26 @@ test('instance role managed policy is only AmazonSSMManagedInstanceCore', () => 
     .ManagedPolicyArns as unknown[];
   expect(managed).toHaveLength(1);
   expect(JSON.stringify(managed[0])).toContain('AmazonSSMManagedInstanceCore');
+});
+
+test('custom SSM document for runner token delivery is defined', () => {
+  // ec2_deliver_token uses a custom SSM document instead of AWS-RunShellScript
+  // so it can accept {{ssm-secure:}} parameter references that SSM expands
+  // server-side without recording the resolved value in command history.
+  const docs = template.findResources('AWS::SSM::Document');
+  const deliverDoc = Object.values(docs).find((d) => {
+    const name = (d as { Properties: Record<string, unknown> }).Properties.Name;
+    return name === 'ephemeral-ci-deliver-runner-token';
+  });
+  expect(deliverDoc).toBeDefined();
+  const content = (deliverDoc as { Properties: { Content: Record<string, unknown> } })
+    .Properties.Content as Record<string, unknown>;
+  expect(content['schemaVersion']).toBe('2.2');
+  const params = content['parameters'] as Record<string, unknown>;
+  expect(params).toHaveProperty('RunnerToken');
+  expect(params).toHaveProperty('RunnerLabel');
+  expect(params).toHaveProperty('RunnerUrl');
+  expect(params).toHaveProperty('RunnerGroup');
 });
 
 test('spill role trust policy carries OIDC condition with expected sub', () => {
@@ -214,6 +282,22 @@ test('budget has FORECASTED notification at 100% with one EMAIL subscriber', () 
   expect(forecasted!.Notification.Threshold).toBe(100);
   expect(forecasted!.Subscribers).toHaveLength(1);
   expect(forecasted!.Subscribers[0].SubscriptionType).toBe('EMAIL');
+});
+
+test('ci-test role does not carry ReadOnlyAccess', () => {
+  // ReadOnlyAccess includes ssm:List* which allowed any branch of this
+  // repository to read SSM command history.  The role is now minimal:
+  // iam:SimulatePrincipalPolicy plus IAM read access only.
+  const ciTestRoles = template.findResources('AWS::IAM::Role', {
+    Properties: { RoleName: 'ephemeral-ci-ci-test' },
+  });
+  expect(Object.keys(ciTestRoles)).toHaveLength(1);
+  const managed = (Object.values(ciTestRoles)[0] as { Properties: Record<string, unknown> })
+    .Properties.ManagedPolicyArns as unknown[] | undefined;
+  const hasReadOnly = (managed ?? []).some(
+    (p) => typeof p === 'string' && p.includes('ReadOnlyAccess'),
+  );
+  expect(hasReadOnly).toBe(false);
 });
 
 test('synth fails when alertEmail is absent', () => {

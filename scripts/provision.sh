@@ -694,33 +694,55 @@ ec2_wait_ssm() {
     done
 }
 
-# Deliver the runner token to the instance via SSM Send Command.  Nothing is
-# written to Parameter Store; the instance holds no SSM read permissions.
-# The token is base64-encoded so the raw value does not appear in the command
-# parameters that CloudTrail and ssm:ListCommandInvocations echo.
+# Deliver the runner token to the instance via SSM Send Command.  The token
+# is stored in SSM Parameter Store (SecureString) and referenced in the
+# send-command parameters as {{ssm-secure:/path}}.  The SSM service expands
+# that reference using the caller's credentials and injects the decrypted
+# value into the custom document's RunnerToken field; the resolved value is
+# NOT stored in SSM command history.  The parameter is deleted after the
+# command completes — single-use lifetime, not relying on the instance.
+#
+# The custom document (ephemeral-ci-deliver-runner-token) is defined in the
+# CDK stack.  The instance never calls the SSM API directly; the SSM agent
+# receives the already-decrypted field value from the document execution.
 ec2_deliver_token() {
     local iid="$1"
-    local token_b64
-    token_b64="$(printf '%s' "$RUNNER_TOKEN" | base64 | tr -d '\n')"
+    local param_name="/ephemeral-ci/runner-token/${SPILL_VMTOKEN}"
 
-    local cmd
-    cmd="$(printf 'set -e
-RUNNER_TOKEN=$(printf '"'"'%%s'"'"' '"'"'%s'"'"' | base64 -d)
-printf '"'"'RUNNER_LABEL=%s\nRUNNER_TOKEN=%%s\nRUNNER_URL=%s\nRUNNER_GROUP=%s\n'"'"' "$RUNNER_TOKEN" \
-    > /run/gh-runner-init.partial
-mv /run/gh-runner-init.partial /run/gh-runner-init' \
-        "$token_b64" \
-        "$RUNNER_LABEL" "$RUNNER_URL" "${RUNNER_GROUP:-ephemeral-ci}")"
+    aws ssm put-parameter \
+        --region "$SPILL_REGION" \
+        --name "$param_name" \
+        --type "SecureString" \
+        --value "$RUNNER_TOKEN" \
+        --overwrite \
+        >/dev/null 2>&1 || {
+        printf '::error::provision.sh: failed to store runner token in Parameter Store\n' >&2
+        return 1
+    }
+
+    local params
+    params="$(python3 - "$param_name" "$RUNNER_LABEL" "$RUNNER_URL" \
+              "${RUNNER_GROUP:-ephemeral-ci}" <<'PYEOF'
+import json, sys
+p, label, url, grp = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+print(json.dumps({
+    'RunnerToken': ['{{ssm-secure:' + p + '}}'],
+    'RunnerLabel': [label],
+    'RunnerUrl': [url],
+    'RunnerGroup': [grp],
+}))
+PYEOF
+)"
 
     local cmd_id
     cmd_id="$(aws ssm send-command \
                   --region "$SPILL_REGION" \
                   --instance-ids "$iid" \
-                  --document-name 'AWS-RunShellScript' \
-                  --parameters "{\"commands\":[$(python3 -c "import json,sys; print(json.dumps(sys.argv[1]))" "$cmd")]}" \
-                  --cloud-watch-output-config 'CloudWatchOutputEnabled=false' \
+                  --document-name 'ephemeral-ci-deliver-runner-token' \
+                  --parameters "$params" \
                   --query 'Command.CommandId' \
                   --output text 2>&1)" || {
+        aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
         printf '::error::provision.sh: failed to send SSM command to %s: %s\n' "$iid" "$cmd_id" >&2
         return 1
     }
@@ -735,14 +757,19 @@ mv /run/gh-runner-init.partial /run/gh-runner-init' \
                       --query 'Status' \
                       --output text 2>/dev/null || printf 'Pending')"
         case "$status" in
-            Success) return 0 ;;
+            Success)
+                aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
+                return 0
+                ;;
             Failed|Cancelled|TimedOut|Undeliverable|Terminated)
+                aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
                 printf '::error::provision.sh: SSM command %s on %s finished with status %s\n' \
                     "$cmd_id" "$iid" "$status" >&2
                 return 1
                 ;;
         esac
         if [ "$waited" -ge 120 ]; then
+            aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
             printf '::error::provision.sh: SSM command %s on %s did not finish within 120s\n' \
                 "$cmd_id" "$iid" >&2
             return 1
