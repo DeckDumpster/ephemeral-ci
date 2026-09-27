@@ -219,10 +219,16 @@ launch_builder() {
 # ---------------------------------------------------------------------------
 wait_ssm() {
     local instance_id="$1"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        note "dry-run: skipping SSM wait (would wait up to ${SSM_WAIT_SECONDS}s for ${instance_id} to register)"
+        printf '0'
+        return 0
+    fi
     note "waiting for $instance_id to register with SSM (budget ${SSM_WAIT_SECONDS}s)"
     local start
     start="$(date +%s)"
     local deadline=$(( start + SSM_WAIT_SECONDS ))
+    local _api_errs=0
 
     while true; do
         local now
@@ -233,10 +239,20 @@ wait_ssm() {
             return 1
         fi
         local ping
-        ping="$(aws ssm describe-instance-information \
+        if ! ping="$(aws ssm describe-instance-information \
             --filters "Key=InstanceIds,Values=${instance_id}" \
             --query 'InstanceInformationList[0].PingStatus' \
-            --output text --region "$REGION" 2>/dev/null)" || ping=""
+            --output text --region "$REGION")"; then
+            (( _api_errs++ )) || true
+            if [ "$_api_errs" -ge 3 ]; then
+                printf 'ami-build.sh: describe-instance-information failed %d consecutive times -- check credentials and permissions\n' \
+                    "$_api_errs" >&2
+                return 1
+            fi
+            sleep 5
+            continue
+        fi
+        _api_errs=0
         if [ "$ping" = "Online" ]; then
             local elapsed=$(( now - start ))
             note "SSM online after ${elapsed}s"
@@ -363,9 +379,14 @@ SCRIPT
 # ---------------------------------------------------------------------------
 wait_command() {
     local instance_id="$1" cmd_id="$2" budget="$3"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        note "dry-run: skipping build wait (would wait up to ${budget}s for command ${cmd_id})"
+        return 0
+    fi
     note "waiting for SSM command $cmd_id (budget ${budget}s)"
 
     local deadline=$(( $(date +%s) + budget ))
+    local _api_errs=0
     while true; do
         local now
         now="$(date +%s)"
@@ -375,11 +396,21 @@ wait_command() {
             return 1
         fi
         local status
-        status="$(aws ssm get-command-invocation \
+        if ! status="$(aws ssm get-command-invocation \
             --command-id "$cmd_id" \
             --instance-id "$instance_id" \
             --query 'Status' \
-            --output text --region "$REGION" 2>/dev/null)" || status="Pending"
+            --output text --region "$REGION")"; then
+            (( _api_errs++ )) || true
+            if [ "$_api_errs" -ge 3 ]; then
+                printf 'ami-build.sh: get-command-invocation failed %d consecutive times -- check credentials and permissions\n' \
+                    "$_api_errs" >&2
+                return 1
+            fi
+            sleep 10
+            continue
+        fi
+        _api_errs=0
         case "$status" in
             Success)
                 note "SSM command succeeded"
