@@ -68,13 +68,15 @@ STACK_NAME="EphemeralCiSpill"
 
 DRY_RUN=0
 PRUNE_ONLY=0
+KEEP_ON_FAILURE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --retain)   RETAIN_COUNT="$2"; shift 2 ;;
-        --dry-run)  DRY_RUN=1; shift ;;
-        --prune-only) PRUNE_ONLY=1; shift ;;
-        *) printf 'usage: ami-build.sh [--retain N] [--dry-run] [--prune-only]\n' >&2; exit 2 ;;
+        --retain)          RETAIN_COUNT="$2"; shift 2 ;;
+        --dry-run)         DRY_RUN=1; shift ;;
+        --prune-only)      PRUNE_ONLY=1; shift ;;
+        --keep-on-failure) KEEP_ON_FAILURE=1; shift ;;
+        *) printf 'usage: ami-build.sh [--retain N] [--dry-run] [--prune-only] [--keep-on-failure]\n' >&2; exit 2 ;;
     esac
 done
 
@@ -419,7 +421,7 @@ wait_command() {
                     --command-id "$cmd_id" \
                     --instance-id "$instance_id" \
                     --query 'StandardOutputContent' \
-                    --output text --region "$REGION" 2>/dev/null >&2 || true
+                    --output text --region "$REGION" >&2 || true
                 return 0
                 ;;
             Failed|TimedOut|Cancelled|Cancelling|DeliveryTimedOut|ExecutionTimedOut)
@@ -428,7 +430,8 @@ wait_command() {
                     --command-id "$cmd_id" \
                     --instance-id "$instance_id" \
                     --query 'StandardErrorContent' \
-                    --output text --region "$REGION" 2>/dev/null >&2 || true
+                    --output text --region "$REGION" >&2 \
+                    || note "could not retrieve StandardErrorContent for $cmd_id"
                 return 1
                 ;;
         esac
@@ -604,8 +607,18 @@ instance_id="$(launch_builder "$base_ami" "$build_date" "$git_commit")"
 _instance_id="$instance_id"
 cleanup_on_failure() {
     local exit_code=$?
-    if [ $exit_code -ne 0 ] && [ -n "${_instance_id:-}" ] && [ "$DRY_RUN" -eq 0 ]; then
-        note "build failed -- terminating build instance $_instance_id"
+    [ $exit_code -ne 0 ] || return 0
+    [ -n "${_instance_id:-}" ] || return 0
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    if [ "$KEEP_ON_FAILURE" -eq 1 ]; then
+        local private_ip
+        private_ip="$(aws ec2 describe-instances \
+            --instance-ids "$_instance_id" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+            --output text --region "$REGION" 2>/dev/null)" || private_ip="unknown"
+        note "build failed -- keeping instance $_instance_id (${private_ip}); to inspect: aws ssm start-session --target $_instance_id --region $REGION"
+    else
+        note "build failed -- terminating build instance $_instance_id (use --keep-on-failure to preserve it for inspection)"
         aws ec2 terminate-instances \
             --instance-ids "$_instance_id" \
             --region "$REGION" >/dev/null 2>&1 || true

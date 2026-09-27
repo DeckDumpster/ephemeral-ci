@@ -128,9 +128,20 @@ apt_install() {
     [ ${#candidates[@]} -gt 0 ] || return 0
     [ "$CAN_ELEVATE" -eq 1 ] || { note "cannot elevate to install: ${candidates[*]}"; return 1; }
     if [ "$APT_UPDATED" = 0 ]; then
-        # shellcheck disable=SC2086
-        $SUDO apt-get update -qq $APT_LOCK_WAIT
-        APT_UPDATED=1
+        local _upd_out _upd_attempt
+        for _upd_attempt in 1 2 3; do
+            # shellcheck disable=SC2086
+            if _upd_out="$($SUDO apt-get update -qq $APT_LOCK_WAIT 2>&1)"; then
+                APT_UPDATED=1
+                break
+            fi
+            note "apt-get update attempt ${_upd_attempt}/3 failed"
+            [ "$_upd_attempt" -lt 3 ] && sleep 5
+        done
+        if [ "$APT_UPDATED" = 0 ]; then
+            printf 'substrate: apt-get update failed after 3 attempts:\n%s\n' "$_upd_out" >&2
+            return 1
+        fi
     fi
     for p in "${candidates[@]}"; do
         if installable "$p"; then
@@ -409,7 +420,7 @@ if command -v systemctl >/dev/null 2>&1; then
     done
 fi
 
-apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}"
+apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" || exit 1
 
 if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null \
    || ! grep -q "^${RUNUSER}:" /etc/subgid 2>/dev/null; then

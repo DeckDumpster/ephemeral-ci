@@ -416,5 +416,69 @@ _check_mem 3812 fail "memory check fails at 3812MiB (under floor, no qm)"
 rm -rf "$_mc_dir"
 
 echo
+echo "apt-get update failure: substrate fails naming the apt error:"
+
+_upd_dir="$(mktemp -d)"
+_upd_calls="$_upd_dir/calls"
+
+cat > "$_upd_dir/apt-get" <<STUB
+#!/bin/sh
+printf 'apt-get %s\n' "\$1" >> "$_upd_calls"
+case "\$1" in
+    update) printf 'E: stub: could not resolve apt.ubuntu.com\n' >&2; exit 100 ;;
+    *) exit 0 ;;
+esac
+STUB
+chmod +x "$_upd_dir/apt-get"
+
+cat > "$_upd_dir/apt-cache" <<'STUB'
+#!/bin/sh
+printf '  Installed: (none)\n  Candidate: (none)\n'
+exit 0
+STUB
+chmod +x "$_upd_dir/apt-cache"
+
+printf '#!/bin/sh\nexit 1\n' > "$_upd_dir/dpkg"; chmod +x "$_upd_dir/dpkg"
+
+cat > "$_upd_dir/id" <<'STUB'
+#!/bin/sh
+case " $* " in *" -u "*) echo 0; exit 0 ;; esac
+exec /usr/bin/id "$@"
+STUB
+chmod +x "$_upd_dir/id"
+
+# sleep: make the retry loop instantaneous in tests.
+printf '#!/bin/sh\nexit 0\n' > "$_upd_dir/sleep"; chmod +x "$_upd_dir/sleep"
+
+for _t in systemctl loginctl usermod sysctl tee; do
+    printf '#!/bin/sh\nexit 0\n' > "$_upd_dir/$_t"; chmod +x "$_upd_dir/$_t"
+done
+
+_upd_rc=0
+_upd_out="$(PATH="$_upd_dir:$PATH" bash "$SUBSTRATE" 2>&1)" || _upd_rc=$?
+
+if [ "$_upd_rc" -ne 0 ]; then
+    ok "apt-update failure: substrate exits non-zero"
+else
+    bad "apt-update failure: substrate exits non-zero" "exited 0 after apt-get update failed"
+fi
+
+if printf '%s' "$_upd_out" | grep -q 'apt-get update failed'; then
+    ok "apt-update failure: output names the apt-get update failure"
+else
+    bad "apt-update failure: output names the apt-get update failure" \
+        "got: $(printf '%s' "$_upd_out" | grep -v '^substrate:' | head -3)"
+fi
+
+if ! printf '%s' "$_upd_out" | grep -q 'not on this release'; then
+    ok "apt-update failure: does not mislead with missing-package message"
+else
+    bad "apt-update failure: does not mislead with missing-package message" \
+        "printed 'not on this release' after apt-get update failed"
+fi
+
+rm -rf "$_upd_dir"
+
+echo
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
