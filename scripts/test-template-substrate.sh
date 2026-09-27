@@ -328,5 +328,93 @@ rm -f "$STUBS/id"
 : > "$CALLS"
 
 echo
+echo "apt_install runs apt-get update before probing installability:"
+
+# Proof: apt-cache policy returns a candidate only after a marker file written
+# by apt-get update. On the old ordering (probe before update) the marker is
+# absent when installable() runs, no candidate is seen, and apt-get install is
+# never called. On the correct ordering (update before probe) the marker exists
+# and packages are selected. That test fails on the old code and passes after.
+_TSTUBS="$(mktemp -d)"
+_TMARKER="$_TSTUBS/apt-updated"
+_TCALLS="$_TSTUBS/apt-calls"
+
+cat > "$_TSTUBS/apt-cache" <<STUB
+#!/bin/sh
+case "\$1" in
+    policy)
+        if [ -f "$_TMARKER" ]; then
+            printf '  Installed: (none)\n  Candidate: 1.0\n'
+        fi
+        exit 0 ;;
+    *) exec /usr/bin/apt-cache "\$@" ;;
+esac
+STUB
+chmod +x "$_TSTUBS/apt-cache"
+
+cat > "$_TSTUBS/apt-get" <<STUB
+#!/bin/sh
+printf 'apt-get %s\n' "\$1" >> "$_TCALLS"
+case "\$1" in update) touch "$_TMARKER" ;; esac
+exit 0
+STUB
+chmod +x "$_TSTUBS/apt-get"
+
+printf '#!/bin/sh\nexit 1\n' > "$_TSTUBS/dpkg"; chmod +x "$_TSTUBS/dpkg"
+
+cat > "$_TSTUBS/id" <<'STUB'
+#!/bin/sh
+[ "$1" = "-u" ] && [ $# -eq 1 ] && { echo 0; exit 0; }
+exec /usr/bin/id "$@"
+STUB
+chmod +x "$_TSTUBS/id"
+
+for _t in systemctl loginctl usermod sysctl; do
+    printf '#!/bin/sh\nexit 0\n' > "$_TSTUBS/$_t"; chmod +x "$_TSTUBS/$_t"
+done
+
+PATH="$_TSTUBS:$PATH" bash "$SUBSTRATE" >/dev/null 2>&1 || true
+
+if grep -q '^apt-get install' "$_TCALLS" 2>/dev/null; then
+    ok "apt-get install is called (update ran before probe; packages selected)"
+else
+    bad "apt-get install is called (update ran before probe; packages selected)" \
+        "install was never reached; probe likely ran before update and saw no candidates"
+fi
+rm -rf "$_TSTUBS"
+
+echo
+echo "memory check is one-sided where memory is not declared (no qm):"
+
+# Without qm the cloud/EC2 path applies: only the floor matters. An instance
+# with MORE RAM than RUNNER_MEM_MIB must pass; one below the 20%-floor must fail.
+# MEMINFO_FILE lets the test inject a specific MemTotal without root or mocking awk.
+_mc_dir="$(mktemp -d)"
+_check_mem() {
+    local mib="$1" expect="$2" desc="$3"
+    local minfo="$_mc_dir/meminfo"
+    printf 'MemTotal:       %d kB\n' $(( mib * 1024 )) > "$minfo"
+    local out
+    out="$(MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
+    if [ "$expect" = pass ]; then
+        if printf '%s' "$out" | grep -q 'MISSING mem~'; then
+            bad "$desc" "$(printf '%s' "$out" | grep 'MISSING mem~' | head -1)"
+        else
+            ok "$desc"
+        fi
+    else
+        if printf '%s' "$out" | grep -q 'MISSING mem~'; then
+            ok "$desc"
+        else
+            bad "$desc" "memory check should have failed at ${mib}MiB but passed"
+        fi
+    fi
+}
+_check_mem 6144 pass "memory check passes at 6144MiB (declared size, no qm)"
+_check_mem 7775 pass "memory check passes at 7775MiB (c7i.xlarge RAM, no qm)"
+_check_mem 3812 fail "memory check fails at 3812MiB (under floor, no qm)"
+rm -rf "$_mc_dir"
+
+echo
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

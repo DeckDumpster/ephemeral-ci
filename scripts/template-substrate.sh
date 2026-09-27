@@ -113,10 +113,26 @@ installable() {
 
 APT_UPDATED=0
 apt_install() {
-    local want=() p
+    local want=() candidates=() p
+    # SEPARATE THE ALREADY-INSTALLED CHECK FROM THE INSTALLABLE PROBE. apt-cache
+    # policy reads /var/lib/apt/lists; on a freshly booted cloud image those lists
+    # reflect whatever the AMI shipped and may not cover universe. apt-get update
+    # must run before installable() is called -- the probe answers from whatever
+    # lists exist at call time, and updating after the probe is too late to change
+    # answers already recorded.
     for p in "$@"; do
         dpkg -s "$p" >/dev/null 2>&1 && continue
         dpkg -s "${p}t64" >/dev/null 2>&1 && continue
+        candidates+=("$p")
+    done
+    [ ${#candidates[@]} -gt 0 ] || return 0
+    [ "$CAN_ELEVATE" -eq 1 ] || { note "cannot elevate to install: ${candidates[*]}"; return 1; }
+    if [ "$APT_UPDATED" = 0 ]; then
+        # shellcheck disable=SC2086
+        $SUDO apt-get update -qq $APT_LOCK_WAIT
+        APT_UPDATED=1
+    fi
+    for p in "${candidates[@]}"; do
         if installable "$p"; then
             want+=("$p")
         elif installable "${p}t64"; then
@@ -126,12 +142,6 @@ apt_install() {
         fi
     done
     [ ${#want[@]} -gt 0 ] || return 0
-    [ "$CAN_ELEVATE" -eq 1 ] || { note "cannot elevate to install: ${want[*]}"; return 1; }
-    if [ "$APT_UPDATED" = 0 ]; then
-        # shellcheck disable=SC2086
-        $SUDO apt-get update -qq $APT_LOCK_WAIT
-        APT_UPDATED=1
-    fi
     note "installing ${want[*]}"
     # shellcheck disable=SC2086
     if DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq $APT_LOCK_WAIT "${want[@]}"; then
@@ -302,24 +312,38 @@ check_unattended() {
 # measurement table and the fleet concurrency math.
 #
 # The check reads MemTotal from /proc/meminfo (which is 1-5% below the allocation
-# due to reserved memory) and fails outside a ±20% window: floor=4915, ceil=7372.
+# due to reserved memory). On Proxmox the check is two-sided (±20%): the template
+# has a declared size and drift in either direction is a violation. On cloud/EC2
+# there is no declared size; only the floor matters — an instance type with more
+# RAM than the minimum is not a violation, and a ceiling would reject it.
+# qm (the Proxmox VM manager) is the discriminant: it is only present on the
+# hypervisor, never on EC2. Do not infer the platform from the aws binary or any
+# other cloud marker; qm's absence is sufficient.
 RUNNER_MEM_MIB=6144
 
 check_mem_size() {
-    local memtotal_mib lo hi remedy
-    [ -r /proc/meminfo ] || return 0
-    memtotal_mib="$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)"
+    local memtotal_mib lo remedy
+    local _meminfo="${MEMINFO_FILE:-/proc/meminfo}"
+    [ -r "$_meminfo" ] || return 0
+    memtotal_mib="$(awk '/^MemTotal:/{printf "%d", $2/1024}' "$_meminfo" 2>/dev/null)"
     [ -n "$memtotal_mib" ] || return 0
     lo=$(( RUNNER_MEM_MIB * 4 / 5 ))
-    hi=$(( RUNNER_MEM_MIB * 6 / 5 ))
     if command -v qm >/dev/null 2>&1; then
+        # PROXMOX: declared guest size; both bounds matter.
+        local hi
+        hi=$(( RUNNER_MEM_MIB * 6 / 5 ))
         remedy="qm set <VMID> --memory ${RUNNER_MEM_MIB}"
+        if [ "$memtotal_mib" -lt "$lo" ] || [ "$memtotal_mib" -gt "$hi" ]; then
+            lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; declared ${RUNNER_MEM_MIB}MiB (±20% window ${lo}–${hi}MiB); resize with: ${remedy}"
+            return 1
+        fi
     else
+        # CLOUD/EC2 (no qm): instance type sets RAM; only the floor matters.
         remedy="use an instance type with ≥${RUNNER_MEM_MIB}MiB RAM (e.g. c7i.xlarge)"
-    fi
-    if [ "$memtotal_mib" -lt "$lo" ] || [ "$memtotal_mib" -gt "$hi" ]; then
-        lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; declared ${RUNNER_MEM_MIB}MiB (±20% window ${lo}–${hi}MiB); resize with: ${remedy}"
-        return 1
+        if [ "$memtotal_mib" -lt "$lo" ]; then
+            lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; need at least ${lo}MiB (${RUNNER_MEM_MIB}MiB − 20%); resize with: ${remedy}"
+            return 1
+        fi
     fi
     note "mem ${memtotal_mib}MiB (declared ${RUNNER_MEM_MIB}MiB)"
 }
