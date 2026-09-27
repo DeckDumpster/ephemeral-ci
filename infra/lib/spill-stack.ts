@@ -194,11 +194,17 @@ export class SpillStack extends cdk.Stack {
 
     // ssm:PutParameter / ssm:DeleteParameter: write and clean up the runner
     // token in Parameter Store.  Scoped to the runner-token prefix only.
-    // ssm:GetParameter: required for SSM to expand {{ssm-secure:/path}}
-    // references in send-command --parameters using the caller's credentials.
-    // The instance never calls GetParameter directly.
+    // ssm:GetParameter and ssm:GetParameters are both granted: they are
+    // distinct IAM actions (singular ≠ plural, neither implies the other), and
+    // AWS documentation for SecureString retrieval with decryption shows
+    // GetParameters (plural) in example policies.  Granting both is correct
+    // rather than guessing which action the service uses when expanding
+    // {{ssm-secure:/path}} references.  The resource scope is unchanged.
+    // Unverified: which action SSM actually calls during {{ssm-secure:}}
+    // expansion cannot be confirmed by synth alone; a real spill that delivers
+    // a token is required to observe the behaviour.
     spillRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:GetParameter'],
+      actions: ['ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:GetParameter', 'ssm:GetParameters'],
       resources: ['arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/runner-token/*'],
     }));
 

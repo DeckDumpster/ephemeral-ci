@@ -709,6 +709,12 @@ ec2_deliver_token() {
     local iid="$1"
     local param_name="/ephemeral-ci/runner-token/${SPILL_VMTOKEN}"
 
+    # No --key-id: the parameter uses the default alias/aws/ssm key.  The
+    # default key's policy grants Decrypt to all IAM principals in the account,
+    # so no kms:Decrypt grant is needed on the spill role.  This is deliberate.
+    # Pinning a customer-managed key later would require adding kms:Decrypt for
+    # the spill role (arn:aws:iam::189923011121:role/ephemeral-ci-spill) to that
+    # key's policy, and the failure would look identical to an IAM misconfiguration.
     aws ssm put-parameter \
         --region "$SPILL_REGION" \
         --name "$param_name" \

@@ -59,12 +59,14 @@ test('instance role carries no inline policy', () => {
   expect(attached).toHaveLength(0);
 });
 
-test('spill role grants ssm:PutParameter, ssm:DeleteParameter, ssm:GetParameter scoped to runner-token prefix', () => {
+test('spill role grants ssm:PutParameter, ssm:DeleteParameter, ssm:GetParameter, ssm:GetParameters scoped to runner-token prefix', () => {
   // Token delivery: the spill role writes the token to Parameter Store before
-  // send-command, passes it as {{ssm-secure:/path}} in --parameters (GetParameter
-  // is used by SSM to expand the reference using the caller's credentials), and
-  // deletes the entry after the command completes.  All three actions must be
-  // scoped to /ephemeral-ci/runner-token/* only.
+  // send-command, passes it as {{ssm-secure:/path}} in --parameters, and
+  // deletes the entry after the command completes.  GetParameter and
+  // GetParameters are distinct IAM actions; both are granted because AWS
+  // example policies for SecureString retrieval show GetParameters (plural)
+  // and neither action implies the other.  All four actions must be scoped to
+  // /ephemeral-ci/runner-token/* only.
   const spillRoleId = Object.keys(
     template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
   )[0];
@@ -97,17 +99,23 @@ test('spill role grants ssm:PutParameter, ssm:DeleteParameter, ssm:GetParameter 
   const getStmts = spillStatements.filter((s) =>
     ([] as string[]).concat(s.Action).includes('ssm:GetParameter'),
   );
+  const getParametersStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action).includes('ssm:GetParameters'),
+  );
 
   expect(putStmts).toHaveLength(1);
   expect(deleteStmts).toHaveLength(1);
   expect(getStmts).toHaveLength(1);
+  expect(getParametersStmts).toHaveLength(1);
 
   const putResources = ([] as string[]).concat(putStmts[0].Resource);
   const deleteResources = ([] as string[]).concat(deleteStmts[0].Resource);
   const getResources = ([] as string[]).concat(getStmts[0].Resource);
+  const getParametersResources = ([] as string[]).concat(getParametersStmts[0].Resource);
   expect(putResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
   expect(deleteResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
   expect(getResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
+  expect(getParametersResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
 });
 
 test('spill role does not grant ssm:ListCommandInvocations', () => {
