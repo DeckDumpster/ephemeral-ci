@@ -64,9 +64,12 @@ export class SpillStack extends cdk.Stack {
     });
 
     // ── Instance role: SSM managed core only ─────────────────────────────────
-    // Token delivery is via ssm:SendCommand from the spill role; the instance
-    // reads nothing from Parameter Store.  AmazonSSMManagedInstanceCore is the
-    // only grant the instance needs for the SSM agent channel to work.
+    // Token delivery uses a custom SSM document with a {{ssm-secure:}} reference:
+    // the spill role writes the token to Parameter Store, then sends the command
+    // passing the parameter as {{ssm-secure:/path}}.  The SSM service resolves
+    // that reference using the spill role's credentials and injects the decrypted
+    // value without recording it in command history.  The instance never calls
+    // the SSM API directly; AmazonSSMManagedInstanceCore is all it needs.
     const instanceRole = new iam.Role(this, 'InstanceRole', {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
@@ -189,10 +192,24 @@ export class SpillStack extends cdk.Stack {
       },
     }));
 
+    // ssm:PutParameter / ssm:DeleteParameter: write and clean up the runner
+    // token in Parameter Store.  Scoped to the runner-token prefix only.
+    // ssm:GetParameter: required for SSM to expand {{ssm-secure:/path}}
+    // references in send-command --parameters using the caller's credentials.
+    // The instance never calls GetParameter directly.
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:GetParameter'],
+      resources: ['arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/runner-token/*'],
+    }));
+
+    // ssm:GetCommandInvocation: poll command status after send-command.
+    // ssm:DescribeInstanceInformation: wait for SSM agent to go Online.
+    // Both require resource: * — SSM does not support resource-level
+    // restrictions for these read actions.  ssm:ListCommandInvocations is
+    // not used by provision.sh and is intentionally absent.
     spillRole.addToPolicy(new iam.PolicyStatement({
       actions: [
         'ssm:GetCommandInvocation',
-        'ssm:ListCommandInvocations',
         'ssm:DescribeInstanceInformation',
       ],
       resources: ['*'],
@@ -211,17 +228,24 @@ export class SpillStack extends cdk.Stack {
     }));
 
 
-    // ── CI test role: read-only + SimulatePrincipalPolicy for policy testing ─
+    // ── CI test role: minimal grants for policy assertions ───────────────────
+    // ReadOnlyAccess was the prior grant; it includes ssm:List* which let any
+    // branch of this repository read SSM command history (including, until this
+    // bead, embedded runner tokens).  The stated purpose of this role is
+    // iam:SimulatePrincipalPolicy; ReadOnlyAccess was larger than required.
     const ciTestRole = new iam.Role(this, 'CiTestRole', {
       roleName: 'ephemeral-ci-ci-test',
       assumedBy: oidcPrincipal('repo:DeckDumpster/ephemeral-ci:*'),
-      managedPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName('ReadOnlyAccess'),
-      ],
     });
 
     ciTestRole.addToPolicy(new iam.PolicyStatement({
       actions: ['iam:SimulatePrincipalPolicy'],
+      resources: ['*'],
+    }));
+
+    // IAM read access for inspecting roles and policies alongside simulations.
+    ciTestRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['iam:Get*', 'iam:List*'],
       resources: ['*'],
     }));
 
@@ -305,6 +329,45 @@ export class SpillStack extends cdk.Stack {
           subscribers: [{ subscriptionType: 'EMAIL', address: alertEmail }],
         },
       ],
+    });
+
+    // ── SSM document: token delivery via {{ssm-secure:}} reference ───────────
+    // RunnerToken is passed as {{ssm-secure:/ephemeral-ci/runner-token/<vmtoken>}}
+    // from send-command.  SSM expands the reference using the spill role's
+    // ssm:GetParameter permission and injects the decrypted value into the
+    // document's RunnerToken field.  The resolved value is NOT stored in
+    // command history (SSM redacts ssm-secure references).  The instance never
+    // calls the SSM API; it sees the already-decrypted value from the document.
+    new cdk.CfnResource(this, 'DeliverRunnerTokenDocument', {
+      type: 'AWS::SSM::Document',
+      properties: {
+        Name: 'ephemeral-ci-deliver-runner-token',
+        DocumentType: 'Command',
+        DocumentFormat: 'JSON',
+        Content: {
+          schemaVersion: '2.2',
+          description: 'Write runner init file; RunnerToken is resolved from {{ssm-secure:}} and not logged.',
+          parameters: {
+            RunnerToken: { type: 'String', description: 'Registration token (pass as {{ssm-secure:/path}})' },
+            RunnerLabel: { type: 'String', description: 'Runner label' },
+            RunnerUrl: { type: 'String', description: 'Registration URL' },
+            RunnerGroup: { type: 'String', description: 'Runner group', default: 'ephemeral-ci' },
+          },
+          mainSteps: [
+            {
+              action: 'aws:runShellScript',
+              name: 'DeliverToken',
+              inputs: {
+                runCommand: [
+                  'set -e',
+                  "printf 'RUNNER_LABEL={{ RunnerLabel }}\\nRUNNER_TOKEN={{ RunnerToken }}\\nRUNNER_URL={{ RunnerUrl }}\\nRUNNER_GROUP={{ RunnerGroup }}\\n' > /run/gh-runner-init.partial",
+                  'mv /run/gh-runner-init.partial /run/gh-runner-init',
+                ],
+              },
+            },
+          ],
+        },
+      },
     });
 
     // ── Outputs: consumed by later spill scripts via describe-stacks ─────────

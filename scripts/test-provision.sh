@@ -1666,11 +1666,19 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ok "test-29: run-instances carries no --user-data"
     fi
 
-    # send-command must not contain the token value "test-token"
+    # send-command must not contain the token value in plaintext or base64.
+    # The base64 form is the one that slipped through before this fix; a test
+    # that only greps for the raw token would still pass on the old code.
+    _token_b64_29="$(printf '%s' 'test-token' | base64 | tr -d '\n')"
     if grep "send-command" "$AWS_ARGV_FILE" | grep -q "test-token"; then
         ko "test-29: send-command must not contain the raw token value"
     else
         ok "test-29: send-command does not contain the raw token value"
+    fi
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "$_token_b64_29"; then
+        ko "test-29: send-command must not contain the base64-encoded token (key regression)"
+    else
+        ok "test-29: send-command does not contain the base64-encoded token"
     fi
 
     # run-instances must carry the vmtoken tag
@@ -1680,12 +1688,28 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ko "test-29: run-instances missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep run-instances "$AWS_ARGV_FILE" || true))"
     fi
 
-    # put-parameter must NOT be called: token is delivered directly via
-    # send-command (base64-encoded), nothing is written to Parameter Store.
-    if ! grep -q "put-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
-        ok "test-29: put-parameter not called — token delivered via send-command only"
+    # put-parameter MUST be called: the token is stored in Parameter Store,
+    # not embedded in the send-command parameters.
+    if grep -q "put-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
+        ok "test-29: put-parameter called — token written to Parameter Store"
     else
-        ko "test-29: put-parameter was called — token must not be written to Parameter Store"
+        ko "test-29: put-parameter not called — token delivery path broken"
+    fi
+
+    # The parameter name must contain the vmtoken (so only this instance can
+    # discover the path it was given).
+    if [ -n "$_vmtoken29" ] && grep "put-parameter" "$AWS_ARGV_FILE" | grep -q "/ephemeral-ci/runner-token/${_vmtoken29}"; then
+        ok "test-29: put-parameter path contains the vmtoken"
+    else
+        ko "test-29: put-parameter path missing or does not contain vmtoken (vmtoken=${_vmtoken29})"
+    fi
+
+    # delete-parameter MUST be called: single-use lifetime, deleted in this
+    # same run rather than relying on the instance to clean up.
+    if grep -q "delete-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
+        ok "test-29: delete-parameter called — parameter has single-use lifetime"
+    else
+        ko "test-29: delete-parameter not called — parameter not cleaned up in this run"
     fi
 
     # send-command must be called (positive control for delivery path)
@@ -1693,6 +1717,21 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ok "test-29: send-command called to deliver token"
     else
         ko "test-29: send-command not called — token delivery did not happen"
+    fi
+
+    # send-command must use the custom document, not AWS-RunShellScript
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci-deliver-runner-token"; then
+        ok "test-29: send-command uses ephemeral-ci-deliver-runner-token document"
+    else
+        ko "test-29: send-command did not use custom document (expected ephemeral-ci-deliver-runner-token)"
+    fi
+
+    # send-command must pass the token as an ssm-secure reference so the value
+    # is injected by SSM and not stored in command history
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ssm-secure:"; then
+        ok "test-29: send-command passes token as ssm-secure reference"
+    else
+        ko "test-29: send-command does not use ssm-secure reference — token delivery path broken"
     fi
 else
     ko "test-29: no AWS calls were made on EC2 spill path"
