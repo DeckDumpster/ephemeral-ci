@@ -249,6 +249,11 @@ STUB
     chmod +x "$STUBS/$1"
 }
 for t in loginctl systemctl sysctl; do _mkstub_rw "$t"; done
+# Silent stub: dpkg always exits 1 (package not installed). Not recorded in
+# $CALLS because dpkg -s is read-only; recording it would break the
+# "--check mutates nothing" assertion. Without this, apt_install short-circuits
+# on a host where all packages are already installed and apt-get is never reached.
+printf '#!/bin/sh\nexit 1\n' > "$STUBS/dpkg"; chmod +x "$STUBS/dpkg"
 
 # POSITIVE CONTROL FIRST: prove the ledger can record before believing it is empty.
 # An unwritable or misnamed ledger is indistinguishable from a clean run, and that
