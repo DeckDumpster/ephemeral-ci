@@ -83,6 +83,15 @@ export class SpillStack extends cdk.Stack {
     });
 
     // ── GitHub Actions OIDC provider ─────────────────────────────────────────
+    // This repository uses immutable OIDC subjects (use_immutable_subject=true).
+    // GitHub issues subs of the form repo:<owner>@<owner_id>/<repo>@<repo_id>:<context>.
+    // The prefix below was read from:
+    //   gh api repos/DeckDumpster/ephemeral-ci/actions/oidc/customization/sub
+    // It must be re-read if this stack is ever pointed at a different repository.
+    // The numeric ids survive a repository or organisation rename and are immutable
+    // by definition — hardcoding them is correct, not a maintenance risk.
+    const OIDC_SUB_PREFIX = 'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*';
+
     // An account may hold exactly one provider for this issuer; create it here.
     // If deploy fails EntityAlreadyExists, import it instead of deleting.
     const oidcProvider = new iam.CfnOIDCProvider(this, 'GithubOidcProvider', {
@@ -107,13 +116,13 @@ export class SpillStack extends cdk.Stack {
       });
 
     // ── Spill role ────────────────────────────────────────────────────────────
-    // Subject is repo:DeckDumpster/ephemeral-ci:* (all refs, not just main)
-    // because CI spills from queue branches and pull request branches too.
+    // Subject uses OIDC_SUB_PREFIX (all refs, not just main) because CI spills
+    // from queue branches and pull request branches too.
     // Cost is bounded instead: launch template required + instance type locked
     // to c7i/c8i families (16 vCPU shapes validated in docs/spikes/).
     const spillRole = new iam.Role(this, 'SpillRole', {
       roleName: 'ephemeral-ci-spill',
-      assumedBy: oidcPrincipal('repo:DeckDumpster/ephemeral-ci:*'),
+      assumedBy: oidcPrincipal(OIDC_SUB_PREFIX),
     });
 
     // RunInstances: require the launch template created by this stack
@@ -241,7 +250,7 @@ export class SpillStack extends cdk.Stack {
     // iam:SimulatePrincipalPolicy; ReadOnlyAccess was larger than required.
     const ciTestRole = new iam.Role(this, 'CiTestRole', {
       roleName: 'ephemeral-ci-ci-test',
-      assumedBy: oidcPrincipal('repo:DeckDumpster/ephemeral-ci:*'),
+      assumedBy: oidcPrincipal(OIDC_SUB_PREFIX),
     });
 
     ciTestRole.addToPolicy(new iam.PolicyStatement({
