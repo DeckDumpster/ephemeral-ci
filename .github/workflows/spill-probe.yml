@@ -11,6 +11,12 @@ name: EC2 spill probe
 on:
   workflow_dispatch:
 
+# A second dispatch queues rather than cancelling. Cancelling mid-provision
+# would orphan the EC2 instance with no teardown job to reclaim it.
+concurrency:
+  group: ec2-spill-probe
+  cancel-in-progress: false
+
 permissions:
   contents: read
   id-token: write  # OIDC token for assuming the AWS spill role
@@ -47,15 +53,30 @@ jobs:
   # Runs a trivial command on the provisioned EC2 runner. If this job never
   # starts, the runner did not register despite provision exiting zero —
   # launch and registration are two separate failure modes.
+  #
+  # timeout-minutes is deliberately small: the instance reaches SSM in ~19s
+  # and the runner registers seconds after that. Single-digit minutes is
+  # already generous. A large timeout defeats the point — the probe must fail
+  # fast so teardown runs. Same fix as db-ise2 applied to the repository gate.
   verify:
     needs: [provision]
     runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
+    timeout-minutes: 5
     steps:
       - name: Verify runner is operational
+        run: uname -a
+
+      - name: Assert rootless container network backend is present
         run: |
-          echo "EC2 runner ${{ needs.provision.outputs.instance-id }} is operational"
-          uname -a
-          df -h /
+          backend=$(podman info --format '{{.Host.NetworkBackend}}' 2>&1)
+          test -n "$backend" || { echo "ERROR: podman info returned no network backend"; exit 1; }
+          echo "Network backend: $backend"
+
+      - name: Assert rootless container can start
+        # podman info succeeding does not prove a container can start.
+        # The substrate's own comment notes rootless podman aborts with
+        # "could not find pasta" at RUN time, not at info time.
+        run: podman run --rm docker.io/library/busybox:latest true
 
   # Terminates the EC2 instance regardless of earlier job outcomes.
   # if: always() ensures this runs even when provision or verify failed.
