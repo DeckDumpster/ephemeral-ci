@@ -4,8 +4,8 @@
 #
 # Test suite for scripts/ami-build.sh.
 #
-# Section 0 (offline): stubs aws cloudformation describe-stacks to verify the
-# new stack-outputs path. These tests run in CI without AWS credentials.
+# Section 0 (offline): stubs aws (and curl) to verify offline behaviours.
+# These tests run in CI without AWS credentials.
 #
 # Sections 1-6 (online, account 189923011121 / us-west-2, skipped otherwise):
 #   1. ami-build.sh --dry-run exits 0 and produces no mutating AWS calls.
@@ -101,6 +101,101 @@ fi
 # changes introduced in db-n1gi.
 # ---------------------------------------------------------------------------
 
+# Creates a temp dir with aws + curl stubs that handle all pre-launch calls.
+# Caller owns cleanup (rm -rf).
+_make_full_stub() {
+    local d
+    d="$(mktemp -d)"
+    cat > "${d}/aws" << 'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "sts get-caller-identity")
+        printf '189923011121'
+        ;;
+    "cloudformation describe-stacks")
+        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetId","OutputValue":"subnet-stub00000001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+        ;;
+    "ec2 describe-images")
+        case "$*" in
+            *--output\ json*) printf '[]' ;;
+            *)                printf 'ami-0stub000000001' ;;
+        esac
+        ;;
+    "ec2 run-instances")
+        printf 'i-0fake123456789ab'
+        ;;
+    "ec2 terminate-instances"|"ec2 stop-instances")
+        exit 0
+        ;;
+    "ssm describe-instance-information"|"ssm get-command-invocation"|"ssm send-command")
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${d}/aws"
+    cat > "${d}/curl" << 'STUB'
+#!/usr/bin/env bash
+printf '{"tag_name":"v2.317.0"}'
+STUB
+    chmod +x "${d}/curl"
+    printf '%s' "$d"
+}
+
+# Creates a temp dir with aws + curl stubs where SSM calls always fail.
+# Use for testing that API failures are named rather than treated as Pending.
+# Caller owns cleanup (rm -rf).
+_make_ssm_fail_stub() {
+    local d
+    d="$(mktemp -d)"
+    cat > "${d}/aws" << 'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "sts get-caller-identity")
+        printf '189923011121'
+        ;;
+    "cloudformation describe-stacks")
+        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetId","OutputValue":"subnet-stub00000001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+        ;;
+    "ec2 describe-images")
+        case "$*" in
+            *--output\ json*) printf '[]' ;;
+            *)                printf 'ami-0stub000000001' ;;
+        esac
+        ;;
+    "ec2 run-instances")
+        printf 'i-0fake123456789ab'
+        ;;
+    "ec2 terminate-instances"|"ec2 stop-instances")
+        exit 0
+        ;;
+    "ssm describe-instance-information")
+        printf 'An error occurred (AccessDeniedException) when calling the DescribeInstanceInformation operation: User is not authorized\n' >&2
+        exit 255
+        ;;
+    "ssm get-command-invocation")
+        printf 'An error occurred (AccessDeniedException) when calling the GetCommandInvocation operation: User is not authorized\n' >&2
+        exit 255
+        ;;
+    "ssm send-command")
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+STUB
+    chmod +x "${d}/aws"
+    cat > "${d}/curl" << 'STUB'
+#!/usr/bin/env bash
+printf '{"tag_name":"v2.317.0"}'
+STUB
+    chmod +x "${d}/curl"
+    printf '%s' "$d"
+}
+
 # Creates a temp dir with a fake aws binary; caller owns cleanup (rm -rf).
 # Reads STUB_CF_MODE: ok | absent | bad-status
 _make_cf_stub() {
@@ -189,6 +284,50 @@ if printf '%s\n' "$_out" | grep -q 'profile=ephemeral-ci-spill-instance'; then
     ok "stack-outputs ok: InstanceProfileName loaded from stack"
 else
     ko "stack-outputs ok: InstanceProfileName not found in output"
+fi
+
+# 0d. dry-run completes without polling SSM, announces what it would have waited for
+_sd="$(_make_full_stub)"
+_out=""
+_rc=0
+_out="$(PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || _rc=$?
+rm -rf "$_sd"
+if [ "$_rc" -eq 0 ]; then
+    ok "dry-run-fast: exits 0"
+else
+    ko "dry-run-fast: non-zero exit $_rc (output: $_out)"
+fi
+if printf '%s\n' "$_out" | grep -q 'dry-run: skipping SSM wait'; then
+    ok "dry-run-fast: announces skipped SSM wait with budget"
+else
+    ko "dry-run-fast: no SSM wait skip announcement in dry-run output (got: $_out)"
+fi
+if printf '%s\n' "$_out" | grep -q 'dry-run: skipping build wait'; then
+    ok "dry-run-fast: announces skipped build wait with budget"
+else
+    ko "dry-run-fast: no build wait skip announcement in dry-run output (got: $_out)"
+fi
+
+# 0e. persistent SSM API failures exit non-zero naming the error, not treated as Pending
+_sd="$(_make_ssm_fail_stub)"
+_out=""
+_rc=0
+_out="$(PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" 2>&1)" || _rc=$?
+rm -rf "$_sd"
+if [ "$_rc" -ne 0 ]; then
+    ok "ssm-api-fail: exits non-zero on persistent SSM API failure"
+else
+    ko "ssm-api-fail: exited 0 (expected non-zero)"
+fi
+if ! printf '%s\n' "$_out" | grep -qE '^(Pending|InProgress)$'; then
+    ok "ssm-api-fail: API failure not misreported as Pending/InProgress"
+else
+    ko "ssm-api-fail: API failure was reported as Pending or InProgress (got: $_out)"
+fi
+if printf '%s\n' "$_out" | grep -q 'AccessDeniedException\|failed.*consecutive'; then
+    ok "ssm-api-fail: output names the API error or consecutive failure count"
+else
+    ko "ssm-api-fail: output does not name the API error (got: $_out)"
 fi
 
 # ---------------------------------------------------------------------------
