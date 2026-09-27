@@ -411,7 +411,9 @@ if [ -n "${REPO_SLUG:-}" ]; then
 fi
 
 # ── EC2 spill settings ────────────────────────────────────────────────────────
-#   SPILL               off | ec2
+#   SPILL               off | ec2 | ec2-only
+#                       ec2-only skips the Proxmox attempt entirely; use only
+#                       for probes -- a caller that sets it pays for every run
 #   SPILL_AFTER_SECONDS seconds of Proxmox capacity wait before falling through
 #                       to EC2; 0 means exhaust the full CAPACITY_TIMEOUT first
 #   SPILL_MAX_INSTANCES global ceiling on concurrently running spill instances;
@@ -798,7 +800,9 @@ if [ "${SPILL:-off}" = "ec2" ] \
 fi
 
 _spill_triggered=0
-if ! wait_for_capacity; then
+if [ "${SPILL:-off}" = "ec2-only" ]; then
+    _spill_triggered=1
+elif ! wait_for_capacity; then
     CAPACITY_TIMEOUT="$_cap_timeout_orig"
     if [ "${SPILL:-off}" = "ec2" ]; then
         _spill_triggered=1
@@ -810,8 +814,13 @@ CAPACITY_TIMEOUT="$_cap_timeout_orig"
 
 if [ "$_spill_triggered" -eq 1 ]; then
     # ── EC2 spill path ────────────────────────────────────────────────────────
-    printf 'provision.sh: Proxmox capacity exhausted; spilling to EC2 (type=%s)\n' \
-        "$SPILL_INSTANCE_TYPE" >&2
+    if [ "${SPILL:-off}" = "ec2-only" ]; then
+        printf 'provision.sh: SPILL=ec2-only; bypassing Proxmox capacity wait (type=%s)\n' \
+            "$SPILL_INSTANCE_TYPE" >&2
+    else
+        printf 'provision.sh: Proxmox capacity exhausted; spilling to EC2 (type=%s)\n' \
+            "$SPILL_INSTANCE_TYPE" >&2
+    fi
 
     ec2_load_stack   || exit 1
     ec2_wait_ceiling || exit 1

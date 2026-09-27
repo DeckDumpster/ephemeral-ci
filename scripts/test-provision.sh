@@ -1738,6 +1738,66 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 30: SPILL=ec2-only → EC2 path without any Proxmox capacity check
+#   - Exits zero even though node is at capacity
+#   - backend=ec2 on stdout
+#   - instance-id on stdout
+#   - vmid= empty (EC2 path)
+#   - vmtoken on stdout
+#   - No curl calls (Proxmox API never contacted)
+#   - AWS run-instances called
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_out30="$SCRATCH/out30"
+_err30="$SCRATCH/err30"
+# Node is at full capacity; ec2-only must not block on the capacity check.
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$_out30" 2>"$_err30" && _rc30=0 || _rc30=$?
+
+if [ "$_rc30" -eq 0 ]; then
+    ok "test-30: SPILL=ec2-only exits zero"
+else
+    ko "test-30: SPILL=ec2-only failed (rc=$_rc30; err: $(cat "$_err30"))"
+fi
+
+_backend30="$(grep "^backend=" "$_out30" | sed 's/^backend=//')"
+_iid30="$(grep "^instance-id=" "$_out30" | sed 's/^instance-id=//')"
+_vmid30="$(grep "^vmid=" "$_out30" | sed 's/^vmid=//')"
+_vmtoken30="$(grep "^vmtoken=" "$_out30" | sed 's/^vmtoken=//')"
+
+if [ "$_backend30" = "ec2" ]; then
+    ok "test-30: backend=ec2 on stdout"
+else
+    ko "test-30: expected backend=ec2, got '${_backend30}' (stdout: $(cat "$_out30"))"
+fi
+if [ -n "$_iid30" ]; then
+    ok "test-30: instance-id on stdout"
+else
+    ko "test-30: instance-id missing from stdout"
+fi
+if [ -z "$_vmid30" ]; then
+    ok "test-30: vmid= is empty (EC2 path)"
+else
+    ko "test-30: expected empty vmid=, got '${_vmid30}'"
+fi
+if [ -n "$_vmtoken30" ]; then
+    ok "test-30: vmtoken on stdout"
+else
+    ko "test-30: vmtoken missing from stdout"
+fi
+if [ ! -f "$CURL_ARGV_FILE" ] || [ ! -s "$CURL_ARGV_FILE" ]; then
+    ok "test-30: no curl calls — Proxmox capacity check skipped"
+else
+    ko "test-30: unexpected curl calls on ec2-only path: $(head -5 "$CURL_ARGV_FILE")"
+fi
+if [ -f "$AWS_ARGV_FILE" ] && grep -q "run-instances" "$AWS_ARGV_FILE" 2>/dev/null; then
+    ok "test-30: AWS run-instances called on ec2-only path"
+else
+    ko "test-30: run-instances not found in AWS calls (ec2-only must call EC2)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))

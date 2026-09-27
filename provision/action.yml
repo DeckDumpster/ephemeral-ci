@@ -118,6 +118,9 @@ inputs:
   spill:
     description: >-
       Set to "ec2" to enable EC2 spill when Proxmox capacity is exhausted.
+      Set to "ec2-only" to skip the Proxmox attempt entirely and go straight to
+      EC2. Use ec2-only only for probes and never on a normal CI path — a
+      consumer that sets it stops using Proxmox altogether and pays for every run.
       Any other value (or absent) disables spill.
     required: false
     default: 'off'
@@ -185,7 +188,7 @@ runs:
     # Only runs when spill=ec2. The role must carry the permissions defined in
     # SpillStack (ec2:RunInstances, ssm:PutParameter, ssm:SendCommand, etc.).
     - name: Configure AWS credentials for EC2 spill
-      if: inputs.spill == 'ec2' && inputs.aws-role-to-assume != ''
+      if: (inputs.spill == 'ec2' || inputs.spill == 'ec2-only') && inputs.aws-role-to-assume != ''
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ inputs.aws-role-to-assume }}
