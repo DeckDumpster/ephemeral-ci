@@ -189,11 +189,14 @@ test('custom SSM document for runner token delivery is defined', () => {
   expect(params).toHaveProperty('RunnerGroup');
 });
 
-test('spill role trust policy carries OIDC condition with expected sub', () => {
+// Immutable OIDC sub prefix, sourced from:
+//   gh api repos/DeckDumpster/ephemeral-ci/actions/oidc/customization/sub
+const IMMUTABLE_SUB_PREFIX = 'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*';
+const NAME_BASED_SUB = 'repo:DeckDumpster/ephemeral-ci:*';
+
+function getOidcSub(roleName: string): string {
   const roles = template.findResources('AWS::IAM::Role', {
-    Properties: {
-      RoleName: 'ephemeral-ci-spill',
-    },
+    Properties: { RoleName: roleName },
   });
   expect(Object.keys(roles)).toHaveLength(1);
   const role = Object.values(roles)[0] as {
@@ -206,16 +209,27 @@ test('spill role trust policy carries OIDC condition with expected sub', () => {
       };
     };
   };
-  const statements = role.Properties.AssumeRolePolicyDocument.Statement;
-  const oidcStatement = statements.find(
+  const oidcStatement = role.Properties.AssumeRolePolicyDocument.Statement.find(
     (s) => s.Action === 'sts:AssumeRoleWithWebIdentity',
   );
   expect(oidcStatement).toBeDefined();
-  expect(
-    oidcStatement!.Condition!['StringLike'][
-      'token.actions.githubusercontent.com:sub'
-    ],
-  ).toBe('repo:DeckDumpster/ephemeral-ci:*');
+  return oidcStatement!.Condition!['StringLike']['token.actions.githubusercontent.com:sub'];
+}
+
+test('spill role trust policy carries immutable OIDC sub prefix', () => {
+  expect(getOidcSub('ephemeral-ci-spill')).toBe(IMMUTABLE_SUB_PREFIX);
+});
+
+test('spill role trust policy does not carry name-based OIDC sub', () => {
+  expect(getOidcSub('ephemeral-ci-spill')).not.toBe(NAME_BASED_SUB);
+});
+
+test('ci-test role trust policy carries immutable OIDC sub prefix', () => {
+  expect(getOidcSub('ephemeral-ci-ci-test')).toBe(IMMUTABLE_SUB_PREFIX);
+});
+
+test('ci-test role trust policy does not carry name-based OIDC sub', () => {
+  expect(getOidcSub('ephemeral-ci-ci-test')).not.toBe(NAME_BASED_SUB);
 });
 
 test('budget does not declare a BudgetName', () => {
