@@ -1798,6 +1798,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 31 -- ec2_launch passes Version=$Latest to --launch-template (db-hq79)
+#
+# CloudFormation creates a new launch template version on every deploy but
+# never promotes the default; version 1 remains default while the newest
+# version (with db-t226's block device fix) goes unused. Version=$Latest
+# resolves to the newest deployed version without requiring the stack to
+# promote the default. Removing Version= silently regresses to the default
+# and must fail this test — check for Version= as a positive assertion.
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_out31="$SCRATCH/out31"
+_err31="$SCRATCH/err31"
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$_out31" 2>"$_err31" && _rc31=0 || _rc31=$?
+
+if [ "$_rc31" -eq 0 ]; then
+    ok "test-31: EC2 spill succeeds (positive control)"
+else
+    ko "test-31: EC2 spill failed (rc=$_rc31; err: $(cat "$_err31"))"
+fi
+
+if [ -f "$AWS_ARGV_FILE" ] && grep "run-instances" "$AWS_ARGV_FILE" | grep -q "Version="; then
+    ok "test-31: --launch-template argument contains Version= (will fail if removed)"
+else
+    ko "test-31: --launch-template argument missing Version= -- EC2 resolves to the default version, not \$Latest"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))
