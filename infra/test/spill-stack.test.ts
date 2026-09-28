@@ -475,10 +475,14 @@ test('spill role SendCommand on instance uses aws:ResourceTag/spill:owner (not e
     return isSpill ? p.Properties.PolicyDocument.Statement : [];
   });
 
-  // Find the SendCommand statement scoped to EC2 instance ARNs (not SSM documents)
+  // Find the SendCommand statement scoped to EC2 instance ARNs (not SSM documents).
+  // Resources may be objects (CloudFormation intrinsics) when formatArn produces a
+  // Fn::Sub — filter to strings only before calling .includes().
   const sendCommandInstanceStmt = spillStatements.find((s) => {
     const actions = ([] as string[]).concat(s.Action as string | string[]);
-    const resources = ([] as string[]).concat(s.Resource as string | string[]);
+    const resources = ([] as unknown[])
+      .concat(s.Resource)
+      .filter((r): r is string => typeof r === 'string');
     return actions.includes('ssm:SendCommand') &&
       resources.some((r) => r.includes(':instance/'));
   });
@@ -490,6 +494,50 @@ test('spill role SendCommand on instance uses aws:ResourceTag/spill:owner (not e
   expect(cond['aws:ResourceTag/spill:owner']).toBe('ephemeral-ci');
   // ec2:ResourceTag is NOT populated by SSM — it must not appear here
   expect(cond['ec2:ResourceTag/spill:owner']).toBeUndefined();
+});
+
+test('no spill role SendCommand statement has an empty-account resource ARN', () => {
+  // The empty-account ARN form (arn:aws:ssm:region::document/*) addresses AWS-owned
+  // documents only; it does not cover account-owned documents. Asserting absence of
+  // that form is the machine-readable guard against reintroducing the bug this bead fixes.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: {
+        Statement: Array<{ Action: string | string[]; Resource: unknown }>;
+      };
+    };
+  };
+
+  const spillStatements = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
+    const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
+      if (typeof r === 'string') return r === spillRoleId;
+      return r != null && typeof r === 'object' && 'Ref' in r &&
+        (r as { Ref: string }).Ref === spillRoleId;
+    });
+    return isSpill ? p.Properties.PolicyDocument.Statement : [];
+  });
+
+  const sendCommandStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action as string | string[]).includes('ssm:SendCommand'),
+  );
+
+  // An empty account field appears as a literal "::" between region and resource
+  // in the ARN, e.g. "arn:aws:ssm:us-west-2::document/...".
+  const emptyAccountArns = sendCommandStmts.flatMap((s) =>
+    ([] as unknown[])
+      .concat(s.Resource)
+      .filter((r): r is string => typeof r === 'string')
+      .filter((r) => /^arn:[^:]+:[^:]+:[^:]+::[^:]+/.test(r)),
+  );
+
+  expect(emptyAccountArns).toHaveLength(0);
 });
 
 test('spill role RunInstances on launch template is scoped to specific template ID with no Condition', () => {
