@@ -1619,14 +1619,20 @@ fi
 
 # ---------------------------------------------------------------------------
 # Test 29: SPILL=ec2, Proxmox exhausted → EC2 path
+# SSM documents cannot reference SecureString parameters (only the tokenInfo
+# plugin field can), so the token is passed as a plain String directly in
+# send-command --parameters. No Parameter Store involved.
 #   - backend=ec2 on stdout
 #   - instance-id on stdout
 #   - vmid= empty (not a Proxmox VMID)
 #   - vmtoken on stdout
 #   - run-instances has no --user-data
-#   - send-command does not contain the token value
 #   - run-instances carries ephemeral-ci:vmtoken tag matching stdout vmtoken
-#   - put-parameter includes Key=ephemeral-ci:vmtoken tag matching stdout vmtoken
+#   - send-command called with ephemeral-ci-deliver-runner-token document
+#   - send-command --parameters carry RunnerToken, RunnerLabel, RunnerUrl, RunnerGroup
+#   - RunnerToken value is the token itself (no ssm-secure reference)
+#   - put-parameter NOT called (token is not stored in Parameter Store)
+#   - delete-parameter NOT called (nothing to clean up)
 # ---------------------------------------------------------------------------
 rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
 _out29="$SCRATCH/out29"
@@ -1676,50 +1682,11 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ok "test-29: run-instances carries no --user-data"
     fi
 
-    # send-command must not contain the token value in plaintext or base64.
-    # The base64 form is the one that slipped through before this fix; a test
-    # that only greps for the raw token would still pass on the old code.
-    _token_b64_29="$(printf '%s' 'test-token' | base64 | tr -d '\n')"
-    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "test-token"; then
-        ko "test-29: send-command must not contain the raw token value"
-    else
-        ok "test-29: send-command does not contain the raw token value"
-    fi
-    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "$_token_b64_29"; then
-        ko "test-29: send-command must not contain the base64-encoded token (key regression)"
-    else
-        ok "test-29: send-command does not contain the base64-encoded token"
-    fi
-
     # run-instances must carry the vmtoken tag
     if [ -n "$_vmtoken29" ] && grep "run-instances" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci:vmtoken,Value=${_vmtoken29}"; then
         ok "test-29: run-instances carries ephemeral-ci:vmtoken tag matching stdout vmtoken"
     else
         ko "test-29: run-instances missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep run-instances "$AWS_ARGV_FILE" || true))"
-    fi
-
-    # put-parameter MUST be called: the token is stored in Parameter Store,
-    # not embedded in the send-command parameters.
-    if grep -q "put-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
-        ok "test-29: put-parameter called — token written to Parameter Store"
-    else
-        ko "test-29: put-parameter not called — token delivery path broken"
-    fi
-
-    # The parameter name must contain the vmtoken (so only this instance can
-    # discover the path it was given).
-    if [ -n "$_vmtoken29" ] && grep "put-parameter" "$AWS_ARGV_FILE" | grep -q "/ephemeral-ci/runner-token/${_vmtoken29}"; then
-        ok "test-29: put-parameter path contains the vmtoken"
-    else
-        ko "test-29: put-parameter path missing or does not contain vmtoken (vmtoken=${_vmtoken29})"
-    fi
-
-    # delete-parameter MUST be called: single-use lifetime, deleted in this
-    # same run rather than relying on the instance to clean up.
-    if grep -q "delete-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
-        ok "test-29: delete-parameter called — parameter has single-use lifetime"
-    else
-        ko "test-29: delete-parameter not called — parameter not cleaned up in this run"
     fi
 
     # send-command must be called (positive control for delivery path)
@@ -1736,12 +1703,42 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ko "test-29: send-command did not use custom document (expected ephemeral-ci-deliver-runner-token)"
     fi
 
-    # send-command must pass the token as an ssm-secure reference so the value
-    # is injected by SSM and not stored in command history
-    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ssm-secure:"; then
-        ok "test-29: send-command passes token as ssm-secure reference"
+    # send-command --parameters must carry all four keys
+    for _param29 in RunnerToken RunnerLabel RunnerUrl RunnerGroup; do
+        if grep "send-command" "$AWS_ARGV_FILE" | grep -q "$_param29"; then
+            ok "test-29: send-command --parameters contain ${_param29}"
+        else
+            ko "test-29: send-command --parameters missing ${_param29}"
+        fi
+    done
+
+    # RunnerToken value must be the token itself, not an ssm-secure reference.
+    # SSM documents cannot reference SecureString parameters; only the tokenInfo
+    # plugin field can. Passing {{ssm-secure:...}} fails with InvalidParameters.
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "test-token"; then
+        ok "test-29: RunnerToken value is the token itself"
     else
-        ko "test-29: send-command does not use ssm-secure reference — token delivery path broken"
+        ko "test-29: RunnerToken value missing — token not delivered in send-command parameters"
+    fi
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ssm-secure:"; then
+        ko "test-29: send-command uses ssm-secure reference — SSM documents cannot expand these (InvalidParameters)"
+    else
+        ok "test-29: send-command carries no ssm-secure reference"
+    fi
+
+    # put-parameter must NOT be called: token travels via send-command parameters,
+    # not Parameter Store. Reintroducing Parameter Store rebuilds the dead end from db-7wnu.
+    if grep -q "put-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
+        ko "test-29: put-parameter called — token must not be written to Parameter Store"
+    else
+        ok "test-29: put-parameter not called — token travels via send-command parameters only"
+    fi
+
+    # delete-parameter must NOT be called: nothing was written to Parameter Store.
+    if grep -q "delete-parameter" "$AWS_ARGV_FILE" 2>/dev/null; then
+        ko "test-29: delete-parameter called — nothing to clean up when Parameter Store is not used"
+    else
+        ok "test-29: delete-parameter not called — no Parameter Store cleanup needed"
     fi
 else
     ko "test-29: no AWS calls were made on EC2 spill path"
