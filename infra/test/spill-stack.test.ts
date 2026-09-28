@@ -492,6 +492,65 @@ test('spill role SendCommand on instance uses aws:ResourceTag/spill:owner (not e
   expect(cond['ec2:ResourceTag/spill:owner']).toBeUndefined();
 });
 
+test('spill role RunInstances on launch template is scoped to specific template ID with no Condition', () => {
+  // db-p5cj: the prior statement used launch-template/* conditioned on a
+  // CloudFormation stack-name tag that CloudFormation never applies to launch
+  // templates.  The condition was permanently unsatisfiable and the grant
+  // silently covered every launch template in the account.  The fix scopes the
+  // resource to the specific template ID via launchTemplate.ref — no condition
+  // needed, and no wildcard that could silently widen if a tag were dropped.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  type RawStatement = {
+    Action: string | string[];
+    Resource: unknown;
+    Condition?: Record<string, unknown>;
+  };
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: { Statement: RawStatement[] };
+    };
+  };
+
+  const spillStatements = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
+    const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
+      if (typeof r === 'string') return r === spillRoleId;
+      return r != null && typeof r === 'object' && 'Ref' in r &&
+        (r as { Ref: string }).Ref === spillRoleId;
+    });
+    return isSpill ? p.Properties.PolicyDocument.Statement : [];
+  });
+
+  // Find the RunInstances statement whose resource targets a launch-template
+  const ltStatement = spillStatements.find((s) => {
+    const actions = ([] as string[]).concat(s.Action as string | string[]);
+    if (!actions.includes('ec2:RunInstances')) return false;
+    const resources = ([] as unknown[]).concat(s.Resource);
+    return resources.some((r) => JSON.stringify(r).includes('launch-template/'));
+  });
+
+  expect(ltStatement).toBeDefined();
+
+  // Resource must NOT be the wildcard — reintroducing launch-template/* must fail this test
+  const resources = ([] as unknown[]).concat(ltStatement!.Resource);
+  const hasWildcard = resources.some(
+    (r) => typeof r === 'string' && r.endsWith('launch-template/*'),
+  );
+  expect(hasWildcard).toBe(false);
+
+  // Resource must be a CloudFormation intrinsic (i.e. references the template ID token)
+  const hasIntrinsic = resources.some((r) => typeof r === 'object' && r !== null);
+  expect(hasIntrinsic).toBe(true);
+
+  // Statement must carry no Condition
+  expect(ltStatement!.Condition).toBeUndefined();
+});
+
 test('spill role CreateTags carries ec2:CreateAction=RunInstances condition', () => {
   // ec2:CreateAction=RunInstances limits tagging to the RunInstances call only.
   // Without it, the role could retag existing resources and bring them inside
