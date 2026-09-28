@@ -113,7 +113,7 @@ case "$1 $2" in
         printf '189923011121'
         ;;
     "cloudformation describe-stacks")
-        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetId","OutputValue":"subnet-stub00000001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub00000001,subnet-stub00000002,subnet-stub00000003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
         ;;
     "ec2 describe-images")
         case "$*" in
@@ -157,7 +157,7 @@ case "$1 $2" in
         printf '189923011121'
         ;;
     "cloudformation describe-stacks")
-        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetId","OutputValue":"subnet-stub00000001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub00000001,subnet-stub00000002,subnet-stub00000003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
         ;;
     "ec2 describe-images")
         case "$*" in
@@ -218,7 +218,7 @@ case "$1 $2" in
                 printf '{"Stacks":[{"StackStatus":"CREATE_IN_PROGRESS","Outputs":[]}]}'
                 ;;
             *)
-                printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetId","OutputValue":"subnet-stub00000001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+                printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub00000001,subnet-stub00000002,subnet-stub00000003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
                 ;;
         esac
         ;;
@@ -271,9 +271,9 @@ _sd="$(_make_cf_stub)"
 _out="$(STUB_CF_MODE=ok PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
 rm -rf "$_sd"
 if printf '%s\n' "$_out" | grep -q 'subnet=subnet-stub00000001'; then
-    ok "stack-outputs ok: SubnetId loaded from stack"
+    ok "stack-outputs ok: SubnetIds loaded from stack"
 else
-    ko "stack-outputs ok: SubnetId not found in output (got: $_out)"
+    ko "stack-outputs ok: SubnetIds not found in output (got: $_out)"
 fi
 if printf '%s\n' "$_out" | grep -q 'sg=sg-stub000000001'; then
     ok "stack-outputs ok: SecurityGroupId loaded from stack"
@@ -354,7 +354,7 @@ case "\$_sub" in
     "sts get-caller-identity")
         printf '189923011121' ;;
     "cloudformation describe-stacks")
-        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetId","OutputValue":"subnet-stub0001"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub0001"},{"OutputKey":"InstanceProfileName","OutputValue":"prof-stub0001"}]}]}' ;;
+        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub0001,subnet-stub0002,subnet-stub0003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub0001"},{"OutputKey":"InstanceProfileName","OutputValue":"prof-stub0001"}]}]}' ;;
     "ec2 describe-images")
         printf 'ami-stubbase001' ;;
     "ec2 run-instances")
@@ -449,8 +449,8 @@ _stack_json="$(aws cloudformation describe-stacks \
     --stack-name EphemeralCiSpill --output json --region "$REGION" 2>/dev/null)" || _stack_json=""
 if [ -n "$_stack_json" ]; then
     SUBNET_ID="$(printf '%s' "$_stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SubnetId") | .OutputValue' \
-        2>/dev/null)" || SUBNET_ID=""
+        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SubnetIds") | .OutputValue' \
+        2>/dev/null | cut -d, -f1)" || SUBNET_ID=""
     SECURITY_GROUP_ID="$(printf '%s' "$_stack_json" | \
         jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SecurityGroupId") | .OutputValue' \
         2>/dev/null)" || SECURITY_GROUP_ID=""

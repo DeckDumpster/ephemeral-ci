@@ -1524,7 +1524,7 @@ printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
 # Route by subcommand
 case "$1 $2" in
     "cloudformation describe-stacks")
-        printf '[{"OutputKey":"SubnetId","OutputValue":"subnet-test123"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-test456"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-test789"}]\n'
+        printf '[{"OutputKey":"SubnetIds","OutputValue":"subnet-test-a,subnet-test-b,subnet-test-c"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-test456"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-test789"}]\n'
         ;;
     "ec2 describe-instances")
         printf '0\n'
@@ -1533,6 +1533,16 @@ case "$1 $2" in
         printf 'ami-testdeadbeef\n'
         ;;
     "ec2 run-instances")
+        if [ -n "${AWS_RUN_INSTANCES_FAIL_N:-}" ]; then
+            _ri_state="${TMPDIR:-/tmp}/ri-count"
+            _ri_n=$(cat "$_ri_state" 2>/dev/null || echo 0)
+            _ri_n=$(( _ri_n + 1 ))
+            printf '%s' "$_ri_n" > "$_ri_state"
+            if [ "$_ri_n" -le "${AWS_RUN_INSTANCES_FAIL_N}" ]; then
+                printf 'An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation: insufficient capacity.\n' >&2
+                exit 1
+            fi
+        fi
         printf 'i-testinstance001\n'
         ;;
     "ssm describe-instance-information")
@@ -1824,6 +1834,42 @@ if [ -f "$AWS_ARGV_FILE" ] && grep "run-instances" "$AWS_ARGV_FILE" | grep -q "V
     ok "test-31: --launch-template argument contains Version= (will fail if removed)"
 else
     ko "test-31: --launch-template argument missing Version= -- EC2 resolves to the default version, not \$Latest"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 32 -- on InsufficientInstanceCapacity, the retry uses a DIFFERENT subnet
+#
+# The error is AZ-specific; retrying in the same subnet is pointless. The fix
+# (db-5ne2) splits SPILL_SUBNET_IDS across three AZs and advances to the next
+# on that error class. This test stubs run-instances to fail once with
+# InsufficientInstanceCapacity and asserts the second attempt targets a
+# different subnet id — not merely that a retry happened.
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE" "${TMPDIR:-/tmp}/ri-count"
+_out32="$SCRATCH/out32"
+_err32="$SCRATCH/err32"
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+    AWS_RUN_INSTANCES_FAIL_N=1 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$_out32" 2>"$_err32" && _rc32=0 || _rc32=$?
+rm -f "${TMPDIR:-/tmp}/ri-count"
+
+if [ "$_rc32" -eq 0 ]; then
+    ok "test-32: provision succeeds after InsufficientInstanceCapacity on first subnet"
+else
+    ko "test-32: provision failed despite InsufficientInstanceCapacity being transient (rc=$_rc32; err: $(cat "$_err32"))"
+fi
+
+# Extract the subnet IDs from run-instances calls in order.
+_subnets_32="$(grep 'run-instances' "$AWS_ARGV_FILE" 2>/dev/null \
+    | sed -n 's/.*--subnet-id \([^ ]*\).*/\1/p')"
+_first_32="$(printf '%s\n' "$_subnets_32" | sed -n '1p')"
+_second_32="$(printf '%s\n' "$_subnets_32" | sed -n '2p')"
+
+if [ -n "$_first_32" ] && [ -n "$_second_32" ] && [ "$_first_32" != "$_second_32" ]; then
+    ok "test-32: second run-instances attempt used a different subnet (first=$_first_32, second=$_second_32)"
+else
+    ko "test-32: retry did not change subnet — still in the same AZ (first=$_first_32, second=$_second_32)"
 fi
 
 # ---------------------------------------------------------------------------
