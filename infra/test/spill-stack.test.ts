@@ -378,3 +378,117 @@ test('synth fails when alertEmail is absent', () => {
     });
   }).toThrow(/alertEmail/);
 });
+
+test('spill role PassRole is scoped to instance role ARN with iam:PassedToService condition', () => {
+  // iam:PassRole without iam:PassedToService would allow passing this instance
+  // role to any service that accepts a role — not just EC2.  The condition is
+  // load-bearing.  The resource must reference instanceRole.roleArn via
+  // CloudFormation intrinsic (never a hardcoded ARN) because the physical name
+  // is generated and changes on replacement.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+  const instanceRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', {
+      Properties: {
+        AssumeRolePolicyDocument: {
+          Statement: Match.arrayWith([
+            Match.objectLike({ Principal: { Service: 'ec2.amazonaws.com' } }),
+          ]),
+        },
+      },
+    }),
+  )[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: {
+        Statement: Array<{
+          Action: string | string[];
+          Resource: unknown;
+          Condition?: Record<string, Record<string, string>>;
+        }>;
+      };
+    };
+  };
+
+  const spillStatements = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
+    const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
+      if (typeof r === 'string') return r === spillRoleId;
+      return r != null && typeof r === 'object' && 'Ref' in r &&
+        (r as { Ref: string }).Ref === spillRoleId;
+    });
+    return isSpill ? p.Properties.PolicyDocument.Statement : [];
+  });
+
+  const passRoleStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action as string | string[]).includes('iam:PassRole'),
+  );
+  expect(passRoleStmts).toHaveLength(1);
+  const stmt = passRoleStmts[0];
+
+  // Resource must be a GetAtt reference to the instance role, not a hardcoded ARN
+  const resources = ([] as unknown[]).concat(stmt.Resource);
+  expect(resources).toHaveLength(1);
+  const resource = resources[0] as Record<string, unknown>;
+  expect(resource).toHaveProperty('Fn::GetAtt');
+  const getAtt = resource['Fn::GetAtt'] as [string, string];
+  expect(getAtt[0]).toBe(instanceRoleId);
+  expect(getAtt[1]).toBe('Arn');
+
+  // Condition must carry iam:PassedToService scoped to EC2
+  expect(stmt.Condition).toBeDefined();
+  expect(stmt.Condition!['StringEquals']['iam:PassedToService']).toBe('ec2.amazonaws.com');
+});
+
+test('spill role CreateTags carries ec2:CreateAction=RunInstances condition', () => {
+  // ec2:CreateAction=RunInstances limits tagging to the RunInstances call only.
+  // Without it, the role could retag existing resources and bring them inside
+  // the tag-scoped TerminateInstances and SendCommand permissions.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: {
+        Statement: Array<{
+          Action: string | string[];
+          Resource: string | string[];
+          Condition?: Record<string, Record<string, string>>;
+        }>;
+      };
+    };
+  };
+
+  const spillStatements = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
+    const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
+      if (typeof r === 'string') return r === spillRoleId;
+      return r != null && typeof r === 'object' && 'Ref' in r &&
+        (r as { Ref: string }).Ref === spillRoleId;
+    });
+    return isSpill ? p.Properties.PolicyDocument.Statement : [];
+  });
+
+  const createTagsStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action as string | string[]).includes('ec2:CreateTags'),
+  );
+  expect(createTagsStmts).toHaveLength(1);
+  const stmt = createTagsStmts[0];
+
+  // Resources must cover instance, volume, and network-interface
+  const resources = ([] as string[]).concat(stmt.Resource);
+  expect(resources.some((r) => r.includes(':instance/'))).toBe(true);
+  expect(resources.some((r) => r.includes(':volume/'))).toBe(true);
+  expect(resources.some((r) => r.includes(':network-interface/'))).toBe(true);
+
+  // Condition must carry ec2:CreateAction=RunInstances
+  expect(stmt.Condition).toBeDefined();
+  expect(stmt.Condition!['StringEquals']['ec2:CreateAction']).toBe('RunInstances');
+});

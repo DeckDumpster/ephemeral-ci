@@ -242,6 +242,39 @@ export class SpillStack extends cdk.Stack {
       resources: [`arn:aws:cloudformation:us-west-2:189923011121:stack/EphemeralCiSpill/*`],
     }));
 
+    // iam:PassRole: required to launch an instance with an instance profile.
+    // Scoped to instanceRole.roleArn (never a literal — physical name is
+    // CloudFormation-generated and changes on replacement).
+    // iam:PassedToService limits this to EC2 only; without it the role could
+    // pass the instance role to any accepting service.
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'],
+      resources: [instanceRole.roleArn],
+      conditions: {
+        StringEquals: {
+          'iam:PassedToService': 'ec2.amazonaws.com',
+        },
+      },
+    }));
+
+    // ec2:CreateTags: tagging on create requires this in addition to RunInstances.
+    // ec2:CreateAction=RunInstances limits tagging to the RunInstances call only —
+    // without it this role could retag any existing resource, bringing it inside
+    // the tag-scoped TerminateInstances and SendCommand permissions.
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:CreateTags'],
+      resources: [
+        'arn:aws:ec2:us-west-2:189923011121:instance/*',
+        'arn:aws:ec2:us-west-2:189923011121:volume/*',
+        'arn:aws:ec2:us-west-2:189923011121:network-interface/*',
+      ],
+      conditions: {
+        StringEquals: {
+          'ec2:CreateAction': 'RunInstances',
+        },
+      },
+    }));
+
 
     // ── CI test role: minimal grants for policy assertions ───────────────────
     // ReadOnlyAccess was the prior grant; it includes ssm:List* which let any
