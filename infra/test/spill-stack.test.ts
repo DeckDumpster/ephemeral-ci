@@ -30,6 +30,54 @@ test('launch template sets HttpTokens=required', () => {
   });
 });
 
+test('launch template root device name is /dev/sda1', () => {
+  // AMI root device is /dev/sda1 (set in scripts/ami-build.sh).  Any other
+  // name declares an additional blank volume instead of overriding the root,
+  // producing the MissingParameter error from RunInstances.
+  const lts = template.findResources('AWS::EC2::LaunchTemplate');
+  const lt = Object.values(lts)[0] as {
+    Properties: {
+      LaunchTemplateData: {
+        BlockDeviceMappings: Array<{ DeviceName: string }>;
+      };
+    };
+  };
+  const mappings = lt.Properties.LaunchTemplateData.BlockDeviceMappings;
+  expect(mappings).toHaveLength(1);
+  expect(mappings[0].DeviceName).toBe('/dev/sda1');
+});
+
+test('launch template root device has VolumeSize 32', () => {
+  // 32 GiB matches ROOT_DISK_GIB in scripts/ami-build.sh.  VolumeSize is
+  // required by EC2 when no SnapshotId is present; absence causes RunInstances
+  // to fail with MissingParameter.
+  const lts = template.findResources('AWS::EC2::LaunchTemplate');
+  const lt = Object.values(lts)[0] as {
+    Properties: {
+      LaunchTemplateData: {
+        BlockDeviceMappings: Array<{ Ebs: { VolumeSize: number } }>;
+      };
+    };
+  };
+  const ebs = lt.Properties.LaunchTemplateData.BlockDeviceMappings[0].Ebs;
+  expect(ebs.VolumeSize).toBe(32);
+});
+
+test('launch template root device is encrypted', () => {
+  // ami-build.sh creates the image with Encrypted:true; the launch template
+  // must carry the same flag so spill runners match the builder's security posture.
+  const lts = template.findResources('AWS::EC2::LaunchTemplate');
+  const lt = Object.values(lts)[0] as {
+    Properties: {
+      LaunchTemplateData: {
+        BlockDeviceMappings: Array<{ Ebs: { Encrypted: boolean } }>;
+      };
+    };
+  };
+  const ebs = lt.Properties.LaunchTemplateData.BlockDeviceMappings[0].Ebs;
+  expect(ebs.Encrypted).toBe(true);
+});
+
 test('instance role carries no inline policy', () => {
   // Token delivery uses a custom SSM document with {{ssm-secure:}} references.
   // The SSM service expands the reference using the spill role's credentials;

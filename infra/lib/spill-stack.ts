@@ -277,10 +277,17 @@ export class SpillStack extends cdk.Stack {
         },
         blockDeviceMappings: [
           {
-            deviceName: '/dev/xvda',
+            // Must match the AMI's root device (/dev/sda1 set in scripts/ami-build.sh).
+            // Using any other name declares an ADDITIONAL blank volume rather than
+            // overriding the root, which is what caused the MissingParameter error.
+            // volumeSize must match ROOT_DISK_GIB=32 in scripts/ami-build.sh; a
+            // mismatch silently produces the wrong root size.
+            deviceName: '/dev/sda1',
             ebs: {
+              volumeSize: 32,
               volumeType: 'gp3',
               deleteOnTermination: true,
+              encrypted: true,
             },
           },
         ],
