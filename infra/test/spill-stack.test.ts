@@ -444,6 +444,54 @@ test('spill role PassRole is scoped to instance role ARN with iam:PassedToServic
   expect(stmt.Condition!['StringEquals']['iam:PassedToService']).toBe('ec2.amazonaws.com');
 });
 
+test('spill role SendCommand on instance uses aws:ResourceTag/spill:owner (not ec2:ResourceTag)', () => {
+  // ec2:ResourceTag is an EC2-service key; SSM does not populate it for
+  // ssm:SendCommand — using it makes the condition permanently unsatisfiable.
+  // aws:ResourceTag is the global key and applies to both services.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  type RawStatement = {
+    Action: string | string[];
+    Resource: string | string[];
+    Condition?: Record<string, Record<string, string>>;
+  };
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: { Statement: RawStatement[] };
+    };
+  };
+
+  const spillStatements = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
+    const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
+      if (typeof r === 'string') return r === spillRoleId;
+      return r != null && typeof r === 'object' && 'Ref' in r &&
+        (r as { Ref: string }).Ref === spillRoleId;
+    });
+    return isSpill ? p.Properties.PolicyDocument.Statement : [];
+  });
+
+  // Find the SendCommand statement scoped to EC2 instance ARNs (not SSM documents)
+  const sendCommandInstanceStmt = spillStatements.find((s) => {
+    const actions = ([] as string[]).concat(s.Action as string | string[]);
+    const resources = ([] as string[]).concat(s.Resource as string | string[]);
+    return actions.includes('ssm:SendCommand') &&
+      resources.some((r) => r.includes(':instance/'));
+  });
+
+  expect(sendCommandInstanceStmt).toBeDefined();
+  expect(sendCommandInstanceStmt!.Condition).toBeDefined();
+
+  const cond = sendCommandInstanceStmt!.Condition!['StringEquals'];
+  expect(cond['aws:ResourceTag/spill:owner']).toBe('ephemeral-ci');
+  // ec2:ResourceTag is NOT populated by SSM — it must not appear here
+  expect(cond['ec2:ResourceTag/spill:owner']).toBeUndefined();
+});
+
 test('spill role CreateTags carries ec2:CreateAction=RunInstances condition', () => {
   // ec2:CreateAction=RunInstances limits tagging to the RunInstances call only.
   // Without it, the role could retag existing resources and bring them inside
