@@ -35,14 +35,6 @@
 #       of SimulatePrincipalPolicy. This account has no organization SCPs
 #       but that could change.
 #
-#   (5) ssm:SendCommand instance resource-tag conditions — IAM simulation
-#       does not evaluate ec2:ResourceTag/* condition keys for SSM actions
-#       on EC2 instance resources. The condition key is consumed by the
-#       simulation (not listed as MissingContextValues) but does not
-#       produce an Allow decision even when the policy grants it. The
-#       ssm:SendCommand grant conditioned on ec2:ResourceTag/spill:owner
-#       is present in the policy but cannot be confirmed by simulation;
-#       group 5 in earlier versions was removed for this reason.
 #
 # Usage:
 #   bash scripts/check-spill-permissions.sh
@@ -71,9 +63,6 @@ check-spill-permissions: simulation evaluates identity policies only.
     (3) Malformed API requests — missing params cause client errors before
         IAM runs (db-t226 was this shape)
     (4) SCPs or permission boundaries
-    (5) ssm:SendCommand instance resource-tag conditions — ec2:ResourceTag/*
-        keys are not evaluated for SSM actions on EC2 resources in simulation
-        (policy grant exists; confirmed only by a real SendCommand run)
 
   A green result means the identity policy allows every action listed.
   It does not mean the spill path works end-to-end.
@@ -288,13 +277,18 @@ run_sim "ssm:SendCommand on document" "$(_sim_json \
     -- \
     "$_SSM_DOC")"
 
-# ssm:SendCommand on EC2 instance — NOT simulated here; see limitation (5) above.
-# IAM simulation does not evaluate ec2:ResourceTag/* condition keys for SSM
-# actions on EC2 resources. The policy statement exists and is enforced at
-# runtime, but simulate-principal-policy always returns implicitDeny for this
-# grant regardless of the context provided.
+# 5. ssm:SendCommand on EC2 instance — condition: aws:ResourceTag/spill:owner
+#    aws:ResourceTag is the global key; ec2:ResourceTag is NOT populated for
+#    SSM-authorized actions and must not be used here (db-6zny).
+#    Context entry simulates the tag that provision.sh applies at launch time.
+run_sim "ssm:SendCommand on instance (spill:owner tag)" "$(_sim_json \
+    ssm:SendCommand \
+    -- \
+    "$_INSTANCE" \
+    -- \
+    "aws:ResourceTag/spill:owner|string|ephemeral-ci")"
 
-# 5. ec2:RunInstances on launch template — condition: ec2:ResourceTag/aws:cloudformation:stack-name
+# 6. ec2:RunInstances on launch template — condition: ec2:ResourceTag/aws:cloudformation:stack-name
 #    The policy requires the launch template to carry the stack-name tag so
 #    no other launch template in the account can be used to launch spill instances.
 run_sim "ec2:RunInstances on launch template (stack-name tag)" "$(_sim_json \
@@ -304,7 +298,7 @@ run_sim "ec2:RunInstances on launch template (stack-name tag)" "$(_sim_json \
     -- \
     "ec2:ResourceTag/aws:cloudformation:stack-name|string|EphemeralCiSpill")"
 
-# 6. ec2:RunInstances and ec2:CreateTags on instance resource.
+# 7. ec2:RunInstances and ec2:CreateTags on instance resource.
 #    RunInstances conditions: spill:owner tag requested, vmtoken tag present,
 #    instance type in c7i/c8i families.
 #    CreateTags is the IAM action EC2 evaluates when --tag-specifications is
@@ -323,7 +317,7 @@ run_sim "ec2:RunInstances + ec2:CreateTags on instance (request tags + type)" "$
     "ec2:InstanceType|string|c7i.xlarge" \
     "ec2:CreateAction|string|RunInstances")"
 
-# 7. ec2:RunInstances on supporting resources (volume, NIC, SG, subnet, AMI).
+# 8. ec2:RunInstances on supporting resources (volume, NIC, SG, subnet, AMI).
 #    These statements carry no conditions, so no context entries are needed.
 run_sim "ec2:RunInstances on volume / NIC / SG / subnet / AMI" "$(_sim_json \
     ec2:RunInstances \
@@ -334,7 +328,7 @@ run_sim "ec2:RunInstances on volume / NIC / SG / subnet / AMI" "$(_sim_json \
     "$_SUBNET" \
     "$_AMI")"
 
-# 8. ec2:TerminateInstances — condition: ec2:ResourceTag/spill:owner
+# 9. ec2:TerminateInstances — condition: ec2:ResourceTag/spill:owner
 #    Context entry simulates the tag on the existing instance.
 run_sim "ec2:TerminateInstances (spill:owner resource tag)" "$(_sim_json \
     ec2:TerminateInstances \
@@ -343,7 +337,7 @@ run_sim "ec2:TerminateInstances (spill:owner resource tag)" "$(_sim_json \
     -- \
     "ec2:ResourceTag/spill:owner|string|ephemeral-ci")"
 
-# 9. iam:PassRole — the spill role must pass the instance profile's IAM role
+# 10. iam:PassRole — the spill role must pass the instance profile's IAM role
 #     to EC2 when launching instances. The iam:PassedToService context key is
 #     required to evaluate the condition restricting pass to EC2 only.
 #     db-h8ni identified this grant as missing.

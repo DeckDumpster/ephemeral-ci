@@ -196,7 +196,10 @@ export class SpillStack extends cdk.Stack {
       resources: ['arn:aws:ec2:us-west-2:189923011121:instance/*'],
       conditions: {
         StringEquals: {
-          'ec2:ResourceTag/spill:owner': 'ephemeral-ci',
+          // aws:ResourceTag is the global key; ec2:ResourceTag is EC2-service-only
+          // and is NOT populated for SSM-authorized actions — using it here would
+          // make this condition permanently unsatisfiable for ssm:SendCommand.
+          'aws:ResourceTag/spill:owner': 'ephemeral-ci',
         },
       },
     }));
