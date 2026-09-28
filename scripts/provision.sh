@@ -739,44 +739,22 @@ ec2_wait_ssm() {
 }
 
 # Deliver the runner token to the instance via SSM Send Command.  The token
-# is stored in SSM Parameter Store (SecureString) and referenced in the
-# send-command parameters as {{ssm-secure:/path}}.  The SSM service expands
-# that reference using the caller's credentials and injects the decrypted
-# value into the custom document's RunnerToken field; the resolved value is
-# NOT stored in SSM command history.  The parameter is deleted after the
-# command completes — single-use lifetime, not relying on the instance.
+# is passed as a plain String parameter directly in --parameters.  The value
+# is recorded in SSM command history; see the residual note in spill-stack.ts
+# (instance role comment) for the accepted exposure and its bounds.
 #
 # The custom document (ephemeral-ci-deliver-runner-token) is defined in the
-# CDK stack.  The instance never calls the SSM API directly; the SSM agent
-# receives the already-decrypted field value from the document execution.
+# CDK stack.  The instance never calls the SSM API directly.
 ec2_deliver_token() {
     local iid="$1"
-    local param_name="/ephemeral-ci/runner-token/${SPILL_VMTOKEN}"
-
-    # No --key-id: the parameter uses the default alias/aws/ssm key.  The
-    # default key's policy grants Decrypt to all IAM principals in the account,
-    # so no kms:Decrypt grant is needed on the spill role.  This is deliberate.
-    # Pinning a customer-managed key later would require adding kms:Decrypt for
-    # the spill role (arn:aws:iam::189923011121:role/ephemeral-ci-spill) to that
-    # key's policy, and the failure would look identical to an IAM misconfiguration.
-    aws ssm put-parameter \
-        --region "$SPILL_REGION" \
-        --name "$param_name" \
-        --type "SecureString" \
-        --value "$RUNNER_TOKEN" \
-        --overwrite \
-        >/dev/null 2>&1 || {
-        printf '::error::provision.sh: failed to store runner token in Parameter Store\n' >&2
-        return 1
-    }
 
     local params
-    params="$(python3 - "$param_name" "$RUNNER_LABEL" "$RUNNER_URL" \
+    params="$(python3 - "$RUNNER_TOKEN" "$RUNNER_LABEL" "$RUNNER_URL" \
               "${RUNNER_GROUP:-ephemeral-ci}" <<'PYEOF'
 import json, sys
-p, label, url, grp = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+token, label, url, grp = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 print(json.dumps({
-    'RunnerToken': ['{{ssm-secure:' + p + '}}'],
+    'RunnerToken': [token],
     'RunnerLabel': [label],
     'RunnerUrl': [url],
     'RunnerGroup': [grp],
@@ -792,7 +770,6 @@ PYEOF
                   --parameters "$params" \
                   --query 'Command.CommandId' \
                   --output text 2>&1)" || {
-        aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
         printf '::error::provision.sh: failed to send SSM command to %s: %s\n' "$iid" "$cmd_id" >&2
         return 1
     }
@@ -808,18 +785,15 @@ PYEOF
                       --output text 2>/dev/null || printf 'Pending')"
         case "$status" in
             Success)
-                aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
                 return 0
                 ;;
             Failed|Cancelled|TimedOut|Undeliverable|Terminated)
-                aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
                 printf '::error::provision.sh: SSM command %s on %s finished with status %s\n' \
                     "$cmd_id" "$iid" "$status" >&2
                 return 1
                 ;;
         esac
         if [ "$waited" -ge 120 ]; then
-            aws ssm delete-parameter --region "$SPILL_REGION" --name "$param_name" >/dev/null 2>&1 || true
             printf '::error::provision.sh: SSM command %s on %s did not finish within 120s\n' \
                 "$cmd_id" "$iid" >&2
             return 1

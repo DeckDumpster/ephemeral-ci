@@ -186,7 +186,7 @@ runs:
         echo "label=ci-${repo}-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
     # Only runs when spill=ec2. The role must carry the permissions defined in
-    # SpillStack (ec2:RunInstances, ssm:PutParameter, ssm:SendCommand, etc.).
+    # SpillStack (ec2:RunInstances, ssm:SendCommand, etc.).
     - name: Configure AWS credentials for EC2 spill
       if: (inputs.spill == 'ec2' || inputs.spill == 'ec2-only') && inputs.aws-role-to-assume != ''
       uses: aws-actions/configure-aws-credentials@v4

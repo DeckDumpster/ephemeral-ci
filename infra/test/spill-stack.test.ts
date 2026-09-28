@@ -102,10 +102,9 @@ test('launch template root device is encrypted', () => {
 });
 
 test('instance role carries no inline policy', () => {
-  // Token delivery uses a custom SSM document with {{ssm-secure:}} references.
-  // The SSM service expands the reference using the spill role's credentials;
-  // the instance sees the decrypted value injected by SSM and never calls the
-  // SSM API directly.  No inline policy on the instance role is needed.
+  // Token delivery passes the runner token via SSM send-command plain String
+  // parameters; the instance receives the already-delivered value from the
+  // document and never calls the SSM API directly.  No inline policy needed.
   const instanceRoles = template.findResources('AWS::IAM::Role', {
     Properties: {
       AssumeRolePolicyDocument: {
@@ -130,14 +129,10 @@ test('instance role carries no inline policy', () => {
   expect(attached).toHaveLength(0);
 });
 
-test('spill role grants ssm:PutParameter, ssm:DeleteParameter, ssm:GetParameter, ssm:GetParameters scoped to runner-token prefix', () => {
-  // Token delivery: the spill role writes the token to Parameter Store before
-  // send-command, passes it as {{ssm-secure:/path}} in --parameters, and
-  // deletes the entry after the command completes.  GetParameter and
-  // GetParameters are distinct IAM actions; both are granted because AWS
-  // example policies for SecureString retrieval show GetParameters (plural)
-  // and neither action implies the other.  All four actions must be scoped to
-  // /ephemeral-ci/runner-token/* only.
+test('spill role has no Parameter Store statements (PutParameter, DeleteParameter, GetParameter, GetParameters)', () => {
+  // db-99yv: token is delivered as a plain String parameter directly via
+  // send-command; the spill role must not hold any Parameter Store grants.
+  // Asserting absence here prevents quiet reinstatement.
   const spillRoleId = Object.keys(
     template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
   )[0];
@@ -147,7 +142,7 @@ test('spill role grants ssm:PutParameter, ssm:DeleteParameter, ssm:GetParameter,
   type RawPolicy = {
     Properties: {
       Roles: unknown[];
-      PolicyDocument: { Statement: Array<{ Action: string | string[]; Resource: string | string[] }> };
+      PolicyDocument: { Statement: Array<{ Action: string | string[] }> };
     };
   };
 
@@ -161,32 +156,14 @@ test('spill role grants ssm:PutParameter, ssm:DeleteParameter, ssm:GetParameter,
     return isSpill ? p.Properties.PolicyDocument.Statement : [];
   });
 
-  const putStmts = spillStatements.filter((s) =>
-    ([] as string[]).concat(s.Action).includes('ssm:PutParameter'),
+  const paramStoreActions = [
+    'ssm:PutParameter', 'ssm:DeleteParameter', 'ssm:GetParameter', 'ssm:GetParameters',
+  ];
+  const paramStoreStmts = spillStatements.filter((s) =>
+    ([] as string[]).concat(s.Action as string | string[])
+      .some((a) => paramStoreActions.includes(a)),
   );
-  const deleteStmts = spillStatements.filter((s) =>
-    ([] as string[]).concat(s.Action).includes('ssm:DeleteParameter'),
-  );
-  const getStmts = spillStatements.filter((s) =>
-    ([] as string[]).concat(s.Action).includes('ssm:GetParameter'),
-  );
-  const getParametersStmts = spillStatements.filter((s) =>
-    ([] as string[]).concat(s.Action).includes('ssm:GetParameters'),
-  );
-
-  expect(putStmts).toHaveLength(1);
-  expect(deleteStmts).toHaveLength(1);
-  expect(getStmts).toHaveLength(1);
-  expect(getParametersStmts).toHaveLength(1);
-
-  const putResources = ([] as string[]).concat(putStmts[0].Resource);
-  const deleteResources = ([] as string[]).concat(deleteStmts[0].Resource);
-  const getResources = ([] as string[]).concat(getStmts[0].Resource);
-  const getParametersResources = ([] as string[]).concat(getParametersStmts[0].Resource);
-  expect(putResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
-  expect(deleteResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
-  expect(getResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
-  expect(getParametersResources.every((r) => r.includes('/ephemeral-ci/runner-token/'))).toBe(true);
+  expect(paramStoreStmts).toHaveLength(0);
 });
 
 test('spill role does not grant ssm:ListCommandInvocations', () => {
@@ -241,9 +218,8 @@ test('instance role managed policy is only AmazonSSMManagedInstanceCore', () => 
 });
 
 test('custom SSM document for runner token delivery is defined', () => {
-  // ec2_deliver_token uses a custom SSM document instead of AWS-RunShellScript
-  // so it can accept {{ssm-secure:}} parameter references that SSM expands
-  // server-side without recording the resolved value in command history.
+  // ec2_deliver_token uses a custom SSM document to write the runner init file.
+  // RunnerToken is passed as a plain String parameter via send-command --parameters.
   const docs = template.findResources('AWS::SSM::Document');
   const deliverDoc = Object.values(docs).find((d) => {
     const name = (d as { Properties: Record<string, unknown> }).Properties.Name;
