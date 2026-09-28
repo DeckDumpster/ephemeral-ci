@@ -35,6 +35,17 @@
 #       of SimulatePrincipalPolicy. This account has no organization SCPs
 #       but that could change.
 #
+#   (5) Resource-tag conditions — simulation accepts whatever context entries
+#       it is given; it does not inspect whether the real resource carries the
+#       tag.  A green result for a statement conditioned on ec2:ResourceTag/*
+#       or aws:ResourceTag/* asserts only "would be allowed IF the resource
+#       were tagged so" — not that the resource actually is tagged.
+#       For RunInstances on the launch template this is no longer an issue:
+#       db-p5cj scoped that statement to the specific template ID with no
+#       condition.  For TerminateInstances and SendCommand on instances the
+#       tag is applied at launch time via LaunchTemplateData.TagSpecifications;
+#       see the tag-verification step below.
+#
 #
 # Usage:
 #   bash scripts/check-spill-permissions.sh
@@ -63,6 +74,14 @@ check-spill-permissions: simulation evaluates identity policies only.
     (3) Malformed API requests — missing params cause client errors before
         IAM runs (db-t226 was this shape)
     (4) SCPs or permission boundaries
+    (5) Resource-tag conditions — simulation supplies the tag context itself;
+        it does not verify the real resource carries the tag. A green result
+        for a statement conditioned on a resource tag means "would be allowed
+        IF tagged so" — not that the resource is actually tagged. RunInstances
+        on the launch template is no longer in this category (db-p5cj scoped
+        it by template ID with no condition). For TerminateInstances and
+        SendCommand on instances the tag is verified via the launch template
+        TagSpecifications check below.
 
   A green result means the identity policy allows every action listed.
   It does not mean the spill path works end-to-end.
@@ -93,13 +112,38 @@ else
     printf 'check-spill-permissions: instance role = %s\n\n' "$INSTANCE_ROLE_ARN"
 fi
 
+# ── Discover launch template ID ──────────────────────────────────────────────
+#
+# The RunInstances statement for the launch template is now scoped to the
+# specific template ID (db-p5cj).  A placeholder ID would produce a denied
+# result, so we read the real ID from AWS.  If describe-launch-templates fails
+# (no credentials, wrong role), step 6 is skipped with a warning rather than
+# reporting a false denial.
+_LT=""
+if _lt_raw="$(aws ec2 describe-launch-templates \
+        --filters "Name=launch-template-name,Values=ephemeral-ci-spill" \
+        --region "$REGION" \
+        --output json 2>&1)"; then
+    _lt_id="$(printf '%s' "$_lt_raw" | python3 -c \
+        'import json,sys; lts=json.load(sys.stdin)["LaunchTemplates"]; print(lts[0]["LaunchTemplateId"]) if lts else print("")')" \
+        || true
+    if [ -n "$_lt_id" ]; then
+        _LT="arn:aws:ec2:${REGION}:${ACCOUNT}:launch-template/${_lt_id}"
+        printf 'check-spill-permissions: launch template = %s\n' "$_LT"
+    fi
+fi
+if [ -z "$_LT" ]; then
+    printf 'check-spill-permissions: WARNING: cannot read launch template ephemeral-ci-spill; step 6 will be skipped\n'
+fi
+printf '\n'
+
 # ── Placeholder resource ARNs ────────────────────────────────────────────────
 #
 # Policy statements use wildcards (e.g. arn:aws:ec2:...:instance/*). Any
 # specific ARN that matches the wildcard evaluates the correct statement.
 # Using obviously-fake IDs makes it clear these are simulation placeholders.
 _INSTANCE="arn:aws:ec2:${REGION}:${ACCOUNT}:instance/i-00000000000000000"
-_LT="arn:aws:ec2:${REGION}:${ACCOUNT}:launch-template/lt-00000000000000000"
+# _LT is set above from the real launch template ID; placeholder not used.
 _VOLUME="arn:aws:ec2:${REGION}:${ACCOUNT}:volume/vol-00000000000000000"
 _NIC="arn:aws:ec2:${REGION}:${ACCOUNT}:network-interface/eni-00000000000000000"
 _SG="arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-00000000000000000"
@@ -288,15 +332,17 @@ run_sim "ssm:SendCommand on instance (spill:owner tag)" "$(_sim_json \
     -- \
     "aws:ResourceTag/spill:owner|string|ephemeral-ci")"
 
-# 6. ec2:RunInstances on launch template — condition: ec2:ResourceTag/aws:cloudformation:stack-name
-#    The policy requires the launch template to carry the stack-name tag so
-#    no other launch template in the account can be used to launch spill instances.
-run_sim "ec2:RunInstances on launch template (stack-name tag)" "$(_sim_json \
-    ec2:RunInstances \
-    -- \
-    "$_LT" \
-    -- \
-    "ec2:ResourceTag/aws:cloudformation:stack-name|string|EphemeralCiSpill")"
+# 6. ec2:RunInstances on launch template — scoped to the specific template ID,
+#    no condition (db-p5cj).  Requires the real template ID from AWS; skipped
+#    if the ID was not available above.
+if [ -n "$_LT" ]; then
+    run_sim "ec2:RunInstances on launch template (scoped by ID)" "$(_sim_json \
+        ec2:RunInstances \
+        -- \
+        "$_LT")"
+else
+    printf 'check-spill-permissions: [6: ec2:RunInstances on launch template — skipped (template ID not available)]\n\n'
+fi
 
 # 7. ec2:RunInstances and ec2:CreateTags on instance resource.
 #    RunInstances conditions: spill:owner tag requested, vmtoken tag present,
@@ -347,6 +393,56 @@ run_sim "iam:PassRole (instance role)" "$(_sim_json \
     "$INSTANCE_ROLE_ARN" \
     -- \
     "iam:PassedToService|string|ec2.amazonaws.com")"
+
+# ── Resource-tag verification ────────────────────────────────────────────────
+#
+# The TerminateInstances and SendCommand policies are conditioned on
+# ec2:ResourceTag/spill:owner and aws:ResourceTag/spill:owner respectively.
+# Simulation cannot verify the tag exists on real instances (they are
+# ephemeral); instead, verify that the launch template's TagSpecifications
+# apply spill:owner=ephemeral-ci to instances at launch time.
+# If describe-launch-templates is not available, skip with a warning.
+printf 'check-spill-permissions: [resource-tag verification: launch template TagSpecifications]\n'
+if [ -n "$_LT" ] && _lt_tags_raw="$(aws ec2 describe-launch-template-versions \
+        --launch-template-id "${_LT##*/launch-template/}" \
+        --versions '$Latest' \
+        --region "$REGION" \
+        --output json 2>&1)"; then
+    _instance_tag_ok="$(printf '%s' "$_lt_tags_raw" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+versions = data.get("LaunchTemplateVersions", [])
+if not versions:
+    print("NO_VERSIONS")
+    sys.exit(0)
+ltd = versions[0].get("LaunchTemplateData", {})
+tag_specs = ltd.get("TagSpecifications", [])
+for spec in tag_specs:
+    if spec.get("ResourceType") == "instance":
+        for tag in spec.get("Tags", []):
+            if tag.get("Key") == "spill:owner" and tag.get("Value") == "ephemeral-ci":
+                print("OK")
+                sys.exit(0)
+print("MISSING")
+')"
+    case "$_instance_tag_ok" in
+        OK)
+            printf '  PASS: launch template applies spill:owner=ephemeral-ci to instances\n'
+            ;;
+        NO_VERSIONS)
+            printf '  WARNING: no launch template versions found; cannot verify instance tags\n'
+            INCONCLUSIVE_ACTIONS+=("ec2:ResourceTag/spill:owner (no launch template versions to verify TagSpecifications)")
+            ;;
+        *)
+            printf '  FAIL: launch template does NOT apply spill:owner=ephemeral-ci to instances\n'
+            printf '        TerminateInstances and SendCommand conditions will not match launched instances.\n'
+            FAILED_ACTIONS+=("ec2:ResourceTag/spill:owner (launch template TagSpecifications missing)")
+            ;;
+    esac
+else
+    printf '  SKIPPED: launch template ID not available or describe-launch-template-versions failed\n'
+fi
+printf '\n'
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

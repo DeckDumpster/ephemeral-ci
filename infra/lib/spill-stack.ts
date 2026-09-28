@@ -115,6 +115,52 @@ export class SpillStack extends cdk.Stack {
         },
       });
 
+    // ── Launch template: IMDSv2, gp3 root, tags propagated ──────────────────
+    const launchTemplate = new ec2.CfnLaunchTemplate(this, 'LaunchTemplate', {
+      launchTemplateName: 'ephemeral-ci-spill',
+      launchTemplateData: {
+        iamInstanceProfile: { name: instanceProfile.ref },
+        metadataOptions: {
+          httpTokens: 'required',
+          httpPutResponseHopLimit: 2,
+          httpEndpoint: 'enabled',
+          instanceMetadataTags: 'enabled',
+        },
+        blockDeviceMappings: [
+          {
+            // Must match the AMI's root device (/dev/sda1 set in scripts/ami-build.sh).
+            // Using any other name declares an ADDITIONAL blank volume rather than
+            // overriding the root, which is what caused the MissingParameter error.
+            // volumeSize must match ROOT_DISK_GIB=32 in scripts/ami-build.sh; a
+            // mismatch silently produces the wrong root size.
+            deviceName: '/dev/sda1',
+            ebs: {
+              volumeSize: 32,
+              volumeType: 'gp3',
+              deleteOnTermination: true,
+              encrypted: true,
+            },
+          },
+        ],
+        tagSpecifications: [
+          {
+            resourceType: 'instance',
+            tags: [
+              { key: 'spill:owner', value: 'ephemeral-ci' },
+              { key: 'Name', value: 'ephemeral-ci-spill' },
+            ],
+          },
+          {
+            resourceType: 'volume',
+            tags: [
+              { key: 'spill:owner', value: 'ephemeral-ci' },
+              { key: 'Name', value: 'ephemeral-ci-spill' },
+            ],
+          },
+        ],
+      },
+    });
+
     // ── Spill role ────────────────────────────────────────────────────────────
     // Subject uses OIDC_SUB_PREFIX (all refs, not just main) because CI spills
     // from queue branches and pull request branches too.
@@ -125,15 +171,17 @@ export class SpillStack extends cdk.Stack {
       assumedBy: oidcPrincipal(OIDC_SUB_PREFIX),
     });
 
-    // RunInstances: require the launch template created by this stack
+    // RunInstances: scoped to this stack's specific launch template by ID.
+    // Naming the template ID (launchTemplate.ref) is strictly tighter than
+    // launch-template/* with a tag condition: the grant cannot silently widen
+    // if a tag is ever dropped, and no condition is needed.
     spillRole.addToPolicy(new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
-      resources: ['arn:aws:ec2:us-west-2:189923011121:launch-template/*'],
-      conditions: {
-        StringEquals: {
-          'ec2:ResourceTag/aws:cloudformation:stack-name': 'EphemeralCiSpill',
-        },
-      },
+      resources: [cdk.Stack.of(this).formatArn({
+        service: 'ec2',
+        resource: 'launch-template',
+        resourceName: launchTemplate.ref,
+      })],
     }));
 
     // RunInstances: instance resource — spill:owner tag required (bounds the
@@ -299,52 +347,6 @@ export class SpillStack extends cdk.Stack {
       actions: ['iam:Get*', 'iam:List*'],
       resources: ['*'],
     }));
-
-    // ── Launch template: IMDSv2, gp3 root, tags propagated ──────────────────
-    const launchTemplate = new ec2.CfnLaunchTemplate(this, 'LaunchTemplate', {
-      launchTemplateName: 'ephemeral-ci-spill',
-      launchTemplateData: {
-        iamInstanceProfile: { name: instanceProfile.ref },
-        metadataOptions: {
-          httpTokens: 'required',
-          httpPutResponseHopLimit: 2,
-          httpEndpoint: 'enabled',
-          instanceMetadataTags: 'enabled',
-        },
-        blockDeviceMappings: [
-          {
-            // Must match the AMI's root device (/dev/sda1 set in scripts/ami-build.sh).
-            // Using any other name declares an ADDITIONAL blank volume rather than
-            // overriding the root, which is what caused the MissingParameter error.
-            // volumeSize must match ROOT_DISK_GIB=32 in scripts/ami-build.sh; a
-            // mismatch silently produces the wrong root size.
-            deviceName: '/dev/sda1',
-            ebs: {
-              volumeSize: 32,
-              volumeType: 'gp3',
-              deleteOnTermination: true,
-              encrypted: true,
-            },
-          },
-        ],
-        tagSpecifications: [
-          {
-            resourceType: 'instance',
-            tags: [
-              { key: 'spill:owner', value: 'ephemeral-ci' },
-              { key: 'Name', value: 'ephemeral-ci-spill' },
-            ],
-          },
-          {
-            resourceType: 'volume',
-            tags: [
-              { key: 'spill:owner', value: 'ephemeral-ci' },
-              { key: 'Name', value: 'ephemeral-ci-spill' },
-            ],
-          },
-        ],
-      },
-    });
 
     // ── Budget: $100/month, account-wide (no tag filter) ────────────────────
     // Tag-based budget filters require cost allocation tag activation in the
