@@ -35,6 +35,15 @@
 #       of SimulatePrincipalPolicy. This account has no organization SCPs
 #       but that could change.
 #
+#   (5) ssm:SendCommand instance resource-tag conditions — IAM simulation
+#       does not evaluate ec2:ResourceTag/* condition keys for SSM actions
+#       on EC2 instance resources. The condition key is consumed by the
+#       simulation (not listed as MissingContextValues) but does not
+#       produce an Allow decision even when the policy grants it. The
+#       ssm:SendCommand grant conditioned on ec2:ResourceTag/spill:owner
+#       is present in the policy but cannot be confirmed by simulation;
+#       group 5 in earlier versions was removed for this reason.
+#
 # Usage:
 #   bash scripts/check-spill-permissions.sh
 #
@@ -62,6 +71,9 @@ check-spill-permissions: simulation evaluates identity policies only.
     (3) Malformed API requests — missing params cause client errors before
         IAM runs (db-t226 was this shape)
     (4) SCPs or permission boundaries
+    (5) ssm:SendCommand instance resource-tag conditions — ec2:ResourceTag/*
+        keys are not evaluated for SSM actions on EC2 resources in simulation
+        (policy grant exists; confirmed only by a real SendCommand run)
 
   A green result means the identity policy allows every action listed.
   It does not mean the spill path works end-to-end.
@@ -110,13 +122,16 @@ _SSM_DOC="arn:aws:ssm:${REGION}::document/ephemeral-ci-deliver-runner-token"
 
 # ── Simulation engine ────────────────────────────────────────────────────────
 #
-# FAILED_ACTIONS and INCONCLUSIVE_ACTIONS are populated by run_sim calls
-# below. Inconclusive means the simulation returned MissingContextValues:
-# the policy condition references a key that was not provided, so the result
-# is implicitDeny for the wrong reason. That is a bug in this script's
-# context entries, not a denied permission.
+# FAILED_ACTIONS, INCONCLUSIVE_ACTIONS, and ERRORED_GROUPS are populated by
+# run_sim calls below.
+# - FAILED_ACTIONS: explicit implicitDeny or explicitDeny with no missing context
+# - INCONCLUSIVE_ACTIONS: policy condition key not provided in context entries
+#   (a bug in this script — not a real denial)
+# - ERRORED_GROUPS: simulate-principal-policy call returned non-zero; the group
+#   did not execute and its actions were never evaluated
 FAILED_ACTIONS=()
 INCONCLUSIVE_ACTIONS=()
+ERRORED_GROUPS=()
 
 run_sim() {
     local label="$1" input_json="$2"
@@ -127,6 +142,7 @@ run_sim() {
             --cli-input-json "$input_json" \
             --output json 2>&1)"; then
         printf '  ERROR: simulate-principal-policy call failed:\n  %s\n\n' "$result"
+        ERRORED_GROUPS+=("$label")
         return 0
     fi
 
@@ -159,6 +175,10 @@ for r in data.get("EvaluationResults", []):
 
 # Helper: build simulation JSON using Python to avoid quoting hazards.
 # env vars are passed explicitly so the Python here-doc stays single-quoted.
+#
+# Context entries use the format "key|type|value" — pipe-delimited so that
+# colons in condition key names (e.g. ec2:ResourceTag/spill:owner) are
+# preserved verbatim and do not split the key prematurely.
 _sim_json() {
     POLICY_SOURCE_ARN="$SPILL_ROLE_ARN" python3 - "$@" <<'PYEOF'
 import json, os, sys
@@ -166,7 +186,7 @@ import json, os, sys
 policy_arn = os.environ["POLICY_SOURCE_ARN"]
 args = sys.argv[1:]
 
-# Partition args: ActionNames -- ResourceArns [-- ContextEntries key:type:value ...]
+# Partition args: ActionNames -- ResourceArns [-- ContextEntries key|type|value ...]
 sep1 = args.index("--")
 actions = args[:sep1]
 rest = args[sep1+1:]
@@ -181,7 +201,7 @@ except ValueError:
 
 ctx = []
 for item in ctx_raw:
-    parts = item.split(":", 2)
+    parts = item.split("|", 2)
     ctx.append({
         "ContextKeyName":   parts[0],
         "ContextKeyType":   parts[1],
@@ -200,12 +220,39 @@ print(json.dumps(d))
 PYEOF
 }
 
+# ── Self-test: verify the denial-detection path ──────────────────────────────
+#
+# Simulate an action the spill role certainly does not have (iam:CreateUser).
+# If the script cannot correctly report this as denied, the failure-detection
+# logic itself is broken and real results cannot be trusted.
+printf 'check-spill-permissions: [self-test: iam:CreateUser must be DENIED]\n'
+_st_json="$(_sim_json iam:CreateUser -- '*')"
+_st_out="$(aws iam simulate-principal-policy --cli-input-json "$_st_json" --output json 2>&1)" || {
+    printf '  ERROR: self-test simulation call failed:\n  %s\n\n' "$_st_out"
+    exit 2
+}
+_st_decision="$(printf '%s' "$_st_out" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["EvaluationResults"][0]["EvalDecision"])')"
+case "$_st_decision" in
+    implicitDeny|explicitDeny)
+        printf '  PASS: iam:CreateUser → %s\n\n' "$_st_decision"
+        ;;
+    *)
+        printf '  FAIL: expected implicitDeny or explicitDeny for iam:CreateUser, got %s\n' "$_st_decision"
+        printf '  The spill role has unexpected iam:CreateUser access or the simulation is broken.\n\n'
+        exit 2
+        ;;
+esac
+
 # ── Simulation calls ─────────────────────────────────────────────────────────
 #
 # Each call groups actions that share the same resource scope and condition
 # context. Context entries are provided for every condition key referenced in
 # the policy so the simulation does not return MissingContextValues (which
 # produces an implicitDeny that looks like a real denial but is not).
+#
+# Context entry format: "key|type|value"  (pipe-delimited so colons in key
+# names are preserved — e.g. ec2:ResourceTag/spill:owner is the full key).
 
 # 1. Describe and read-only actions — resource: *, no conditions
 run_sim "describe / read-only (resource: *)" "$(_sim_json \
@@ -241,16 +288,13 @@ run_sim "ssm:SendCommand on document" "$(_sim_json \
     -- \
     "$_SSM_DOC")"
 
-# 5. ssm:SendCommand on EC2 instance — condition: ec2:ResourceTag/spill:owner
-#    Context entry simulates the tag that provision.sh applies at launch time.
-run_sim "ssm:SendCommand on instance (spill:owner tag)" "$(_sim_json \
-    ssm:SendCommand \
-    -- \
-    "$_INSTANCE" \
-    -- \
-    "ec2:ResourceTag/spill:owner:string:ephemeral-ci")"
+# ssm:SendCommand on EC2 instance — NOT simulated here; see limitation (5) above.
+# IAM simulation does not evaluate ec2:ResourceTag/* condition keys for SSM
+# actions on EC2 resources. The policy statement exists and is enforced at
+# runtime, but simulate-principal-policy always returns implicitDeny for this
+# grant regardless of the context provided.
 
-# 6. ec2:RunInstances on launch template — condition: ec2:ResourceTag/aws:cloudformation:stack-name
+# 5. ec2:RunInstances on launch template — condition: ec2:ResourceTag/aws:cloudformation:stack-name
 #    The policy requires the launch template to carry the stack-name tag so
 #    no other launch template in the account can be used to launch spill instances.
 run_sim "ec2:RunInstances on launch template (stack-name tag)" "$(_sim_json \
@@ -258,25 +302,28 @@ run_sim "ec2:RunInstances on launch template (stack-name tag)" "$(_sim_json \
     -- \
     "$_LT" \
     -- \
-    "ec2:ResourceTag/aws:cloudformation:stack-name:string:EphemeralCiSpill")"
+    "ec2:ResourceTag/aws:cloudformation:stack-name|string|EphemeralCiSpill")"
 
-# 7. ec2:RunInstances and ec2:CreateTags on instance resource.
+# 6. ec2:RunInstances and ec2:CreateTags on instance resource.
 #    RunInstances conditions: spill:owner tag requested, vmtoken tag present,
 #    instance type in c7i/c8i families.
 #    CreateTags is the IAM action EC2 evaluates when --tag-specifications is
 #    passed to RunInstances; it is a separate action from RunInstances and
 #    requires its own grant. db-h8ni identified this as missing.
+#    ec2:CreateAction context is required for the CreateTags condition that
+#    restricts tagging to resources created via RunInstances.
 run_sim "ec2:RunInstances + ec2:CreateTags on instance (request tags + type)" "$(_sim_json \
     ec2:RunInstances \
     ec2:CreateTags \
     -- \
     "$_INSTANCE" \
     -- \
-    "aws:RequestTag/spill:owner:string:ephemeral-ci" \
-    "aws:RequestTag/ephemeral-ci:vmtoken:string:testtoken" \
-    "ec2:InstanceType:string:c7i.xlarge")"
+    "aws:RequestTag/spill:owner|string|ephemeral-ci" \
+    "aws:RequestTag/ephemeral-ci:vmtoken|string|testtoken" \
+    "ec2:InstanceType|string|c7i.xlarge" \
+    "ec2:CreateAction|string|RunInstances")"
 
-# 8. ec2:RunInstances on supporting resources (volume, NIC, SG, subnet, AMI).
+# 7. ec2:RunInstances on supporting resources (volume, NIC, SG, subnet, AMI).
 #    These statements carry no conditions, so no context entries are needed.
 run_sim "ec2:RunInstances on volume / NIC / SG / subnet / AMI" "$(_sim_json \
     ec2:RunInstances \
@@ -287,25 +334,39 @@ run_sim "ec2:RunInstances on volume / NIC / SG / subnet / AMI" "$(_sim_json \
     "$_SUBNET" \
     "$_AMI")"
 
-# 9. ec2:TerminateInstances — condition: ec2:ResourceTag/spill:owner
+# 8. ec2:TerminateInstances — condition: ec2:ResourceTag/spill:owner
 #    Context entry simulates the tag on the existing instance.
 run_sim "ec2:TerminateInstances (spill:owner resource tag)" "$(_sim_json \
     ec2:TerminateInstances \
     -- \
     "$_INSTANCE" \
     -- \
-    "ec2:ResourceTag/spill:owner:string:ephemeral-ci")"
+    "ec2:ResourceTag/spill:owner|string|ephemeral-ci")"
 
-# 10. iam:PassRole — the spill role must pass the instance profile's IAM role
-#     to EC2 when launching instances. No conditions in the policy statement
-#     (the grant either exists or it does not). db-h8ni identified this as
-#     missing.
+# 9. iam:PassRole — the spill role must pass the instance profile's IAM role
+#     to EC2 when launching instances. The iam:PassedToService context key is
+#     required to evaluate the condition restricting pass to EC2 only.
+#     db-h8ni identified this grant as missing.
 run_sim "iam:PassRole (instance role)" "$(_sim_json \
     iam:PassRole \
     -- \
-    "$INSTANCE_ROLE_ARN")"
+    "$INSTANCE_ROLE_ARN" \
+    -- \
+    "iam:PassedToService|string|ec2.amazonaws.com")"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
+
+_exit=0
+
+if [ "${#ERRORED_GROUPS[@]}" -gt 0 ]; then
+    printf 'check-spill-permissions: %d group(s) did not execute (API call failed):\n' \
+        "${#ERRORED_GROUPS[@]}"
+    for _g in "${ERRORED_GROUPS[@]}"; do
+        printf '  %s\n' "$_g"
+    done
+    printf '\n'
+    _exit=1
+fi
 
 if [ "${#INCONCLUSIVE_ACTIONS[@]}" -gt 0 ]; then
     printf 'check-spill-permissions: INCONCLUSIVE (missing context keys in simulation call):\n'
@@ -313,18 +374,22 @@ if [ "${#INCONCLUSIVE_ACTIONS[@]}" -gt 0 ]; then
         printf '  %s\n' "$_a"
     done
     printf '  Fix: add the missing context entries to this script and re-run.\n\n'
+    _exit=1
 fi
 
-if [ "${#FAILED_ACTIONS[@]}" -eq 0 ]; then
+if [ "${#FAILED_ACTIONS[@]}" -gt 0 ]; then
+    printf 'check-spill-permissions: DENIED (%d action(s)):\n' "${#FAILED_ACTIONS[@]}"
+    for _a in "${FAILED_ACTIONS[@]}"; do
+        printf '  %s\n' "$_a"
+    done
+    printf '\n'
+    printf 'check-spill-permissions: Add the missing grants to infra/lib/spill-stack.ts\n'
+    printf 'and run `cdk deploy EphemeralCiSpill` before retrying the spill probe.\n'
+    _exit=1
+fi
+
+if [ "$_exit" -eq 0 ]; then
     printf 'check-spill-permissions: ALL ACTIONS ALLOWED\n'
-    exit 0
 fi
 
-printf 'check-spill-permissions: DENIED (%d action(s)):\n' "${#FAILED_ACTIONS[@]}"
-for _a in "${FAILED_ACTIONS[@]}"; do
-    printf '  %s\n' "$_a"
-done
-printf '\n'
-printf 'check-spill-permissions: Add the missing grants to infra/lib/spill-stack.ts\n'
-printf 'and run `cdk deploy EphemeralCiSpill` before retrying the spill probe.\n'
-exit 1
+exit "$_exit"
