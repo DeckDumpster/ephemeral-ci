@@ -161,6 +161,10 @@ export class SpillStack extends cdk.Stack {
       },
     });
 
+    // Shared constant: used in both the SendCommand IAM statement and the
+    // AWS::SSM::Document resource so the two cannot drift apart.
+    const DELIVER_RUNNER_TOKEN_DOCUMENT_NAME = 'ephemeral-ci-deliver-runner-token';
+
     // ── Spill role ────────────────────────────────────────────────────────────
     // Subject uses OIDC_SUB_PREFIX (all refs, not just main) because CI spills
     // from queue branches and pull request branches too.
@@ -233,10 +237,18 @@ export class SpillStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // SSM send-command: allow any SSM document but only on tagged instances
+    // SSM send-command: scoped to this stack's own document only.
+    // The AWS-owned wildcard (arn:aws:ssm:region::document/*) addressed documents
+    // with an empty account field — AWS-owned documents only — and did not cover
+    // this account-owned document.  Naming the document by its actual ARN fixes
+    // the denial and removes the implicit grant over every AWS-published document.
     spillRole.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:SendCommand'],
-      resources: ['arn:aws:ssm:us-west-2::document/*'],
+      resources: [this.formatArn({
+        service: 'ssm',
+        resource: 'document',
+        resourceName: DELIVER_RUNNER_TOKEN_DOCUMENT_NAME,
+      })],
     }));
 
     spillRole.addToPolicy(new iam.PolicyStatement({
@@ -401,7 +413,7 @@ export class SpillStack extends cdk.Stack {
     new cdk.CfnResource(this, 'DeliverRunnerTokenDocument', {
       type: 'AWS::SSM::Document',
       properties: {
-        Name: 'ephemeral-ci-deliver-runner-token',
+        Name: DELIVER_RUNNER_TOKEN_DOCUMENT_NAME,
         DocumentType: 'Command',
         DocumentFormat: 'JSON',
         Content: {
