@@ -1,0 +1,45 @@
+name: Check spill permissions
+
+# Simulates the EC2 spill role's full action set using iam:SimulatePrincipalPolicy
+# and reports every denied action in one pass. Run this before triggering the
+# spill probe to confirm the IAM policy is complete.
+#
+# This is an operator tool, not a gate step. It requires the ephemeral-ci-ci-test
+# role (which holds iam:SimulatePrincipalPolicy) and AWS credentials. Adding it
+# as a required PR check would make CI depend on an AWS role assumption, which
+# is how PRs 50 and 52 became permanently red.
+#
+# What this checks — and what it cannot check:
+#   See scripts/check-spill-permissions.sh for the full list of limitations.
+#   The short version: simulation evaluates identity policies only. A green
+#   result here means the IAM policy allows the listed actions. It does not
+#   mean the spill path works end-to-end.
+
+on:
+  workflow_dispatch:
+
+# A second dispatch queues rather than cancels. Simulation is read-only and
+# idempotent, but back-to-back runs against the same role are confusing to
+# read in parallel.
+concurrency:
+  group: check-spill-permissions
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write  # OIDC token for assuming the ci-test role
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (ephemeral-ci-ci-test)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CI_TEST_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Simulate spill permissions
+        run: bash scripts/check-spill-permissions.sh
