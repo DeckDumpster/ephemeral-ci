@@ -8,7 +8,9 @@ export class SpillStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // ── VPC: 10.0.0.0/16, one public subnet in us-west-2a, no NAT gateway ───
+    // ── VPC: 10.0.0.0/16, public subnets in us-west-2a/b/c, no NAT gateway ──
+    // Three subnets span three AZs so InsufficientInstanceCapacity in one zone
+    // does not block the entire spill path (db-5ne2).
     const vpc = new ec2.CfnVPC(this, 'Vpc', {
       cidrBlock: '10.0.0.0/16',
       enableDnsSupport: true,
@@ -16,12 +18,28 @@ export class SpillStack extends cdk.Stack {
       tags: [{ key: 'Name', value: 'ephemeral-ci-spill' }],
     });
 
-    const subnet = new ec2.CfnSubnet(this, 'PublicSubnet', {
+    const subnetA = new ec2.CfnSubnet(this, 'PublicSubnet', {
       vpcId: vpc.ref,
       cidrBlock: '10.0.0.0/24',
       availabilityZone: 'us-west-2a',
       mapPublicIpOnLaunch: true,
-      tags: [{ key: 'Name', value: 'ephemeral-ci-spill-public' }],
+      tags: [{ key: 'Name', value: 'ephemeral-ci-spill-public-a' }],
+    });
+
+    const subnetB = new ec2.CfnSubnet(this, 'PublicSubnetB', {
+      vpcId: vpc.ref,
+      cidrBlock: '10.0.1.0/24',
+      availabilityZone: 'us-west-2b',
+      mapPublicIpOnLaunch: true,
+      tags: [{ key: 'Name', value: 'ephemeral-ci-spill-public-b' }],
+    });
+
+    const subnetC = new ec2.CfnSubnet(this, 'PublicSubnetC', {
+      vpcId: vpc.ref,
+      cidrBlock: '10.0.2.0/24',
+      availabilityZone: 'us-west-2c',
+      mapPublicIpOnLaunch: true,
+      tags: [{ key: 'Name', value: 'ephemeral-ci-spill-public-c' }],
     });
 
     const igw = new ec2.CfnInternetGateway(this, 'Igw', {
@@ -45,7 +63,17 @@ export class SpillStack extends cdk.Stack {
     });
 
     new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetRtAssoc', {
-      subnetId: subnet.ref,
+      subnetId: subnetA.ref,
+      routeTableId: routeTable.ref,
+    });
+
+    new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetRtAssocB', {
+      subnetId: subnetB.ref,
+      routeTableId: routeTable.ref,
+    });
+
+    new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetRtAssocC', {
+      subnetId: subnetC.ref,
       routeTableId: routeTable.ref,
     });
 
@@ -443,7 +471,11 @@ export class SpillStack extends cdk.Stack {
     });
 
     // ── Outputs: consumed by later spill scripts via describe-stacks ─────────
-    new cdk.CfnOutput(this, 'SubnetId', { value: subnet.ref });
+    // SubnetIds lists all three AZ subnets (comma-separated). ec2_launch tries
+    // them in order and advances to the next on InsufficientInstanceCapacity.
+    new cdk.CfnOutput(this, 'SubnetIds', {
+      value: cdk.Fn.join(',', [subnetA.ref, subnetB.ref, subnetC.ref]),
+    });
     new cdk.CfnOutput(this, 'SecurityGroupId', { value: sg.ref });
     new cdk.CfnOutput(this, 'LaunchTemplateId', { value: launchTemplate.ref });
     new cdk.CfnOutput(this, 'LaunchTemplateName', { value: 'ephemeral-ci-spill' });

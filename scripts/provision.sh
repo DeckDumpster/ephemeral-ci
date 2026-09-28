@@ -550,8 +550,9 @@ wait_for_capacity() {
 # These functions are only called when SPILL=ec2 AND Proxmox capacity is
 # exhausted.  All AWS CLI calls use SPILL_REGION so they are region-agnostic.
 
-# Load the CloudFormation stack outputs (SubnetId, SecurityGroupId,
-# LaunchTemplateId) into SPILL_SUBNET_ID, SPILL_SG_ID, SPILL_LT_ID globals.
+# Load the CloudFormation stack outputs (SubnetIds, SecurityGroupId,
+# LaunchTemplateId) into SPILL_SUBNET_IDS, SPILL_SG_ID, SPILL_LT_ID globals.
+# SPILL_SUBNET_IDS is a comma-separated list of subnet IDs in multiple AZs.
 ec2_load_stack() {
     local raw
     raw="$(aws cloudformation describe-stacks \
@@ -563,14 +564,14 @@ ec2_load_stack() {
             "$SPILL_STACK_NAME" "$raw" >&2
         return 1
     }
-    SPILL_SUBNET_ID="$(printf '%s' "$raw" | python3 -c \
-        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SubnetId"])')" || return 1
+    SPILL_SUBNET_IDS="$(printf '%s' "$raw" | python3 -c \
+        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SubnetIds"])')" || return 1
     SPILL_SG_ID="$(printf '%s' "$raw" | python3 -c \
         'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SecurityGroupId"])')" || return 1
     SPILL_LT_ID="$(printf '%s' "$raw" | python3 -c \
         'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["LaunchTemplateId"])')" || return 1
-    printf 'provision.sh: spill stack %s loaded (subnet=%s sg=%s lt=%s)\n' \
-        "$SPILL_STACK_NAME" "$SPILL_SUBNET_ID" "$SPILL_SG_ID" "$SPILL_LT_ID" >&2
+    printf 'provision.sh: spill stack %s loaded (subnets=%s sg=%s lt=%s)\n' \
+        "$SPILL_STACK_NAME" "$SPILL_SUBNET_IDS" "$SPILL_SG_ID" "$SPILL_LT_ID" >&2
 }
 
 # Print the count of pending/running spill instances.
@@ -633,39 +634,80 @@ ec2_find_ami() {
 # Launch a spot instance (on-demand fallback on capacity error).
 # Receives the AMI id and the per-run vmtoken; tags the instance with the
 # vmtoken so the instance role's IAM condition can bind parameter access.
+#
+# SPILL_SUBNET_IDS is a comma-separated list (one per AZ). Spot is tried in
+# each subnet in order; InsufficientInstanceCapacity advances to the next AZ
+# rather than falling through to on-demand in the same zone. Other errors
+# (UnauthorizedOperation etc.) are zone-independent and break out immediately.
+# On-demand follows the same per-subnet loop after all spot attempts fail.
 ec2_launch() {
-    local ami="$1" vmtoken="$2" iid
+    local ami="$1" vmtoken="$2"
     local spot_opts='{"MarketType":"spot","SpotOptions":{"SpotInstanceType":"one-time","InstanceInterruptionBehavior":"terminate"}}'
+    local iid subnet
+    local -a subnets
+    IFS=',' read -ra subnets <<< "$SPILL_SUBNET_IDS"
 
-    iid="$(aws ec2 run-instances \
-               --region "$SPILL_REGION" \
-               --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
-               --instance-type "$SPILL_INSTANCE_TYPE" \
-               --image-id "$ami" \
-               --subnet-id "$SPILL_SUBNET_ID" \
-               --security-group-ids "$SPILL_SG_ID" \
-               --instance-market-options "$spot_opts" \
-               --tag-specifications \
-                   "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
-               --query 'Instances[0].InstanceId' \
-               --output text 2>&1)" || {
-        printf 'provision.sh: spot launch failed (%s); retrying as on-demand\n' "$iid" >&2
-        iid="$(aws ec2 run-instances \
-                   --region "$SPILL_REGION" \
-                   --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
-                   --instance-type "$SPILL_INSTANCE_TYPE" \
-                   --image-id "$ami" \
-                   --subnet-id "$SPILL_SUBNET_ID" \
-                   --security-group-ids "$SPILL_SG_ID" \
-                   --tag-specifications \
-                       "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
-                   --query 'Instances[0].InstanceId' \
-                   --output text 2>&1)" || {
-            printf '::error::provision.sh: on-demand launch also failed: %s\n' "$iid" >&2
-            return 1
-        }
-    }
-    printf '%s' "$iid"
+    # Spot pass: try each AZ; advance on capacity shortage, abort on other errors.
+    for subnet in "${subnets[@]}"; do
+        if iid="$(aws ec2 run-instances \
+                       --region "$SPILL_REGION" \
+                       --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
+                       --instance-type "$SPILL_INSTANCE_TYPE" \
+                       --image-id "$ami" \
+                       --subnet-id "$subnet" \
+                       --security-group-ids "$SPILL_SG_ID" \
+                       --instance-market-options "$spot_opts" \
+                       --tag-specifications \
+                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
+                       --query 'Instances[0].InstanceId' \
+                       --output text 2>&1)"; then
+            printf '%s' "$iid"
+            return 0
+        fi
+        case "$iid" in
+            *InsufficientInstanceCapacity*)
+                printf 'provision.sh: spot launch in subnet %s failed (InsufficientInstanceCapacity); trying next subnet\n' \
+                    "$subnet" >&2
+                ;;
+            *)
+                printf 'provision.sh: spot launch in subnet %s failed (non-capacity error); falling through to on-demand\n' \
+                    "$subnet" >&2
+                printf 'provision.sh: spot error: %s\n' "$iid" >&2
+                break
+                ;;
+        esac
+    done
+
+    # On-demand pass: same per-AZ loop.
+    printf 'provision.sh: spot attempts exhausted; retrying as on-demand\n' >&2
+    for subnet in "${subnets[@]}"; do
+        if iid="$(aws ec2 run-instances \
+                       --region "$SPILL_REGION" \
+                       --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
+                       --instance-type "$SPILL_INSTANCE_TYPE" \
+                       --image-id "$ami" \
+                       --subnet-id "$subnet" \
+                       --security-group-ids "$SPILL_SG_ID" \
+                       --tag-specifications \
+                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
+                       --query 'Instances[0].InstanceId' \
+                       --output text 2>&1)"; then
+            printf '%s' "$iid"
+            return 0
+        fi
+        case "$iid" in
+            *InsufficientInstanceCapacity*)
+                printf 'provision.sh: on-demand launch in subnet %s failed (InsufficientInstanceCapacity); trying next subnet\n' \
+                    "$subnet" >&2
+                ;;
+            *)
+                printf '::error::provision.sh: on-demand launch in subnet %s failed: %s\n' "$subnet" "$iid" >&2
+                return 1
+                ;;
+        esac
+    done
+    printf '::error::provision.sh: on-demand launch failed in all subnets (InsufficientInstanceCapacity)\n' >&2
+    return 1
 }
 
 # Wait until the SSM agent on the given instance reports Online.

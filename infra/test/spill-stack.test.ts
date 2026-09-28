@@ -12,6 +12,29 @@ beforeAll(() => {
   template = Template.fromStack(stack);
 });
 
+test('synth creates subnets in us-west-2a, us-west-2b, and us-west-2c', () => {
+  // db-5ne2: single-AZ spill is fragile; all three subnets must be present so
+  // InsufficientInstanceCapacity in one AZ does not break the spill entirely.
+  const subnets = template.findResources('AWS::EC2::Subnet');
+  const azs = Object.values(subnets).map(
+    (s) => (s as { Properties: { AvailabilityZone: string } }).Properties.AvailabilityZone,
+  );
+  expect(azs).toContain('us-west-2a');
+  expect(azs).toContain('us-west-2b');
+  expect(azs).toContain('us-west-2c');
+  expect(azs).toHaveLength(3);
+});
+
+test('SubnetIds output lists all three subnets (no stale SubnetId)', () => {
+  // db-5ne2: output was renamed from SubnetId (one AZ) to SubnetIds (all AZs).
+  // A stale SubnetId output naming one AZ must not be present.
+  const outputs = template.findOutputs('SubnetIds');
+  expect(Object.keys(outputs)).toHaveLength(1);
+
+  const stale = template.findOutputs('SubnetId');
+  expect(Object.keys(stale)).toHaveLength(0);
+});
+
 test('security group has zero ingress rules', () => {
   const sgs = template.findResources('AWS::EC2::SecurityGroup');
   expect(Object.keys(sgs)).toHaveLength(1);

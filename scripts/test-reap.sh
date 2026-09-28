@@ -845,7 +845,8 @@ EC2_SUBNET="$(printf '%s' "$_ec2_stack_json" | python3 -c \
     'import json,sys
 j=json.load(sys.stdin)
 o=j["Stacks"][0]["Outputs"]
-print(next((x["OutputValue"] for x in o if x["OutputKey"]=="SubnetId"),""))
+ids=next((x["OutputValue"] for x in o if x["OutputKey"]=="SubnetIds"),"")
+print(ids.split(",")[0] if ids else "")
 ' 2>/dev/null || echo '')"
 
 EC2_SG="$(printf '%s' "$_ec2_stack_json" | python3 -c \

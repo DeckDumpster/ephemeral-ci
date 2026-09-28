@@ -38,7 +38,7 @@
 #   removal) and for manual housekeeping.
 #
 # Prerequisites: the EphemeralCiSpill CloudFormation stack must be deployed
-#   (cd infra && cdk deploy). ami-build.sh reads SubnetId, SecurityGroupId,
+#   (cd infra && cdk deploy). ami-build.sh reads SubnetIds, SecurityGroupId,
 #   and InstanceProfileName from the stack's Outputs via describe-stacks.
 #
 # Permissions required beyond the spill role:
@@ -132,13 +132,14 @@ load_stack_outputs() {
             return 1
             ;;
     esac
+    # SubnetIds is a comma-separated list; use the first entry for the build instance.
     SUBNET_ID="$(printf '%s' "$stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SubnetId") | .OutputValue')"
+        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SubnetIds") | .OutputValue' | cut -d, -f1)"
     SECURITY_GROUP_ID="$(printf '%s' "$stack_json" | \
         jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SecurityGroupId") | .OutputValue')"
     INSTANCE_PROFILE_NAME="$(printf '%s' "$stack_json" | \
         jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="InstanceProfileName") | .OutputValue')"
-    : "${SUBNET_ID:?SubnetId missing from $STACK_NAME outputs}"
+    : "${SUBNET_ID:?SubnetIds missing from $STACK_NAME outputs}"
     : "${SECURITY_GROUP_ID:?SecurityGroupId missing from $STACK_NAME outputs}"
     : "${INSTANCE_PROFILE_NAME:?InstanceProfileName missing from $STACK_NAME outputs}"
     note "outputs: subnet=$SUBNET_ID sg=$SECURITY_GROUP_ID profile=$INSTANCE_PROFILE_NAME"
