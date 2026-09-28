@@ -639,7 +639,7 @@ ec2_launch() {
 
     iid="$(aws ec2 run-instances \
                --region "$SPILL_REGION" \
-               --launch-template "LaunchTemplateId=${SPILL_LT_ID}" \
+               --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
                --instance-type "$SPILL_INSTANCE_TYPE" \
                --image-id "$ami" \
                --subnet-id "$SPILL_SUBNET_ID" \
@@ -652,7 +652,7 @@ ec2_launch() {
         printf 'provision.sh: spot launch failed (%s); retrying as on-demand\n' "$iid" >&2
         iid="$(aws ec2 run-instances \
                    --region "$SPILL_REGION" \
-                   --launch-template "LaunchTemplateId=${SPILL_LT_ID}" \
+                   --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
                    --instance-type "$SPILL_INSTANCE_TYPE" \
                    --image-id "$ami" \
                    --subnet-id "$SPILL_SUBNET_ID" \
