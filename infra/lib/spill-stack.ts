@@ -196,9 +196,42 @@ export class SpillStack extends cdk.Stack {
       },
     });
 
-    // Shared constant: used in both the SendCommand IAM statement and the
-    // AWS::SSM::Document resource so the two cannot drift apart.
-    const DELIVER_RUNNER_TOKEN_DOCUMENT_NAME = 'ephemeral-ci-deliver-runner-token';
+    // ── SSM document: token delivery via plain String parameter ──────────────
+    // RunnerToken is passed as a plain String from send-command --parameters.
+    // The value is stored in SSM command history; see the residual note on the
+    // instance role comment above for the accepted exposure and its bounds.
+    // No explicit Name: CloudFormation generates one so Content changes can be
+    // deployed without the replacement collision that a pinned name causes.
+    const deliverRunnerTokenDocument = new cdk.CfnResource(this, 'DeliverRunnerTokenDocument', {
+      type: 'AWS::SSM::Document',
+      properties: {
+        DocumentType: 'Command',
+        DocumentFormat: 'JSON',
+        Content: {
+          schemaVersion: '2.2',
+          description: 'Write runner init file from plain String parameters.',
+          parameters: {
+            RunnerToken: { type: 'String', description: 'Registration token' },
+            RunnerLabel: { type: 'String', description: 'Runner label' },
+            RunnerUrl: { type: 'String', description: 'Registration URL' },
+            RunnerGroup: { type: 'String', description: 'Runner group', default: 'ephemeral-ci' },
+          },
+          mainSteps: [
+            {
+              action: 'aws:runShellScript',
+              name: 'DeliverToken',
+              inputs: {
+                runCommand: [
+                  'set -e',
+                  "printf 'RUNNER_LABEL={{ RunnerLabel }}\\nRUNNER_TOKEN={{ RunnerToken }}\\nRUNNER_URL={{ RunnerUrl }}\\nRUNNER_GROUP={{ RunnerGroup }}\\n' > /run/gh-runner-init.partial",
+                  'mv /run/gh-runner-init.partial /run/gh-runner-init',
+                ],
+              },
+            },
+          ],
+        },
+      },
+    });
 
     // ── Spill role ────────────────────────────────────────────────────────────
     // Subject uses OIDC_SUB_PREFIX (all refs, not just main) because CI spills
@@ -277,12 +310,14 @@ export class SpillStack extends cdk.Stack {
     // with an empty account field — AWS-owned documents only — and did not cover
     // this account-owned document.  Naming the document by its actual ARN fixes
     // the denial and removes the implicit grant over every AWS-published document.
+    // deliverRunnerTokenDocument.ref resolves to the generated document name so
+    // this ARN tracks it through replacements.
     spillRole.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:SendCommand'],
       resources: [this.formatArn({
         service: 'ssm',
         resource: 'document',
-        resourceName: DELIVER_RUNNER_TOKEN_DOCUMENT_NAME,
+        resourceName: deliverRunnerTokenDocument.ref,
       })],
     }));
 
@@ -422,42 +457,6 @@ export class SpillStack extends cdk.Stack {
       ],
     });
 
-    // ── SSM document: token delivery via plain String parameter ──────────────
-    // RunnerToken is passed as a plain String from send-command --parameters.
-    // The value is stored in SSM command history; see the residual note on the
-    // instance role comment above for the accepted exposure and its bounds.
-    new cdk.CfnResource(this, 'DeliverRunnerTokenDocument', {
-      type: 'AWS::SSM::Document',
-      properties: {
-        Name: DELIVER_RUNNER_TOKEN_DOCUMENT_NAME,
-        DocumentType: 'Command',
-        DocumentFormat: 'JSON',
-        Content: {
-          schemaVersion: '2.2',
-          description: 'Write runner init file from plain String parameters.',
-          parameters: {
-            RunnerToken: { type: 'String', description: 'Registration token' },
-            RunnerLabel: { type: 'String', description: 'Runner label' },
-            RunnerUrl: { type: 'String', description: 'Registration URL' },
-            RunnerGroup: { type: 'String', description: 'Runner group', default: 'ephemeral-ci' },
-          },
-          mainSteps: [
-            {
-              action: 'aws:runShellScript',
-              name: 'DeliverToken',
-              inputs: {
-                runCommand: [
-                  'set -e',
-                  "printf 'RUNNER_LABEL={{ RunnerLabel }}\\nRUNNER_TOKEN={{ RunnerToken }}\\nRUNNER_URL={{ RunnerUrl }}\\nRUNNER_GROUP={{ RunnerGroup }}\\n' > /run/gh-runner-init.partial",
-                  'mv /run/gh-runner-init.partial /run/gh-runner-init',
-                ],
-              },
-            },
-          ],
-        },
-      },
-    });
-
     // ── Outputs: consumed by later spill scripts via describe-stacks ─────────
     // SubnetIds lists all three AZ subnets (comma-separated). ec2_launch tries
     // them in order and advances to the next on InsufficientInstanceCapacity.
@@ -468,5 +467,6 @@ export class SpillStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LaunchTemplateId', { value: launchTemplate.ref });
     new cdk.CfnOutput(this, 'LaunchTemplateName', { value: 'ephemeral-ci-spill' });
     new cdk.CfnOutput(this, 'InstanceProfileName', { value: instanceProfile.ref });
+    new cdk.CfnOutput(this, 'DeliverDocumentName', { value: deliverRunnerTokenDocument.ref });
   }
 }

@@ -570,8 +570,10 @@ ec2_load_stack() {
         'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SecurityGroupId"])')" || return 1
     SPILL_LT_ID="$(printf '%s' "$raw" | python3 -c \
         'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["LaunchTemplateId"])')" || return 1
-    printf 'provision.sh: spill stack %s loaded (subnets=%s sg=%s lt=%s)\n' \
-        "$SPILL_STACK_NAME" "$SPILL_SUBNET_IDS" "$SPILL_SG_ID" "$SPILL_LT_ID" >&2
+    SPILL_DELIVER_DOCUMENT_NAME="$(printf '%s' "$raw" | python3 -c \
+        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["DeliverDocumentName"])')" || return 1
+    printf 'provision.sh: spill stack %s loaded (subnets=%s sg=%s lt=%s doc=%s)\n' \
+        "$SPILL_STACK_NAME" "$SPILL_SUBNET_IDS" "$SPILL_SG_ID" "$SPILL_LT_ID" "$SPILL_DELIVER_DOCUMENT_NAME" >&2
 }
 
 # Print the count of pending/running spill instances.
@@ -743,8 +745,9 @@ ec2_wait_ssm() {
 # is recorded in SSM command history; see the residual note in spill-stack.ts
 # (instance role comment) for the accepted exposure and its bounds.
 #
-# The custom document (ephemeral-ci-deliver-runner-token) is defined in the
-# CDK stack.  The instance never calls the SSM API directly.
+# The custom document name is read from the DeliverDocumentName stack output
+# by ec2_load_stack (SPILL_DELIVER_DOCUMENT_NAME).  The instance never calls
+# the SSM API directly.
 ec2_deliver_token() {
     local iid="$1"
 
@@ -766,7 +769,7 @@ PYEOF
     cmd_id="$(aws ssm send-command \
                   --region "$SPILL_REGION" \
                   --instance-ids "$iid" \
-                  --document-name 'ephemeral-ci-deliver-runner-token' \
+                  --document-name "$SPILL_DELIVER_DOCUMENT_NAME" \
                   --parameters "$params" \
                   --query 'Command.CommandId' \
                   --output text 2>&1)" || {

@@ -1524,7 +1524,7 @@ printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
 # Route by subcommand
 case "$1 $2" in
     "cloudformation describe-stacks")
-        printf '[{"OutputKey":"SubnetIds","OutputValue":"subnet-test-a,subnet-test-b,subnet-test-c"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-test456"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-test789"}]\n'
+        printf '[{"OutputKey":"SubnetIds","OutputValue":"subnet-test-a,subnet-test-b,subnet-test-c"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-test456"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-test789"},{"OutputKey":"DeliverDocumentName","OutputValue":"ssm-doc-from-stack-output"}]\n'
         ;;
     "ec2 describe-instances")
         printf '0\n'
@@ -1628,7 +1628,7 @@ fi
 #   - vmtoken on stdout
 #   - run-instances has no --user-data
 #   - run-instances carries ephemeral-ci:vmtoken tag matching stdout vmtoken
-#   - send-command called with ephemeral-ci-deliver-runner-token document
+#   - send-command called with document name from stack output (DeliverDocumentName)
 #   - send-command --parameters carry RunnerToken, RunnerLabel, RunnerUrl, RunnerGroup
 #   - RunnerToken value is the token itself (no ssm-secure reference)
 #   - put-parameter NOT called (token is not stored in Parameter Store)
@@ -1696,11 +1696,13 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ko "test-29: send-command not called — token delivery did not happen"
     fi
 
-    # send-command must use the custom document, not AWS-RunShellScript
-    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci-deliver-runner-token"; then
-        ok "test-29: send-command uses ephemeral-ci-deliver-runner-token document"
+    # send-command must use the document name from the stack output, not a hardcoded string.
+    # The stub returns "ssm-doc-from-stack-output" as DeliverDocumentName; if provision.sh
+    # hardcodes the old name it will not match and this test fails on unfixed code.
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ssm-doc-from-stack-output"; then
+        ok "test-29: send-command uses document name from stack output"
     else
-        ko "test-29: send-command did not use custom document (expected ephemeral-ci-deliver-runner-token)"
+        ko "test-29: send-command did not use document name from stack output (expected ssm-doc-from-stack-output; got: $(grep send-command "$AWS_ARGV_FILE" || true))"
     fi
 
     # send-command --parameters must carry all four keys
