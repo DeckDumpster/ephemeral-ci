@@ -151,7 +151,28 @@ _SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/subnet-00000000000000000"
 _AMI="arn:aws:ec2:${REGION}::image/ami-00000000000000000"
 _PARAM="arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/ephemeral-ci/runner-token/testtoken"
 _CF_STACK="arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/${STACK_NAME}/*"
-_SSM_DOC="arn:aws:ssm:${REGION}::document/ephemeral-ci-deliver-runner-token"
+
+# ── Discover SSM document name from stack output ─────────────────────────────
+# The document has no pinned Name; CloudFormation generates one.  Read it
+# from the DeliverDocumentName output so simulation uses the real ARN.
+_SSM_DOC_NAME=""
+if _stack_raw="$(aws cloudformation describe-stacks \
+        --region "$REGION" \
+        --stack-name "$STACK_NAME" \
+        --query 'Stacks[0].Outputs' \
+        --output json 2>&1)"; then
+    _SSM_DOC_NAME="$(printf '%s' "$_stack_raw" | python3 -c \
+        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o.get("DeliverDocumentName",""))' 2>/dev/null)" \
+        || true
+fi
+if [ -n "$_SSM_DOC_NAME" ]; then
+    _SSM_DOC="arn:aws:ssm:${REGION}:${ACCOUNT}:document/${_SSM_DOC_NAME}"
+    printf 'check-spill-permissions: SSM document = %s\n\n' "$_SSM_DOC"
+else
+    _SSM_DOC="arn:aws:ssm:${REGION}:${ACCOUNT}:document/PLACEHOLDER-document-name-unresolved"
+    printf 'check-spill-permissions: WARNING: cannot read DeliverDocumentName from stack %s; SendCommand document step may report incorrect result\n\n' \
+        "$STACK_NAME"
+fi
 
 # ── Simulation engine ────────────────────────────────────────────────────────
 #

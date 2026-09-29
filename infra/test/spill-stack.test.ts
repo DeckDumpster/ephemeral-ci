@@ -217,23 +217,84 @@ test('instance role managed policy is only AmazonSSMManagedInstanceCore', () => 
   expect(JSON.stringify(managed[0])).toContain('AmazonSSMManagedInstanceCore');
 });
 
-test('custom SSM document for runner token delivery is defined', () => {
+test('SSM document for runner token delivery declares no Name property', () => {
+  // Content changes to AWS::SSM::Document force REPLACEMENT. A pinned Name
+  // means CloudFormation must create the replacement before deleting the old
+  // one — it cannot, because the name is already taken. Leaving Name absent
+  // lets CloudFormation generate one so every future Content edit deploys
+  // cleanly. See db-0v6i for the incident that established this rule.
+  const docs = template.findResources('AWS::SSM::Document');
+  expect(Object.keys(docs)).toHaveLength(1);
+  const doc = Object.values(docs)[0] as { Properties: Record<string, unknown> };
+  expect(doc.Properties['Name']).toBeUndefined();
+});
+
+test('DeliverDocumentName output exists', () => {
+  // provision.sh reads the generated document name from this output via
+  // ec2_load_stack so send-command carries the real name without hardcoding it.
+  const outputs = template.findOutputs('DeliverDocumentName');
+  expect(Object.keys(outputs)).toHaveLength(1);
+});
+
+test('custom SSM document for runner token delivery has correct schema', () => {
   // ec2_deliver_token uses a custom SSM document to write the runner init file.
   // RunnerToken is passed as a plain String parameter via send-command --parameters.
   const docs = template.findResources('AWS::SSM::Document');
-  const deliverDoc = Object.values(docs).find((d) => {
-    const name = (d as { Properties: Record<string, unknown> }).Properties.Name;
-    return name === 'ephemeral-ci-deliver-runner-token';
-  });
-  expect(deliverDoc).toBeDefined();
-  const content = (deliverDoc as { Properties: { Content: Record<string, unknown> } })
-    .Properties.Content as Record<string, unknown>;
+  expect(Object.keys(docs)).toHaveLength(1);
+  const deliverDoc = Object.values(docs)[0] as { Properties: { Content: Record<string, unknown> } };
+  const content = deliverDoc.Properties.Content as Record<string, unknown>;
   expect(content['schemaVersion']).toBe('2.2');
   const params = content['parameters'] as Record<string, unknown>;
   expect(params).toHaveProperty('RunnerToken');
   expect(params).toHaveProperty('RunnerLabel');
   expect(params).toHaveProperty('RunnerUrl');
   expect(params).toHaveProperty('RunnerGroup');
+});
+
+test('no spill role SendCommand statement names the literal document name', () => {
+  // A literal document name in the IAM resource ARN re-introduces the pinned-name
+  // trap: the ARN stops matching on replacement and the grant silently breaks.
+  // The resource must be a CloudFormation intrinsic referencing the document.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+
+  const allPolicies = template.findResources('AWS::IAM::Policy');
+  type RawPolicy = {
+    Properties: {
+      Roles: unknown[];
+      PolicyDocument: {
+        Statement: Array<{ Action: string | string[]; Resource: unknown }>;
+      };
+    };
+  };
+
+  const spillStatements = Object.values(allPolicies).flatMap((pRaw) => {
+    const p = pRaw as RawPolicy;
+    const isSpill = (([] as unknown[]).concat(p.Properties.Roles ?? [])).some((r) => {
+      if (typeof r === 'string') return r === spillRoleId;
+      return r != null && typeof r === 'object' && 'Ref' in r &&
+        (r as { Ref: string }).Ref === spillRoleId;
+    });
+    return isSpill ? p.Properties.PolicyDocument.Statement : [];
+  });
+
+  const sendCommandDocStmts = spillStatements.filter((s) => {
+    const actions = ([] as string[]).concat(s.Action as string | string[]);
+    if (!actions.includes('ssm:SendCommand')) return false;
+    const resources = ([] as unknown[]).concat(s.Resource);
+    return resources.some((r) => JSON.stringify(r).includes(':document/'));
+  });
+
+  expect(sendCommandDocStmts).toHaveLength(1);
+  const resources = ([] as unknown[]).concat(sendCommandDocStmts[0].Resource);
+  // Resource must be a CloudFormation intrinsic, not a plain string with a literal name
+  const hasLiteralName = resources.some(
+    (r): r is string => typeof r === 'string' && r.includes(':document/ephemeral-ci-deliver-runner-token'),
+  );
+  expect(hasLiteralName).toBe(false);
+  const hasIntrinsic = resources.some((r) => typeof r === 'object' && r !== null);
+  expect(hasIntrinsic).toBe(true);
 });
 
 // Immutable OIDC sub prefix, sourced from:
