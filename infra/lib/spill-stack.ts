@@ -126,6 +126,14 @@ export class SpillStack extends cdk.Stack {
     // The numeric ids survive a repository or organisation rename and are immutable
     // by definition — hardcoding them is correct, not a maintenance risk.
     const OIDC_SUB_PREFIX = 'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*';
+    // AWS_SPILL_ROLE_ARN (org secret, selected visibility) must be scoped to
+    // exactly the repositories matched by OIDC_SUB_PREFIX above.  Both lists
+    // must change together: a repository that can read the secret but cannot
+    // assume the role gets a credential-not-authorized error; one that can
+    // assume the role but cannot read the secret gets an empty
+    // aws-role-to-assume and a missing-role error from configure-aws-credentials.
+    // Update: gh secret set AWS_SPILL_ROLE_ARN --org DeckDumpster \
+    //   --visibility selected --repos <same list as above>
 
     // An account may hold exactly one provider for this issuer; create it here.
     // If deploy fails EntityAlreadyExists, import it instead of deleting.
