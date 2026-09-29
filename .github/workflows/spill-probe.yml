@@ -19,7 +19,8 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write  # OIDC token for assuming the AWS spill role
+  id-token: write   # OIDC token for assuming the AWS spill role
+  actions: read     # runners API for watchdog
 
 jobs:
   provision:
@@ -50,6 +51,81 @@ jobs:
           spill:               ec2-only
           aws-role-to-assume:  ${{ secrets.AWS_SPILL_ROLE_ARN }}
 
+  # Confirms the provisioned runner came online and accepted work before
+  # verify is allowed to proceed. Runs on ubuntu-latest so it can never
+  # queue: if it times out, verify is skipped and teardown fires immediately
+  # instead of waiting up to 24 hours for GitHub's queue limit.
+  #
+  # Reports two distinct failure modes:
+  #   "runner never came online"         — instance started, runner never registered
+  #   "runner online but never accepted" — registered but job not routed to it
+  watchdog:
+    needs: [provision]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for runner to come online and accept work
+        env:
+          RUNNER_LABEL: ${{ needs.provision.outputs.label }}
+        run: |
+          echo "Watching for runner: $RUNNER_LABEL"
+
+          # Phase 1: runner must reach online status within 3 minutes.
+          # The instance reaches SSM in ~19s and registers seconds after that,
+          # so 3 minutes is generous but well within the job timeout.
+          deadline_online=$(( $(date +%s) + 180 ))
+          runner_online=false
+          while [ "$(date +%s)" -lt "$deadline_online" ]; do
+            status=$(gh api \
+              "repos/${{ github.repository }}/actions/runners" \
+              --paginate \
+              --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .status" \
+              2>/dev/null | head -1 || true)
+            if [ "$status" = "online" ]; then
+              echo "Runner '$RUNNER_LABEL' is online."
+              runner_online=true
+              break
+            fi
+            echo "Runner '$RUNNER_LABEL': ${status:-not found}. Retrying in 10s..."
+            sleep 10
+          done
+
+          if ! $runner_online; then
+            echo "::error::Runner '$RUNNER_LABEL' did not come online within 3 minutes — instance started but runner never registered."
+            exit 1
+          fi
+
+          # Phase 2: runner must accept the verify job within 90 seconds of
+          # coming online. If it transitions offline first, report that separately.
+          deadline_busy=$(( $(date +%s) + 90 ))
+          while [ "$(date +%s)" -lt "$deadline_busy" ]; do
+            status=$(gh api \
+              "repos/${{ github.repository }}/actions/runners" \
+              --paginate \
+              --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .status" \
+              2>/dev/null | head -1 || true)
+            busy=$(gh api \
+              "repos/${{ github.repository }}/actions/runners" \
+              --paginate \
+              --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .busy | tostring" \
+              2>/dev/null | head -1 || true)
+            if [ "$status" = "offline" ]; then
+              echo "::error::Runner '$RUNNER_LABEL' came online then went offline — registered but crashed before accepting work."
+              exit 1
+            fi
+            if [ "$busy" = "true" ]; then
+              echo "Runner '$RUNNER_LABEL' accepted the verify job."
+              exit 0
+            fi
+            echo "Runner '$RUNNER_LABEL' online but not yet busy. Retrying in 10s..."
+            sleep 10
+          done
+
+          echo "::error::Runner '$RUNNER_LABEL' came online but did not accept work within 90 seconds — verify job may not have been routed to this runner."
+          exit 1
+
   # Runs a trivial command on the provisioned EC2 runner. If this job never
   # starts, the runner did not register despite provision exiting zero —
   # launch and registration are two separate failure modes.
@@ -59,7 +135,7 @@ jobs:
   # already generous. A large timeout defeats the point — the probe must fail
   # fast so teardown runs. Same fix as db-ise2 applied to the repository gate.
   verify:
-    needs: [provision]
+    needs: [provision, watchdog]
     runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
     timeout-minutes: 5
     steps:
@@ -79,9 +155,11 @@ jobs:
         run: podman run --rm docker.io/library/busybox:latest true
 
   # Terminates the EC2 instance regardless of earlier job outcomes.
-  # if: always() ensures this runs even when provision or verify failed.
+  # if: always() ensures this runs even when provision, watchdog, or verify
+  # failed. watchdog failing skips verify (so verify never queues), and both
+  # being in needs means teardown is unblocked as soon as they complete or skip.
   teardown:
-    needs: [provision, verify]
+    needs: [provision, watchdog, verify]
     runs-on: ubuntu-latest
     if: always()
     steps:
