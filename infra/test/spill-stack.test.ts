@@ -297,12 +297,22 @@ test('no spill role SendCommand statement names the literal document name', () =
   expect(hasIntrinsic).toBe(true);
 });
 
-// Immutable OIDC sub prefix, sourced from:
+// Immutable OIDC sub prefix for ephemeral-ci, sourced from:
 //   gh api repos/DeckDumpster/ephemeral-ci/actions/oidc/customization/sub
-const IMMUTABLE_SUB_PREFIX = 'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*';
+const EPHEMERAL_CI_SUB_PREFIX = 'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*';
 const NAME_BASED_SUB = 'repo:DeckDumpster/ephemeral-ci:*';
 
-function getOidcSub(roleName: string): string {
+// All expected spill role sub prefixes, one per consuming repository.
+// Sourced from: gh api repos/DeckDumpster/<repo>/actions/oidc/customization/sub
+const SPILL_SUB_PREFIXES = [
+  'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*',
+  'repo:DeckDumpster@262905033/pokedumpster@1247247276:*',
+  'repo:DeckDumpster@262905033/household@1202178120:*',
+  'repo:DeckDumpster@262905033/spira@1358347130:*',
+  'repo:DeckDumpster/deckdumpster:*',
+];
+
+function getOidcSubs(roleName: string): string | string[] {
   const roles = template.findResources('AWS::IAM::Role', {
     Properties: { RoleName: roleName },
   });
@@ -312,7 +322,7 @@ function getOidcSub(roleName: string): string {
       AssumeRolePolicyDocument: {
         Statement: Array<{
           Action: string;
-          Condition?: Record<string, Record<string, string>>;
+          Condition?: Record<string, Record<string, string | string[]>>;
         }>;
       };
     };
@@ -324,20 +334,31 @@ function getOidcSub(roleName: string): string {
   return oidcStatement!.Condition!['StringLike']['token.actions.githubusercontent.com:sub'];
 }
 
-test('spill role trust policy carries immutable OIDC sub prefix', () => {
-  expect(getOidcSub('ephemeral-ci-spill')).toBe(IMMUTABLE_SUB_PREFIX);
+test('spill role trust policy lists one sub per consuming repository', () => {
+  const subs = getOidcSubs('ephemeral-ci-spill');
+  expect(Array.isArray(subs)).toBe(true);
+  expect(subs as string[]).toHaveLength(SPILL_SUB_PREFIXES.length);
+  for (const expected of SPILL_SUB_PREFIXES) {
+    expect(subs as string[]).toContain(expected);
+  }
 });
 
-test('spill role trust policy does not carry name-based OIDC sub', () => {
-  expect(getOidcSub('ephemeral-ci-spill')).not.toBe(NAME_BASED_SUB);
+test('spill role trust policy sub values have no wildcard before the final colon', () => {
+  // A wildcard in owner or repository position (e.g. repo:DeckDumpster*/*:*)
+  // is the impersonation-by-rename hole immutable subjects exist to close.
+  const subs = getOidcSubs('ephemeral-ci-spill') as string[];
+  for (const sub of subs) {
+    const beforeLastColon = sub.slice(0, sub.lastIndexOf(':'));
+    expect(beforeLastColon).not.toContain('*');
+  }
 });
 
 test('ci-test role trust policy carries immutable OIDC sub prefix', () => {
-  expect(getOidcSub('ephemeral-ci-ci-test')).toBe(IMMUTABLE_SUB_PREFIX);
+  expect(getOidcSubs('ephemeral-ci-ci-test')).toBe(EPHEMERAL_CI_SUB_PREFIX);
 });
 
 test('ci-test role trust policy does not carry name-based OIDC sub', () => {
-  expect(getOidcSub('ephemeral-ci-ci-test')).not.toBe(NAME_BASED_SUB);
+  expect(getOidcSubs('ephemeral-ci-ci-test')).not.toBe(NAME_BASED_SUB);
 });
 
 test('budget does not declare a BudgetName', () => {

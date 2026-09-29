@@ -118,13 +118,28 @@ export class SpillStack extends cdk.Stack {
     });
 
     // ── GitHub Actions OIDC provider ─────────────────────────────────────────
-    // This repository uses immutable OIDC subjects (use_immutable_subject=true).
-    // GitHub issues subs of the form repo:<owner>@<owner_id>/<repo>@<repo_id>:<context>.
-    // The prefix below was read from:
-    //   gh api repos/DeckDumpster/ephemeral-ci/actions/oidc/customization/sub
-    // It must be re-read if this stack is ever pointed at a different repository.
-    // The numeric ids survive a repository or organisation rename and are immutable
-    // by definition — hardcoding them is correct, not a maintenance risk.
+    // Prefixes sourced from:
+    //   gh api repos/DeckDumpster/<repo>/actions/oidc/customization/sub
+    // Immutable subjects encode numeric owner and repo IDs that survive renames.
+    // deckdumpster does not have immutable subjects enabled (use_immutable_subject=false)
+    // and uses the name-based form — if it later enables immutable subjects, its sub
+    // will change form and this list must be re-read from the API; until then the
+    // failure mode is a silent AssumeRoleWithWebIdentity denial for that repo.
+    // Re-read all prefixes from the API before extending or modifying this list.
+    //
+    // The spill role grants are listed for all repositories that may exhaust Proxmox
+    // capacity and need EC2 spill: ephemeral-ci (infra self-tests), deckdumpster,
+    // pokedumpster, household, and spira. All five run runner-consuming CI workloads.
+    const SPILL_OIDC_SUB_PREFIXES: string[] = [
+      'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*',  // immutable
+      'repo:DeckDumpster@262905033/pokedumpster@1247247276:*',  // immutable
+      'repo:DeckDumpster@262905033/household@1202178120:*',     // immutable
+      'repo:DeckDumpster@262905033/spira@1358347130:*',         // immutable
+      'repo:DeckDumpster/deckdumpster:*',                       // name-based (immutable subjects not enabled)
+    ];
+
+    // The ci-test role is assumed only from ephemeral-ci (infra tests); it stays
+    // scoped to this repository's immutable prefix.
     const OIDC_SUB_PREFIX = 'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*';
     // AWS_SPILL_ROLE_ARN (org secret, selected visibility) must be scoped to
     // exactly the repositories matched by OIDC_SUB_PREFIX above.  Both lists
@@ -148,7 +163,7 @@ export class SpillStack extends cdk.Stack {
       ],
     });
 
-    const oidcPrincipal = (sub: string): iam.WebIdentityPrincipal =>
+    const oidcPrincipal = (sub: string | string[]): iam.WebIdentityPrincipal =>
       new iam.WebIdentityPrincipal(oidcProvider.attrArn, {
         StringEquals: {
           'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
@@ -242,13 +257,12 @@ export class SpillStack extends cdk.Stack {
     });
 
     // ── Spill role ────────────────────────────────────────────────────────────
-    // Subject uses OIDC_SUB_PREFIX (all refs, not just main) because CI spills
-    // from queue branches and pull request branches too.
-    // Cost is bounded instead: launch template required + instance type locked
-    // to c7i/c8i families (16 vCPU shapes validated in docs/spikes/).
+    // All refs are trusted (not just main) because CI spills from queue branches
+    // and pull request branches too. Cost is bounded: launch template required
+    // + instance type locked to c7i/c8i families (16 vCPU shapes validated in docs/spikes/).
     const spillRole = new iam.Role(this, 'SpillRole', {
       roleName: 'ephemeral-ci-spill',
-      assumedBy: oidcPrincipal(OIDC_SUB_PREFIX),
+      assumedBy: oidcPrincipal(SPILL_OIDC_SUB_PREFIXES),
     });
 
     // RunInstances: scoped to this stack's specific launch template by ID.
