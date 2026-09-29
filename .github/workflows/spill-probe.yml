@@ -63,11 +63,10 @@ jobs:
     needs: [provision]
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Wait for runner to come online and accept work
         env:
+          GH_TOKEN: ${{ secrets.RUNNER_REG_PAT }}
           RUNNER_LABEL: ${{ needs.provision.outputs.label }}
         run: |
           echo "Watching for runner: $RUNNER_LABEL"
@@ -75,11 +74,16 @@ jobs:
           # Phase 1: runner must reach online status within 3 minutes.
           # The instance reaches SSM in ~19s and registers seconds after that,
           # so 3 minutes is generous but well within the job timeout.
+          #
+          # Runners register at the org level (not repo level) — see
+          # scripts/guest/start-runner.sh. The default GITHUB_TOKEN cannot read
+          # org runners, so RUNNER_REG_PAT is required here, matching what the
+          # provision action uses in its "Wait for the runner to register" step.
           deadline_online=$(( $(date +%s) + 180 ))
           runner_online=false
           while [ "$(date +%s)" -lt "$deadline_online" ]; do
             status=$(gh api \
-              "repos/${{ github.repository }}/actions/runners" \
+              "orgs/${{ github.repository_owner }}/actions/runners" \
               --paginate \
               --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .status" \
               2>/dev/null | head -1 || true)
@@ -102,12 +106,12 @@ jobs:
           deadline_busy=$(( $(date +%s) + 90 ))
           while [ "$(date +%s)" -lt "$deadline_busy" ]; do
             status=$(gh api \
-              "repos/${{ github.repository }}/actions/runners" \
+              "orgs/${{ github.repository_owner }}/actions/runners" \
               --paginate \
               --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .status" \
               2>/dev/null | head -1 || true)
             busy=$(gh api \
-              "repos/${{ github.repository }}/actions/runners" \
+              "orgs/${{ github.repository_owner }}/actions/runners" \
               --paginate \
               --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .busy | tostring" \
               2>/dev/null | head -1 || true)
