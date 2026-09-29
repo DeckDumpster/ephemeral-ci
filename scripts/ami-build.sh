@@ -299,14 +299,13 @@ apply_substrate() {
 #!/bin/bash
 set -euo pipefail
 
-# ---- substrate ----
-printf '%s' "${substrate_b64}" | base64 -d > /tmp/template-substrate.sh
-sudo env SUBSTRATE_MEM_DECLARED=0 bash /tmp/template-substrate.sh
-rm -f /tmp/template-substrate.sh
-
 # ---- runner user (Ubuntu cloud images have no 'runner' user by default) ----
 id runner 2>/dev/null || sudo useradd --system --create-home --shell /bin/bash runner
-sudo loginctl enable-linger runner || true
+
+# ---- substrate ----
+printf '%s' "${substrate_b64}" | base64 -d > /tmp/template-substrate.sh
+sudo env SUBSTRATE_MEM_DECLARED=0 SUBSTRATE_USER=runner bash /tmp/template-substrate.sh
+rm -f /tmp/template-substrate.sh
 
 # ---- GitHub Actions runner tarball ----
 RUNNER_DIR=/home/runner/actions-runner
