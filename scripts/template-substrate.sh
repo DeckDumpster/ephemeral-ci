@@ -74,7 +74,10 @@ elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
 fi
 
 RUNUSER="${SUBSTRATE_USER:-runner}"
-id -u "$RUNUSER" >/dev/null 2>&1 || RUNUSER="$(id -un)"
+if ! id -u "$RUNUSER" >/dev/null 2>&1; then
+    printf 'substrate: error: user "%s" does not exist -- create the user before running this script, or set SUBSTRATE_USER\n' "$RUNUSER" >&2
+    exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # apt, with the two failure modes a per-run VM actually hits

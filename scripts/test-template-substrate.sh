@@ -369,7 +369,7 @@ printf '#!/bin/sh\nexit 1\n' > "$_TSTUBS/dpkg"; chmod +x "$_TSTUBS/dpkg"
 
 cat > "$_TSTUBS/id" <<'STUB'
 #!/bin/sh
-[ "$1" = "-u" ] && [ $# -eq 1 ] && { echo 0; exit 0; }
+[ "$1" = "-u" ] && { echo 0; exit 0; }
 exec /usr/bin/id "$@"
 STUB
 chmod +x "$_TSTUBS/id"
@@ -399,10 +399,12 @@ _check_mem() {
     local minfo="$_mc_dir/meminfo"
     printf 'MemTotal:       %d kB\n' $(( mib * 1024 )) > "$minfo"
     local out
+    # SUBSTRATE_USER: use the running user so the check is not short-circuited
+    # by a missing 'runner' user on the test machine, and reaches the memory check.
     if [ "$declared" = "unset" ]; then
-        out="$(env -u SUBSTRATE_MEM_DECLARED MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
+        out="$(env -u SUBSTRATE_MEM_DECLARED SUBSTRATE_USER="$(id -un)" MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
     else
-        out="$(SUBSTRATE_MEM_DECLARED="$declared" MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
+        out="$(SUBSTRATE_MEM_DECLARED="$declared" SUBSTRATE_USER="$(id -un)" MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
     fi
     if [ "$expect" = pass ]; then
         if printf '%s' "$out" | grep -q 'MISSING mem~'; then
@@ -502,6 +504,37 @@ else
 fi
 
 rm -rf "$_upd_dir"
+
+echo
+echo "absent user: substrate fails immediately naming the missing user:"
+
+_absent_dir="$(mktemp -d)"
+
+# Stub id to fail when asked about absent-test-user; otherwise report root (id -u → 0).
+cat > "$_absent_dir/id" <<'STUB'
+#!/bin/sh
+for a; do [ "$a" = "absent-test-user" ] && { printf 'id: absent-test-user: no such user\n' >&2; exit 1; }; done
+case " $* " in *" -u "*) echo 0; exit 0 ;; esac
+exec /usr/bin/id "$@"
+STUB
+chmod +x "$_absent_dir/id"
+
+_absent_rc=0
+_absent_out="$(SUBSTRATE_USER=absent-test-user PATH="$_absent_dir:$PATH" bash "$SUBSTRATE" 2>&1)" || _absent_rc=$?
+
+if [ "$_absent_rc" -ne 0 ]; then
+    ok "absent user: substrate exits non-zero"
+else
+    bad "absent user: substrate exits non-zero" "exited 0 when SUBSTRATE_USER=absent-test-user but that user does not exist"
+fi
+
+if printf '%s' "$_absent_out" | grep -q 'absent-test-user'; then
+    ok "absent user: error names the missing user"
+else
+    bad "absent user: error names the missing user" "got: $(printf '%s' "$_absent_out" | head -3)"
+fi
+
+rm -rf "$_absent_dir"
 
 echo
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
