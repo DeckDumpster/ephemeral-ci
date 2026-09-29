@@ -51,27 +51,29 @@ jobs:
           spill:               ec2-only
           aws-role-to-assume:  ${{ secrets.AWS_SPILL_ROLE_ARN }}
 
-  # Confirms the provisioned runner came online and accepted work before
-  # verify is allowed to proceed. Runs on ubuntu-latest so it can never
-  # queue: if it times out, verify is skipped and teardown fires immediately
-  # instead of waiting up to 24 hours for GitHub's queue limit.
+  # Confirms the provisioned runner came online before verify is allowed to
+  # proceed. Runs on ubuntu-latest so it can never queue: if it times out,
+  # verify is skipped and teardown fires immediately instead of waiting up to
+  # 24 hours for GitHub's queue limit.
   #
-  # Reports two distinct failure modes:
-  #   "runner never came online"         — instance started, runner never registered
-  #   "runner online but never accepted" — registered but job not routed to it
+  # Reports one failure mode here:
+  #   "runner never came online" — instance started but runner never registered
+  #
+  # Whether the runner accepted work is observable only from a job that runs
+  # concurrently with verify (not upstream of it). That check lives in `guard`.
   watchdog:
     needs: [provision]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Wait for runner to come online and accept work
+      - name: Wait for runner to come online
         env:
           GH_TOKEN: ${{ secrets.RUNNER_REG_PAT }}
           RUNNER_LABEL: ${{ needs.provision.outputs.label }}
         run: |
           echo "Watching for runner: $RUNNER_LABEL"
 
-          # Phase 1: runner must reach online status within 3 minutes.
+          # Runner must reach online status within 3 minutes.
           # The instance reaches SSM in ~19s and registers seconds after that,
           # so 3 minutes is generous but well within the job timeout.
           #
@@ -101,33 +103,44 @@ jobs:
             exit 1
           fi
 
-          # Phase 2: runner must accept the verify job within 90 seconds of
-          # coming online. If it transitions offline first, report that separately.
-          deadline_busy=$(( $(date +%s) + 90 ))
-          while [ "$(date +%s)" -lt "$deadline_busy" ]; do
-            status=$(gh api \
-              "orgs/${{ github.repository_owner }}/actions/runners" \
-              --paginate \
-              --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .status" \
+  # Runs concurrently with verify. Polls whether verify has left the queue
+  # within this job's timeout. If it has not, the runner is online but the
+  # job was not routed to it — fail fast so teardown fires and the instance
+  # is reclaimed rather than waiting for GitHub's 24-hour queue limit.
+  #
+  # needs: [provision, watchdog], NOT [verify] — adding verify here would
+  # recreate the unsatisfiable gate this job was added to break (db-vjuf).
+  guard:
+    needs: [provision, watchdog]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Guard — verify must leave the queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id="${{ github.run_id }}"
+          repo="${{ github.repository }}"
+          runner_label="${{ needs.provision.outputs.label }}"
+
+          # verify runs concurrently with this job. If the runner is online but
+          # the job is not routed to it (wrong label, saturated queue), verify
+          # stays queued indefinitely. Detect that here and fail fast so
+          # teardown fires instead of waiting up to the runner timeout.
+          deadline=$(( $(date +%s) + 270 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            status=$(gh api "repos/${repo}/actions/runs/${run_id}/jobs" \
+              --jq '.jobs[] | select(.name == "verify") | .status' \
               2>/dev/null | head -1 || true)
-            busy=$(gh api \
-              "orgs/${{ github.repository_owner }}/actions/runners" \
-              --paginate \
-              --jq ".runners[] | select(.labels[].name == \"$RUNNER_LABEL\") | .busy | tostring" \
-              2>/dev/null | head -1 || true)
-            if [ "$status" = "offline" ]; then
-              echo "::error::Runner '$RUNNER_LABEL' came online then went offline — registered but crashed before accepting work."
-              exit 1
-            fi
-            if [ "$busy" = "true" ]; then
-              echo "Runner '$RUNNER_LABEL' accepted the verify job."
+            if [ "$status" = "in_progress" ] || [ "$status" = "completed" ]; then
+              echo "verify job left the queue (status: $status)."
               exit 0
             fi
-            echo "Runner '$RUNNER_LABEL' online but not yet busy. Retrying in 10s..."
+            echo "verify job status: ${status:-unknown}. Waiting..."
             sleep 10
           done
 
-          echo "::error::Runner '$RUNNER_LABEL' came online but did not accept work within 90 seconds — verify job may not have been routed to this runner."
+          echo "::error::Runner '$runner_label' came online but the verify job did not start within the guard's budget — job may not have been routed to this runner."
           exit 1
 
   # Runs a trivial command on the provisioned EC2 runner. If this job never
@@ -159,11 +172,12 @@ jobs:
         run: podman run --rm docker.io/library/busybox:latest true
 
   # Terminates the EC2 instance regardless of earlier job outcomes.
-  # if: always() ensures this runs even when provision, watchdog, or verify
-  # failed. watchdog failing skips verify (so verify never queues), and both
-  # being in needs means teardown is unblocked as soon as they complete or skip.
+  # if: always() ensures this runs even when provision, watchdog, guard, or
+  # verify failed. guard failing (unroutable runner) unblocks teardown while
+  # verify may still be queued — the instance is reclaimed before the queue
+  # limit is reached.
   teardown:
-    needs: [provision, watchdog, verify]
+    needs: [provision, watchdog, verify, guard]
     runs-on: ubuntu-latest
     if: always()
     steps:
