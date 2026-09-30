@@ -27,9 +27,12 @@ on:
       consumers-updated:
         description: >-
           Evidence that every consumer already passes the changed action
-          inputs — PR or commit links, one per consumer. Required only when
-          the action interface has changed since v1; the run refuses without
-          it and records whatever is given as the audit trail.
+          inputs. When new inputs carry defaults and no consumer update is
+          needed, state that directly ("all N inputs default; no consumer
+          change required") so the audit trail records the reasoning. When
+          consumers did update, supply PR or commit links, one per consumer.
+          Required whenever the action interface changed since v1; the run
+          refuses without it and records whatever is given as the audit trail.
         type: string
         default: ''
 
