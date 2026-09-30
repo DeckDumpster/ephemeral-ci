@@ -38,6 +38,10 @@ jobs:
           pve-api-host:       ${{ vars.PVE_API_HOST }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
+          spill:              off
+          spill-after-seconds: '0'
+          spill-max-instances: '4'
+          aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
 
   test:
     needs: provision
@@ -68,6 +72,30 @@ jobs:
           pve-api-host:       ${{ vars.PVE_API_HOST }}
           pve-node:           ${{ vars.PVE_NODE }}
 ```
+
+### EC2 spill
+
+Set `spill: ec2` on the provision step to enable overflow onto EC2. When Proxmox
+capacity is exhausted, `provision` launches a `c7i.xlarge` in us-west-2 and
+registers it as the run's runner; teardown terminates it. `spill-after-seconds`
+sets how long to wait for Proxmox before spilling — leave it at `0` to exhaust
+the full `capacity-timeout-seconds` first. `spill-max-instances` caps concurrent
+EC2 runners from this run (default 4); the reaper terminates any instance older
+than 8 hours.
+
+**EC2 spill costs money.** On-demand `c7i.xlarge` in us-west-2 is roughly
+$0.20/hr; spot is typically half that. An account-wide $100/month budget is in
+place, with email alerts at 80% of actual spend and when the month's forecasted
+total exceeds the limit. `SPILL_MAX_INSTANCES` (the `spill-max-instances` input)
+is the main lever for bounding cost per run.
+
+Do not set `spill: ec2-only`. That skips Proxmox entirely — every run pays for
+EC2, not just the runs that overflow. `ec2-only` exists for infrastructure probes
+and is not a normal CI setting.
+
+The spill role's OIDC trust currently covers ephemeral-ci, pokedumpster,
+household, spira, and deckdumpster. Per-repository setup is required before spill
+works; see "One-time setup" below.
 
 ## The line between here and your repository
 
@@ -100,6 +128,28 @@ already has everything makes that step a few `command -v` calls.
 
 3. **Point the ruleset at the right check name.** The `test` job reports as
    `test`. If your required check is called something else, rename one of them.
+
+4. **Enable EC2 spill for the repository (if using it).** The spill prerequisites
+   are per-repository and invisible — missing any one produces a failure whose
+   error message names none of them:
+
+   - **Named in the spill role's OIDC trust policy.** The spill IAM role accepts
+     tokens only from repositories whose sub prefix appears in its trust list.
+     Currently trusted: ephemeral-ci, pokedumpster, household, spira, and
+     deckdumpster. A repository not on that list receives a silent
+     `AssumeRoleWithWebIdentity` denial — no indication of which principal or
+     trust condition failed.
+
+   - **`AWS_SPILL_ROLE_ARN` must be visible to it.** The org secret is
+     scoped to selected repositories. A repository that can assume the role but
+     cannot read the secret gets an empty `aws-role-to-assume` and a
+     missing-role error from the credential step. The OIDC trust list and the
+     secret's repository scope must name the same repositories.
+
+   - **On the runner group's list.** Already required for basic operation
+     (step 1 above). An EC2 runner registers into the same restricted group, so
+     a repository missing from the group's list cannot use its EC2 runner —
+     same symptom, same fix.
 
 ## Things that will waste your afternoon
 
@@ -193,6 +243,39 @@ both outside the page's own font stack:
 
 Assert the property rather than the package (`fc-match`, `fc-list :charset=…`),
 so a box that satisfies it another way is not forced onto your choice.
+
+**`timeout-minutes` does not bound a queued job.** A job waiting for a runner —
+because Proxmox is full and spill is off, or because the EC2 path is stalled —
+is waiting, not running. GitHub's job timeout starts only when the job acquires a
+runner. The ceiling on queue wait is `capacity-timeout-seconds`, not
+`timeout-minutes`.
+
+**A launch template's default version is not moved by CloudFormation.** Deploying
+a new launch template version via CloudFormation leaves the template's default
+version pointing at the previous one unless `DefaultVersionNumber` is explicitly
+updated. Pass `Version=$Latest` in the RunInstances call to name the latest
+version directly rather than relying on the template default.
+
+**SSM documents cannot reference SecureString parameters.** An SSM `Command`
+document that tries to resolve a `SecureString` from Parameter Store fails at
+execution — the SSM engine does not resolve references at runtime. Token delivery
+passes the registration token as a plain `String` directly via `--parameters` in
+`send-command` instead.
+
+**`ec2:ResourceTag` is the wrong condition key for SSM-authorized actions.** For
+`ssm:SendCommand` and related SSM API calls, the tag-condition key is
+`aws:ResourceTag`. The EC2-service-only key `ec2:ResourceTag` is not populated
+for SSM actions — a policy that uses it in an SSM statement is permanently
+unsatisfiable.
+
+**Immutable OIDC subjects change the `sub` claim, so a name-based trust pattern
+silently stops matching.** GitHub OIDC subject claims default to
+`repo:ORG/REPO:ref:...`. Enabling immutable subjects switches the claim to a
+numeric-ID form (`repo:ORG@OWNERID/REPO@REPOID:...`). A trust policy using a
+name-based `StringLike` pattern stops matching without any warning — the
+`AssumeRoleWithWebIdentity` call simply returns a denial. Re-read the sub claim
+from the API (`gh api repos/ORG/REPO/actions/oidc/customization/sub`) before
+extending or modifying an OIDC trust list.
 
 **A cold VM has no caches.** Anything your suite relied on surviving between
 runs (a warm build directory, a checkout, a tree-hash cache) is gone every time.
