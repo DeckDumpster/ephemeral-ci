@@ -185,6 +185,8 @@ jobs:
           fi
 
       - name: Check for new required inputs since v1
+        env:
+          CONSUMERS_UPDATED: ${{ inputs.consumers-updated }}
         run: |
           target="${{ needs.find-green.outputs.target }}"
           if ! git rev-parse --verify refs/tags/v1 >/dev/null 2>&1; then
@@ -199,29 +201,52 @@ jobs:
             git show "${target}:${action}/action.yml"    > "$WORK/candidate/${action}.yml"
           done
 
-          blocking=""
+          blocking_inputs=""
           for action in provision teardown; do
             echo "--- ${action}/action.yml ---"
+            err_file=$(mktemp)
             if ! bash scripts/check-advance-inputs.sh \
                    "$WORK/v1/${action}.yml" \
-                   "$WORK/candidate/${action}.yml"; then
-              blocking="${blocking}${action} "
+                   "$WORK/candidate/${action}.yml" 2>"$err_file"; then
+              cat "$err_file" >&2
+              while IFS= read -r line; do
+                [[ "$line" == *"new required input without default: "* ]] || continue
+                name="${line##*new required input without default: }"
+                blocking_inputs="${blocking_inputs}${name} "
+              done < "$err_file"
             fi
+            rm -f "$err_file"
           done
 
-          if [ -n "$blocking" ]; then
-            echo "::error::Advance blocked by new required inputs in: ${blocking}"
-            echo "::error::Add a default value to each listed input, or update all consumers to pass it before advancing v1."
-            {
-              echo "### Advance blocked: new required inputs"
-              echo
-              echo "Actions with new required inputs (no default): \`${blocking}\`"
-              echo
-              echo "Way through: add \`default: ''\` to each input, or update all consumers and re-run."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+          blocking_inputs="${blocking_inputs% }"
+
+          if [ -n "$blocking_inputs" ]; then
+            if [ -n "$CONSUMERS_UPDATED" ]; then
+              echo "::warning::New required inputs without defaults: ${blocking_inputs}; proceeding on consumers-updated evidence."
+              {
+                echo "### Required inputs added; proceeding on consumers-updated evidence"
+                echo
+                echo "New required inputs (no default): \`${blocking_inputs}\`"
+                echo
+                echo "Consumers reported updated:"
+                echo
+                echo "${CONSUMERS_UPDATED}"
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::Advance blocked: new required inputs without defaults: ${blocking_inputs}"
+              echo "::error::Add a default value to each listed input, or supply consumers-updated naming the PRs that updated every consumer."
+              {
+                echo "### Advance blocked: new required inputs"
+                echo
+                echo "New required inputs (no default): \`${blocking_inputs}\`"
+                echo
+                echo "Way through: add \`default: ''\` to each input, or supply \`consumers-updated\` naming the PRs that updated every consumer and re-run."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+          else
+            echo "No new required inputs without defaults."
           fi
-          echo "No new required inputs without defaults."
 
       - name: Check for action interface changes since v1
         env:
