@@ -16,6 +16,15 @@ name: Advance v1
 # find green commits reliably. For commits that predate that trigger,
 # manually dispatch ci.yml on main first, wait for it to pass, then run
 # this workflow.
+#
+# Secrets required:
+#   V1_TAG_PAT — a Personal Access Token with 'workflow' and 'repo' scopes.
+#                GITHUB_TOKEN cannot push a tag that moves across a workflow
+#                file change (GitHub App restriction). This PAT is used only
+#                for the tag push; every other step uses GITHUB_TOKEN.
+#                Do not reuse RUNNER_REG_PAT: its purpose is runner
+#                registration only; coupling both capabilities to one
+#                credential widens the blast radius of a leak.
 
 on:
   workflow_dispatch:
@@ -319,8 +328,16 @@ jobs:
 
       - name: Advance v1 tag
         if: inputs.dry-run == false
+        env:
+          GH_TOKEN_WORKFLOW: ${{ secrets.V1_TAG_PAT }}
         run: |
+          if [ -z "$GH_TOKEN_WORKFLOW" ]; then
+            echo "::error::V1_TAG_PAT secret is not set. Create a PAT with 'workflow' and 'repo' scopes and add it as V1_TAG_PAT before running this workflow. Falling back to GITHUB_TOKEN would reproduce this failure silently after the probe has already provisioned and torn down a real VM."
+            exit 1
+          fi
           target="${{ needs.find-green.outputs.target }}"
+          git remote set-url origin \
+            "https://x-access-token:${GH_TOKEN_WORKFLOW}@github.com/${{ github.repository }}.git"
           git tag -f v1 "$target"
           git push origin v1 --force
           echo "::notice::v1 advanced to $target"

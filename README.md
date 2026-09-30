@@ -291,6 +291,18 @@ change a job name in a consuming repository — that is why this ships as
 composite actions rather than a reusable workflow, which would rename every
 required check to `<caller-job> / <called-job>`.
 
+Running `advance-v1` requires a `V1_TAG_PAT` repository or organisation secret:
+a Personal Access Token with `workflow` and `repo` scopes. `GITHUB_TOKEN` cannot
+push a tag that moves across a workflow file change (a GitHub App restriction).
+Only the tag-push step uses this PAT; every other step uses `GITHUB_TOKEN`.
+Do not reuse `RUNNER_REG_PAT` — its purpose is runner registration only, and
+coupling both capabilities to one credential widens the blast radius of a leak.
+
+The workflow fails loudly at the tag-push step when `V1_TAG_PAT` is absent rather
+than falling back to `GITHUB_TOKEN`, because the probe has already provisioned and
+torn down a real VM by that point and a silent failure there is the most expensive
+place to discover a missing secret.
+
 ## Layout
 
 ```
