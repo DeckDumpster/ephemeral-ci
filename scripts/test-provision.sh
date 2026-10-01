@@ -367,7 +367,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 2 -- clone task exitstatus != OK -> fail, no inject, no start
+# Test 2 -- clone task exitstatus != OK -> fail; vmid= and vmtoken= still emitted
+#
+# The clone POST succeeded (UPID obtained), so the VM exists with the token in
+# its description. Teardown must be able to clean it up even though provision
+# failed. Both outputs must appear and the script must exit non-zero.
 # ---------------------------------------------------------------------------
 rm -f "$CURL_ARGV_FILE"
 export CURL_CLONE_EXITSTATUS=FAILED
@@ -380,11 +384,19 @@ else
     ko "test-2: provision.sh should exit non-zero on clone task failure"
 fi
 
-# vmid= must NOT appear on stdout (it is emitted after clone succeeds).
-if printf '%s\n' "$OUT" | grep -qE '^vmid='; then
-    ko "test-2: vmid= appeared on stdout before successful clone (ordering fault)"
+# vmid= must appear: the clone POST succeeded so the VM exists and teardown
+# must be able to identify and destroy it.
+if printf '%s\n' "$OUT" | grep -qE '^vmid=[0-9]+$'; then
+    ok "test-2: vmid= present on stdout despite clone task failure"
 else
-    ok "test-2: vmid= not on stdout when clone task fails"
+    ko "test-2: vmid= missing from stdout when clone task fails — caller cannot clean up"
+fi
+
+# vmtoken= must also appear for the same reason.
+if printf '%s\n' "$OUT" | grep -qE '^vmtoken=[a-f0-9]+$'; then
+    ok "test-2: vmtoken= present on stdout despite clone task failure"
+else
+    ko "test-2: vmtoken= missing from stdout when clone task fails — caller cannot clean up"
 fi
 
 # The start endpoint must NOT have been called.
@@ -1869,6 +1881,27 @@ if [ -n "$_first_32" ] && [ -n "$_second_32" ] && [ "$_first_32" != "$_second_32
     ok "test-32: second run-instances attempt used a different subnet (first=$_first_32, second=$_second_32)"
 else
     ko "test-32: retry did not change subnet — still in the same AZ (first=$_first_32, second=$_second_32)"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 33 -- vmid= and vmtoken= are emitted before poll_task (db-x0aw)
+#
+# A clone-task failure between VM creation and the emit leaks the VM: the token
+# is stamped into the description at clone time, so any post-clone exit must
+# still let the caller identify and destroy the VM. The fix moves the emit to
+# immediately after the UPID is confirmed, before the async task is polled.
+#
+# Structural assertion: the emit line must appear before poll_task in source,
+# so a later refactor that moves the emit back behind poll_task fails this test
+# rather than silently restoring the leak.
+# ---------------------------------------------------------------------------
+
+_emit_vmid_line=$(grep -n 'printf.*vmid=.*VMID' "$PROVISION" | head -1 | cut -d: -f1)
+_poll_line=$(grep -n 'poll_task.*clone_upid' "$PROVISION" | head -1 | cut -d: -f1)
+if [ -n "$_emit_vmid_line" ] && [ -n "$_poll_line" ] && [ "$_emit_vmid_line" -lt "$_poll_line" ]; then
+    ok "test-33: emit (line $_emit_vmid_line) precedes poll_task (line $_poll_line) in source"
+else
+    ko "test-33: emit is at or after poll_task in source — ordering violated (emit=${_emit_vmid_line:-missing}, poll=${_poll_line:-missing})"
 fi
 
 # ---------------------------------------------------------------------------
