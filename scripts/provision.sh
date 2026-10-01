@@ -960,6 +960,19 @@ if [ -z "$clone_upid" ]; then
     exit 1
 fi
 
+# Emit the VMID and ownership token before polling the async clone task.
+# The clone request is accepted: the VM carries vmtoken in its description,
+# and any post-clone failure still leaves a VM the caller must be able to
+# identify and destroy. Teardown is idempotent against a partially-provisioned
+# VMID. Mirror of the EC2 path above.
+#
+# There is deliberately no ledger write here. A file on this machine's disk
+# cannot be read by teardown.sh, which runs in a different job on a different
+# ephemeral runner. Ownership is established from the hypervisor instead: the
+# VM's name, its pool membership, its template flag, and the token.
+printf 'vmid=%s\n' "$VMID"
+printf 'vmtoken=%s\n' "$VM_TOKEN"
+
 # Poll the clone task. A non-OK exitstatus means the clone failed on the
 # server; do not proceed to start the VM.
 poll_task "$clone_upid" || exit 1
@@ -996,19 +1009,6 @@ if [ -n "${REPO_TAG:-}" ]; then
             "$VMID" "$REPO_TAG" >&2
     fi
 fi
-
-# Emit the VMID and ownership token now -- before any step that can fail --
-# so callers can tear down even if we die later. See the output contract at
-# the top. The token is emitted here because it has already been stamped into
-# the VM description; any post-clone failure still leaves a VM that the caller
-# can identify and destroy with the right token.
-#
-# There is deliberately no ledger write here. A file on this machine's disk
-# cannot be read by teardown.sh, which runs in a different job on a different
-# ephemeral runner. Ownership is established from the hypervisor instead: the
-# VM's name, its pool membership, its template flag, and the token.
-printf 'vmid=%s\n' "$VMID"
-printf 'vmtoken=%s\n' "$VM_TOKEN"
 
 # --- Serialize boot by template ---
 #
