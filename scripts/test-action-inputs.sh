@@ -188,6 +188,24 @@ else
     _fail "teardown: check rejected a complete external-reference workflow"
 fi
 
+# ── ALSO_REQUIRE: consumer-result (sp-oifl4c) ─────────────────────────────
+# consumer-result is optional, but omitting it silently disables the guest dump.
+if ALSO_REQUIRE=consumer-result bash "$CHECK" "$REPO_DIR/teardown/action.yml" \
+       "$WORK/workflow-teardown-complete.yml" >/dev/null 2>&1; then
+    _fail "teardown: workflow without consumer-result passed ALSO_REQUIRE"
+else
+    _pass "teardown: missing consumer-result detected under ALSO_REQUIRE"
+fi
+
+sed 's/template-vmid: "107"/template-vmid: "107"\n          consumer-result: failure/' \
+    "$WORK/workflow-teardown-complete.yml" > "$WORK/workflow-teardown-cr.yml"
+if ALSO_REQUIRE=consumer-result bash "$CHECK" "$REPO_DIR/teardown/action.yml" \
+       "$WORK/workflow-teardown-cr.yml" >/dev/null 2>&1; then
+    _pass "teardown: consumer-result present passes ALSO_REQUIRE"
+else
+    _fail "teardown: ALSO_REQUIRE rejected a workflow passing consumer-result"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

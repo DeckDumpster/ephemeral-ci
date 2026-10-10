@@ -7,6 +7,9 @@ set -euo pipefail
 # whose `uses:` names that action and reports any required input absent from
 # the step's `with:` block.
 #
+# ALSO_REQUIRE="a b" names optional inputs that callers must nonetheless pass
+# (e.g. teardown's consumer-result, without which the guest dump never runs).
+#
 # A composite action does not enforce `required:` — GitHub silently supplies
 # nothing when a caller omits an input. This check is the enforcement that the
 # action declaration itself cannot provide.
@@ -21,7 +24,7 @@ if [ $# -lt 2 ]; then
 fi
 
 python3 - "$@" <<'PY'
-import sys, re, yaml, pathlib
+import os, sys, re, yaml, pathlib
 
 action_yml = pathlib.Path(sys.argv[1])
 workflow_paths = [pathlib.Path(p) for p in sys.argv[2:]]
@@ -33,6 +36,7 @@ required = {
     name for name, spec in (action.get('inputs') or {}).items()
     if (spec or {}).get('required', False)
 }
+required |= set(os.environ.get('ALSO_REQUIRE', '').split())
 action_name = action_yml.parent.name
 
 bad = 0
