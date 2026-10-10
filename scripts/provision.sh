@@ -770,8 +770,24 @@ ec2_prepare_tailnet() {
     chmod 600 "$SPILL_USERDATA_FILE"
     ec2_tailnet_userdata "$authkey" "$(tailnet_hostname "$vmtoken")" > "$SPILL_USERDATA_FILE"
     SPILL_USERDATA_ARGS=(--user-data "file://${SPILL_USERDATA_FILE}")
-    trap '[ -z "$SPILL_USERDATA_FILE" ] || rm -f "$SPILL_USERDATA_FILE"' EXIT
 }
+
+# A launched instance whose provision then fails has no owner: the failure
+# exits non-zero, the caller may never see the instance-id output, and the
+# spill ceiling counts it until the reaper finds it (sp-3grl9x). So the script
+# that launched it terminates it on any non-zero exit after launch.
+SPILL_LAUNCHED_ID=""
+ec2_exit_cleanup() {
+    local rc=$?
+    [ -z "$SPILL_USERDATA_FILE" ] || rm -f "$SPILL_USERDATA_FILE"
+    if [ "$rc" -ne 0 ] && [ -n "$SPILL_LAUNCHED_ID" ]; then
+        printf 'provision.sh: provision failed after launch; terminating %s\n' \
+            "$SPILL_LAUNCHED_ID" >&2
+        aws ec2 terminate-instances --region "$SPILL_REGION" \
+            --instance-ids "$SPILL_LAUNCHED_ID" >/dev/null 2>&1 || true
+    fi
+}
+trap ec2_exit_cleanup EXIT
 
 # Wait until the SSM agent on the given instance reports Online.
 ec2_wait_ssm() {
@@ -946,6 +962,8 @@ if [ "$_spill_triggered" -eq 1 ]; then
     fi
 
     SPILL_INSTANCE_ID="$(ec2_launch "$SPILL_AMI" "$SPILL_VMTOKEN")" || exit 1
+
+    SPILL_LAUNCHED_ID="$SPILL_INSTANCE_ID"
 
     # Emit outputs before SSM delivery so teardown can terminate even on failure.
     printf 'vmid=\n'

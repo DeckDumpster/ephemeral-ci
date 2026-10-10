@@ -759,3 +759,34 @@ test('stack creates the EC2 Spot service-linked role', () => {
     AWSServiceName: 'spot.amazonaws.com',
   });
 });
+
+test('spill role holds exactly what reap.sh needs, tag-conditioned (sp-3grl9x)', () => {
+  // reap.yml assumes this role over OIDC. Terminate and delete must stay
+  // bound to spill:owner=ephemeral-ci so the reaper cannot touch anything else.
+  const spillRoleId = Object.keys(
+    template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } }),
+  )[0];
+  type Stmt = {
+    Action: string | string[];
+    Resource: unknown;
+    Condition?: Record<string, Record<string, string>>;
+  };
+  const stmts = Object.values(template.findResources('AWS::IAM::Policy')).flatMap((pRaw) => {
+    const p = pRaw as {
+      Properties: { Roles: Array<{ Ref?: string }>; PolicyDocument: { Statement: Stmt[] } };
+    };
+    const mine = (p.Properties.Roles ?? []).some((r) => r.Ref === spillRoleId);
+    return mine ? p.Properties.PolicyDocument.Statement : [];
+  });
+  const having = (action: string) =>
+    stmts.filter((s) => ([] as string[]).concat(s.Action).includes(action));
+
+  for (const action of ['ec2:DescribeInstances', 'ec2:DescribeVolumes']) {
+    expect(having(action)).toHaveLength(1);
+  }
+  for (const action of ['ec2:TerminateInstances', 'ec2:DeleteVolume']) {
+    const found = having(action);
+    expect(found).toHaveLength(1);
+    expect(found[0].Condition?.StringEquals?.['ec2:ResourceTag/spill:owner']).toBe('ephemeral-ci');
+  }
+});

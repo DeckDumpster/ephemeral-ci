@@ -36,12 +36,22 @@ on:
 
 permissions:
   contents: read
+  id-token: write   # OIDC token for assuming the AWS spill role
 
 jobs:
   reap:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Without this reap.sh logs "AWS credentials not configured; EC2 reaping
+      # skipped" and every instance a failed provision leaked counts against the
+      # spill ceiling forever (sp-3grl9x). Same role input provision uses.
+      - name: Configure AWS credentials for EC2 reaping
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
+          aws-region: us-west-2
 
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
