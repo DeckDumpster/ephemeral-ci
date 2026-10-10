@@ -345,7 +345,10 @@ cost is small.
 
 ## Versioning
 
-Consumers pin `@v1`. The tag moves; breaking changes get a new major. Because a
+Consumers pin `@v1` or `@v2`. `v2` adds the tailnet join on spill runners and
+`kernel.threads-max` before registration; `@v1` consumers spill without either.
+Tags move only through the Advance v1 workflow (`tag` input), never by hand.
+The tag moves; breaking changes get a new major. Because a
 consumer's `test` job name is part of its branch policy, nothing here will ever
 change a job name in a consuming repository — that is why this ships as
 composite actions rather than a reusable workflow, which would rename every

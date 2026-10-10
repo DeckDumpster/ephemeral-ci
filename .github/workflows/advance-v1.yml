@@ -1,7 +1,7 @@
 name: Advance v1
 
-# Moves the v1 tag to the most recent commit on main whose CI concluded
-# "success". Consumers pin @v1; this is the documented path for landing
+# Moves a major tag (v1 by default; the `tag` input selects v2) to the most
+# recent commit on main whose CI concluded "success". Consumers pin @v1 or @v2; this is the documented path for landing
 # a batch of changes onto them.
 #
 # Before moving the tag, two checks must pass:
@@ -33,6 +33,16 @@ on:
         description: Run all checks and report results but do not move the tag.
         type: boolean
         default: false
+      tag:
+        description: >-
+          Which major tag to move. v2 is the first cut of a new major: it does
+          not exist yet, so the input-diff and interface checks (which compare
+          against the tag being moved) are skipped on that first cut and the
+          tag lands at the latest green commit on main. Later advances of v2
+          are checked against v2.
+        type: choice
+        options: [v1, v2]
+        default: v1
       consumers-updated:
         description: >-
           Evidence that every consumer already passes the changed action
@@ -178,35 +188,37 @@ jobs:
   advance:
     needs: [find-green, probe-provision, probe-teardown]
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Show current v1 and target
+      - name: Show current tag and target
         run: |
-          current=$(git rev-parse refs/tags/v1 2>/dev/null || echo "(not set)")
+          current=$(git rev-parse "refs/tags/${TAG}" 2>/dev/null || echo "(not set)")
           target="${{ needs.find-green.outputs.target }}"
-          echo "Current v1 : $current"
+          echo "Current $TAG : $current"
           echo "Target     : $target"
           if [ "$current" = "$target" ]; then
-            echo "v1 is already at the latest green commit. Nothing to do."
+            echo "$TAG is already at the latest green commit. Nothing to do."
           fi
 
-      - name: Check for new required inputs since v1
+      - name: Check for new required inputs since the tag
         env:
           CONSUMERS_UPDATED: ${{ inputs.consumers-updated }}
         run: |
           target="${{ needs.find-green.outputs.target }}"
-          if ! git rev-parse --verify refs/tags/v1 >/dev/null 2>&1; then
-            echo "No v1 tag yet — skipping input-diff check."
+          if ! git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "No $TAG tag yet — skipping input-diff check."
             exit 0
           fi
           WORK=$(mktemp -d)
           trap 'rm -rf "$WORK"' EXIT
           for action in provision teardown; do
             mkdir -p "$WORK/v1" "$WORK/candidate"
-            git show "refs/tags/v1:${action}/action.yml" > "$WORK/v1/${action}.yml"
+            git show "refs/tags/${TAG}:${action}/action.yml" > "$WORK/v1/${action}.yml"
             git show "${target}:${action}/action.yml"    > "$WORK/candidate/${action}.yml"
           done
 
@@ -257,13 +269,13 @@ jobs:
             echo "No new required inputs without defaults."
           fi
 
-      - name: Check for action interface changes since v1
+      - name: Check for action interface changes since the tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           target="${{ needs.find-green.outputs.target }}"
-          if ! git rev-parse --verify refs/tags/v1 >/dev/null 2>&1; then
-            echo "No v1 tag yet — skipping interface check."
+          if ! git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "No $TAG tag yet — skipping interface check."
             exit 0
           fi
           # Detect additions or removals in the inputs: or outputs: sections of
@@ -274,7 +286,7 @@ jobs:
           # Pattern: any added/removed line that is either the inputs:/outputs:
           # top-level key itself, or a 2-space-indented first-level YAML entry
           # (the input/output names and their direct properties).
-          if git diff "refs/tags/v1" "$target" -- \
+          if git diff "refs/tags/${TAG}" "$target" -- \
                provision/action.yml teardown/action.yml \
              | grep -E '^[+-][^+-]' \
              | grep -qE '^[+-](inputs:|outputs:|  [a-z][a-z0-9-]*:)'; then
@@ -293,21 +305,21 @@ jobs:
             # the evidence, which lands in the log and the job summary where
             # the next person can audit the claim.
             if [ -z "${{ inputs.consumers-updated }}" ]; then
-              echo "::error::This commit changes action inputs or outputs in provision/action.yml or teardown/action.yml relative to v1."
-              echo "::error::Advancing v1 will silently break consumers that have not updated their workflows to pass or receive the changed fields."
+              echo "::error::This commit changes action inputs or outputs in provision/action.yml or teardown/action.yml relative to $TAG."
+              echo "::error::Advancing $TAG will silently break consumers that have not updated their workflows to pass or receive the changed fields."
               echo "::error::Either cut a new major version (v2) and coordinate the consumer updates, or re-run with consumers-updated naming the PRs that updated every consumer."
               exit 1
             fi
-            echo "::warning::Interface changed since v1; proceeding on the operator's evidence."
+            echo "::warning::Interface changed since $TAG; proceeding on the operator's evidence."
             {
-              echo "### v1 advanced across an action interface change"
+              echo "### $TAG advanced across an action interface change"
               echo
               echo 'Consumers reported updated:'
               echo
               echo '${{ inputs.consumers-updated }}'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "No action interface changes since v1."
+          echo "No action interface changes since $TAG."
 
       - name: Dry-run summary
         if: inputs.dry-run == true
@@ -326,7 +338,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Dry run complete. Target: $target"
 
-      - name: Advance v1 tag
+      - name: Advance tag
         if: inputs.dry-run == false
         env:
           GH_TOKEN_WORKFLOW: ${{ secrets.V1_TAG_PAT }}
@@ -338,6 +350,6 @@ jobs:
           target="${{ needs.find-green.outputs.target }}"
           git remote set-url origin \
             "https://x-access-token:${GH_TOKEN_WORKFLOW}@github.com/${{ github.repository }}.git"
-          git tag -f v1 "$target"
-          git push origin v1 --force
-          echo "::notice::v1 advanced to $target"
+          git tag -f "$TAG" "$target"
+          git push origin "$TAG" --force
+          echo "::notice::$TAG advanced to $target"
