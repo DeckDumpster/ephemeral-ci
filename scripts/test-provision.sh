@@ -732,7 +732,7 @@ rm -f "$_ascii_probe"
 #
 # Node 131072 MiB, reserve 8192 (the default), template 16384. So with the
 # other guests allocating 65536 the node has 57344 free and a runner needing
-# 32768 (itself plus one slack) starts; the arithmetic is stated here rather
+# 32768 (itself plus one slack, set explicitly: the default slack is 0) starts; the arithmetic is stated here rather
 # than computed so a change to the formula shows up as a failing test.
 # ---------------------------------------------------------------------------
 export CURL_NODE_TOTAL_MIB=131072
@@ -742,7 +742,7 @@ export CAPACITY_TIMEOUT=3
 
 # (a) room -- provisioning reaches the clone
 rm -f "$CURL_ARGV_FILE"
-CURL_NODE_ALLOC_MIB=65536 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+CURL_NODE_ALLOC_MIB=65536 CAPACITY_SLACK_RUNNERS=1 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
 if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
     ok "test-15: with room on the node, the clone goes ahead"
 else
@@ -804,12 +804,22 @@ fi
 # (d) the slack is load-bearing. Exactly one runner's worth free is NOT enough:
 # two provisions can observe it at once and the API has no atomic reserve.
 rm -f "$CURL_ARGV_FILE"
-CURL_NODE_ALLOC_MIB=106496 bash "$PROVISION" valid-label test-token \
+CURL_NODE_ALLOC_MIB=106496 CAPACITY_SLACK_RUNNERS=1 bash "$PROVISION" valid-label test-token \
     https://github.com/owner/repo >/dev/null 2>"$_cap_err" && _cap_rc=0 || _cap_rc=$?
 if grep -qF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
     ko "test-15: room for exactly one runner was treated as room — no slack"
 else
     ok "test-15: room for exactly one runner is not enough (slack held)"
+fi
+# The default is slack 0 (sp-hriycm): with NO input set, a runner clones when
+# free memory is exactly one runner's worth (131072 - 8192 - 106496 = 16384).
+rm -f "$CURL_ARGV_FILE"
+( unset CAPACITY_SLACK_RUNNERS; CURL_NODE_ALLOC_MIB=106496 run_provision valid-label \
+    test-token https://github.com/owner/repo >/dev/null )
+if grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-15: by default (no slack input) exactly one runner's worth free clones"
+else
+    ko "test-15: default slack still demands more than one runner's worth"
 fi
 # Positive control: the same node WITH the slack disabled does clone, so the
 # case above proves the slack and not merely that the arithmetic is off.
@@ -932,7 +942,7 @@ export CAPACITY_TIMEOUT=3
 
 rm -f "$CURL_ARGV_FILE"
 _err17="$SCRATCH/err17"
-CURL_NODE_ALLOC_MIB=8192 CURL_NODE_ALLOC_CPUS=116 bash "$PROVISION" \
+CURL_NODE_ALLOC_MIB=8192 CURL_NODE_ALLOC_CPUS=116 CAPACITY_SLACK_RUNNERS=1 bash "$PROVISION" \
     valid-label test-token https://github.com/owner/repo \
     >/dev/null 2>"$_err17" && _rc17=0 || _rc17=$?
 
@@ -989,7 +999,7 @@ export CAPACITY_POLL=1
 export CAPACITY_TIMEOUT=15
 
 rm -f "$CURL_ARGV_FILE" "${TMPDIR:-/tmp}/qemu-list-count"
-CURL_CPU_TIGHT_POLLS=2 CURL_CPU_TIGHT_ALLOC_CPUS=120 run_provision \
+CURL_CPU_TIGHT_POLLS=2 CURL_CPU_TIGHT_ALLOC_CPUS=120 CAPACITY_SLACK_RUNNERS=1 run_provision \
     valid-label test-token https://github.com/owner/repo >/dev/null
 _rc18=$?
 rm -f "${TMPDIR:-/tmp}/qemu-list-count"
@@ -1029,7 +1039,7 @@ export CAPACITY_POLL=1
 export CAPACITY_TIMEOUT=3
 
 rm -f "$CURL_ARGV_FILE"
-CURL_NODE_ALLOC_CPUS=116 bash "$PROVISION" valid-label test-token \
+CURL_NODE_ALLOC_CPUS=116 CAPACITY_SLACK_RUNNERS=1 bash "$PROVISION" valid-label test-token \
     https://github.com/owner/repo >/dev/null 2>/dev/null && _cap19=0 || _cap19=$?
 if ! grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
     ok "test-19: room for exactly one vCPU slot is not enough (CPU slack held)"
