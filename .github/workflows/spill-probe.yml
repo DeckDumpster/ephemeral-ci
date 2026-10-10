@@ -31,6 +31,7 @@ jobs:
       vm-token:    ${{ steps.provision.outputs.vm-token }}
       backend:     ${{ steps.provision.outputs.backend }}
       instance-id: ${{ steps.provision.outputs.instance-id }}
+      tailnet:     ${{ steps.provision.outputs.tailnet }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +50,7 @@ jobs:
           pve-node:            ${{ vars.PVE_NODE }}
           template-vmid:       ${{ vars.TEMPLATE_VMID }}
           spill:               ec2-only
+          spill-tailnet:       'true'
           aws-role-to-assume:  ${{ secrets.AWS_SPILL_ROLE_ARN }}
 
   # Confirms the provisioned runner came online before verify is allowed to
@@ -165,6 +167,25 @@ jobs:
           test -n "$backend" || { echo "ERROR: podman info returned no network backend"; exit 1; }
           echo "Network backend: $backend"
 
+      # The instance must be in the tailnet as tag:round-vm and reach the cache
+      # port. vars.SPILL_PROBE_CACHE_ADDR is the Spira host's sccache-dav
+      # <host>:<port>, the one destination the ACL lets tag:round-vm reach.
+      - name: Assert the instance joined the tailnet as tag:round-vm
+        env:
+          CACHE_ADDR: ${{ vars.SPILL_PROBE_CACHE_ADDR }}
+          TAILNET_STATE: ${{ needs.provision.outputs.tailnet }}
+        run: |
+          test "$TAILNET_STATE" = "up" || { echo "ERROR: provision reported tailnet='$TAILNET_STATE'"; exit 1; }
+          tailscale status --json | python3 -c '
+          import json,sys
+          me=json.load(sys.stdin)["Self"]
+          tags=me.get("Tags") or []
+          print("self:", me.get("HostName"), tags)
+          sys.exit(0 if "tag:round-vm" in tags else 1)'
+          test -n "$CACHE_ADDR" || { echo "ERROR: vars.SPILL_PROBE_CACHE_ADDR is not set"; exit 1; }
+          timeout 10 bash -c "exec 3<>/dev/tcp/${CACHE_ADDR%:*}/${CACHE_ADDR##*:}" \
+            && echo "cache port ${CACHE_ADDR} reachable"
+
       - name: Assert rootless container can start
         # podman info succeeding does not prove a container can start.
         # The substrate's own comment notes rootless podman aborts with
@@ -203,3 +224,18 @@ jobs:
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
           aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
           consumer-result:    ${{ needs.verify.result }}
+
+  # After teardown the instance's node must be gone from the tailnet.
+  left-tailnet:
+    needs: [provision, teardown]
+    if: always() && needs.provision.outputs.tailnet == 'up'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the node left the tailnet
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          VM_TOKEN: ${{ needs.provision.outputs.vm-token }}
+        run: bash scripts/tailnet.sh device-absent "spill-${VM_TOKEN}"

@@ -225,6 +225,7 @@ _run_reap() {
         extra_env+=("$1")
         shift
     done
+    env \
     PATH="$BIN:$PATH" \
     SNIPPETS_DIR="$REAP_SNIPPETS" \
     TEMPLATE_VMID="${TEMPLATE_VMID:-101}" \
@@ -795,6 +796,53 @@ echo "--- Test 14: VM with distinct meta.ctime aged normally and reaped"
     }
 ) && _pass "Test 14: VM with distinct meta.ctime aged normally and reaped" \
   || _fail "Test 14: VM with distinct meta.ctime aged normally and reaped"
+
+# ============================================================
+# TEST 14b: tailnet sweep (sp-7330sk). aws and the tailnet helper are stubbed.
+#   - spill-<token> device with a live instance  -> kept
+#   - spill-<token> device with no instance      -> removed
+#   - spill-<token> device inside the grace time -> kept
+#   - tag:round-vm device not named spill-*      -> never listed, never touched
+# ============================================================
+echo "--- Test 14b: reaper removes tag:round-vm spill devices with no live instance"
+(
+    _reap_setup
+    printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
+    TS_LOG="$RD/tailnet.log"; : > "$TS_LOG"
+    cat > "$BIN/aws" <<'AWSEOF'
+#!/bin/sh
+case "$1 $2" in
+    "sts get-caller-identity") echo '{}' ;;
+    "ec2 describe-instances")
+        echo '[[{"id":"i-live","state":"running","launch":"2999-01-01T00:00:00Z","type":"c7i.xlarge","tags":[{"Key":"ephemeral-ci:vmtoken","Value":"livetoken"},{"Key":"Name","Value":"ephemeral-ci-spill"}]}]]' ;;
+    "ec2 describe-volumes") echo '[]' ;;
+    *) echo "aws stub: unhandled $*" >&2; exit 1 ;;
+esac
+AWSEOF
+    chmod +x "$BIN/aws"
+    cat > "$RD/tailnet.sh" <<'TSEOF'
+tailnet_list_spill_devices() {
+    now=$(date +%s)
+    echo "dev-live spill-livetoken $((now - 7200))"
+    echo "dev-orphan spill-deadtoken $((now - 7200))"
+    echo "dev-fresh spill-freshtoken $((now - 10))"
+}
+tailnet_delete_device() { echo "delete $1" >> "$TS_LOG"; }
+TSEOF
+    output=$(_run_reap TAILNET_SH="$RD/tailnet.sh" TS_LOG="$TS_LOG" TS_OAUTH_CLIENT_ID=c TS_OAUTH_SECRET=s 2>&1 || true)
+    grep -qx "delete dev-orphan" "$TS_LOG" || { echo "  expected fail: orphan not deleted; log: $(cat "$TS_LOG"); out: $output" >&2; exit 1; }
+    [ "$(wc -l < "$TS_LOG")" -eq 1 ] || { echo "  expected fail: deleted more than the orphan: $(cat "$TS_LOG")" >&2; exit 1; }
+
+    : > "$TS_LOG"
+    output=$(_run_reap TAILNET_SH="$RD/tailnet.sh" TS_LOG="$TS_LOG" TS_OAUTH_CLIENT_ID=c TS_OAUTH_SECRET=s --dry-run 2>&1 || true)
+    [ ! -s "$TS_LOG" ] || { echo "  expected fail: dry run deleted a device" >&2; exit 1; }
+    printf '%s\n' "$output" | grep -q "would remove tailnet device spill-deadtoken" \
+        || { echo "  expected fail: dry run did not report the orphan: $output" >&2; exit 1; }
+
+    : > "$TS_LOG"
+    _run_reap TAILNET_SH="$RD/tailnet.sh" TS_LOG="$TS_LOG" >/dev/null 2>&1 || true
+    [ ! -s "$TS_LOG" ] || { echo "  expected fail: tailnet swept without an OAuth client" >&2; exit 1; }
+) && _pass "Test 14b: tailnet sweep" || _fail "Test 14b: tailnet sweep"
 
 # ============================================================
 # EC2 online tests (Tests 15-18)

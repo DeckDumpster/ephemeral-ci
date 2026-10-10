@@ -97,6 +97,66 @@ The spill role's OIDC trust currently covers ephemeral-ci, pokedumpster,
 household, spira, and deckdumpster. Per-repository setup is required before spill
 works; see "One-time setup" below.
 
+#### Joining the tailnet (`spill-tailnet`)
+
+By default a spill runner sits in a public subnet with internet egress and no
+tailnet membership, so a job that builds against a cache served over the tailnet
+(Spira's sccache-dav) would build cold. Set `spill-tailnet: 'true'` on the
+provision step and the instance joins the tailnet for the length of its job:
+
+- `provision` mints a **single-use, ephemeral, pre-approved `tag:round-vm`** auth
+  key from the Tailscale OAuth client the action already takes (expires in 15
+  minutes unused) and hands it to the instance as user-data. The node is named
+  `spill-<vm-token>`.
+- Runner registration waits up to 90 seconds for the join. On timeout it
+  registers anyway: the `tailnet` output reads `unavailable`, a warning is
+  annotated and the job runs cold instead of failing. `up` means it joined.
+- The node leaves when the instance terminates (ephemeral); `teardown` also
+  deletes it by name, and the reaper removes any `spill-*` `tag:round-vm` device
+  with no live instance behind it (kept for 5 minutes after it joins to avoid
+  racing `describe-instances`). The reaper only touches names starting `spill-`,
+  because Spira's own round VMs carry `tag:round-vm` too.
+- The default is `false`; callers that do not set it are unchanged. The Proxmox
+  path ignores it.
+- `tailscale` is installed at first boot if the AMI lacks it. Baking it into the
+  AMI would shave the install from the join.
+
+The Tailscale OAuth client (`TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET`) needs two
+additions beyond `tag:ci` for this: scope `auth_keys` (write) with tag
+`tag:round-vm`, and `devices:core` (write) for teardown and the reaper.
+`tag:ci` must own `tag:round-vm` in `tagOwners`.
+
+**ACL.** `tag:round-vm` may reach only the Spira host's sccache-dav port, and
+accept SSH from that host. Nothing else on the tailnet. Replace `tag:spira-host`
+and the port with the real ones:
+
+```jsonc
+{
+  "tagOwners": {
+    "tag:round-vm": ["tag:ci"]
+  },
+  "acls": [
+    // a spill runner reaches the cache and nothing else
+    {"action": "accept", "src": ["tag:round-vm"], "dst": ["tag:spira-host:<sccache-dav-port>"]},
+    // the Spira host may SSH to it
+    {"action": "accept", "src": ["tag:spira-host"], "dst": ["tag:round-vm:22"]}
+  ]
+}
+```
+
+Keep any broader rule that names `tag:round-vm` as a source out of the policy:
+a spill runner executes code from the calling repository's pull requests, and
+whatever the ACL lets it reach, that code reaches.
+
+The `EC2 spill probe` workflow runs with `spill-tailnet: 'true'`. It asserts the
+instance appears as `tag:round-vm`, reaches `vars.SPILL_PROBE_CACHE_ADDR`
+(`host:port`) and is gone from the tailnet after teardown.
+
+The reaper's EC2 section (including the tailnet sweep) needs AWS credentials,
+which `reap.yml` does not configure today, so it logs "EC2 reaping skipped".
+Teardown's explicit logout and the ephemeral flag are what keep the tailnet
+clean until that is wired.
+
 ## The line between here and your repository
 
 | Here | Your repository |

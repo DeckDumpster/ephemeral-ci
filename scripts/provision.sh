@@ -431,6 +431,14 @@ SPILL_REGION="${SPILL_REGION:-us-west-2}"
 SPILL_STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
 SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.xlarge}"
 SPILL_SSM_WAIT_SECONDS="${SPILL_SSM_WAIT_SECONDS:-300}"
+#   SPILL_TAILNET       true | false (default false). When true the instance
+#                       joins the tailnet as tag:round-vm before the runner
+#                       registers, so a spilled job reaches the caller's warm
+#                       build cache. Needs TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET.
+#   SPILL_TAILNET_WAIT_SECONDS how long registration waits for the join; on
+#                       timeout the runner registers anyway (job runs cold).
+SPILL_TAILNET="${SPILL_TAILNET:-false}"
+SPILL_TAILNET_WAIT_SECONDS="${SPILL_TAILNET_WAIT_SECONDS:-90}"
 
 # Prints "<total_mib> <total_cpus> <alloc_mib> <template_mib> <alloc_cpus> <template_cpus>"
 # for the node, or nothing if the token cannot see them.
@@ -658,6 +666,7 @@ ec2_launch() {
                        --image-id "$ami" \
                        --subnet-id "$subnet" \
                        --security-group-ids "$SPILL_SG_ID" \
+                       "${SPILL_USERDATA_ARGS[@]}" \
                        --instance-market-options "$spot_opts" \
                        --tag-specifications \
                            "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
@@ -690,6 +699,7 @@ ec2_launch() {
                        --image-id "$ami" \
                        --subnet-id "$subnet" \
                        --security-group-ids "$SPILL_SG_ID" \
+                       "${SPILL_USERDATA_ARGS[@]}" \
                        --tag-specifications \
                            "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
                        --query 'Instances[0].InstanceId' \
@@ -710,6 +720,57 @@ ec2_launch() {
     done
     printf '::error::provision.sh: on-demand launch failed in all subnets (InsufficientInstanceCapacity)\n' >&2
     return 1
+}
+
+# ── Tailnet join (SPILL_TAILNET=true) ─────────────────────────────────────────
+# The instance joins the tailnet from its user-data, which cloud-init runs at
+# first boot, in parallel with the SSM agent coming Online. The auth key is
+# single-use, ephemeral, pre-approved and tagged tag:round-vm, and expires in
+# 15 minutes unused. The script reports its outcome in /run/ephemeral-ci-tailnet
+# ("up" or "failed"); the token-delivery SSM document waits on that file, bounded
+# by SPILL_TAILNET_WAIT_SECONDS, before it lets the runner register.
+#
+# The user-data travels as a 0600 file rather than on the command line so the
+# key is not in the process list of the calling runner.
+SPILL_USERDATA_ARGS=()
+SPILL_USERDATA_FILE=""
+
+ec2_tailnet_userdata() {
+    local authkey="$1" hostname="$2"
+    cat <<UDEOF
+#!/bin/bash
+ST=/run/ephemeral-ci-tailnet
+done_with() { echo "\$1" > "\$ST.partial" && mv "\$ST.partial" "\$ST"; }
+if ! command -v tailscale >/dev/null 2>&1; then
+    curl -fsSL https://tailscale.com/install.sh | sh || { done_with failed; exit 0; }
+fi
+systemctl enable --now tailscaled || { done_with failed; exit 0; }
+if tailscale up --auth-key='${authkey}' --hostname='${hostname}' --timeout=60s; then
+    done_with up
+else
+    done_with failed
+fi
+exit 0
+UDEOF
+}
+
+ec2_prepare_tailnet() {
+    local vmtoken="$1" authkey
+    # shellcheck source=tailnet.sh
+    . "${TAILNET_SH:-${SCRIPT_DIR}/tailnet.sh}"
+    if [ -z "${TS_OAUTH_CLIENT_ID:-}" ] || [ -z "${TS_OAUTH_SECRET:-}" ]; then
+        printf '::warning::provision.sh: spill-tailnet is true but no Tailscale OAuth client is set; tailnet: unavailable\n' >&2
+        return 0
+    fi
+    if ! authkey="$(tailnet_mint_key)" || [ -z "$authkey" ]; then
+        printf '::warning::provision.sh: could not mint a tag:round-vm auth key; tailnet: unavailable\n' >&2
+        return 0
+    fi
+    SPILL_USERDATA_FILE="$(mktemp)"
+    chmod 600 "$SPILL_USERDATA_FILE"
+    ec2_tailnet_userdata "$authkey" "$(tailnet_hostname "$vmtoken")" > "$SPILL_USERDATA_FILE"
+    SPILL_USERDATA_ARGS=(--user-data "file://${SPILL_USERDATA_FILE}")
+    trap '[ -z "$SPILL_USERDATA_FILE" ] || rm -f "$SPILL_USERDATA_FILE"' EXIT
 }
 
 # Wait until the SSM agent on the given instance reports Online.
@@ -750,17 +811,22 @@ ec2_wait_ssm() {
 # the SSM API directly.
 ec2_deliver_token() {
     local iid="$1"
+    # 0 tells the document not to wait for (or mention) the tailnet at all.
+    local tailnet_wait=0
+    [ "$SPILL_TAILNET" = "true" ] && [ -n "$SPILL_USERDATA_FILE" ] \
+        && tailnet_wait="$SPILL_TAILNET_WAIT_SECONDS"
 
     local params
     params="$(python3 - "$RUNNER_TOKEN" "$RUNNER_LABEL" "$RUNNER_URL" \
-              "${RUNNER_GROUP:-ephemeral-ci}" <<'PYEOF'
+              "${RUNNER_GROUP:-ephemeral-ci}" "$tailnet_wait" <<'PYEOF'
 import json, sys
-token, label, url, grp = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+token, label, url, grp, wait = sys.argv[1:6]
 print(json.dumps({
     'RunnerToken': [token],
     'RunnerLabel': [label],
     'RunnerUrl': [url],
     'RunnerGroup': [grp],
+    'TailnetWaitSeconds': [wait],
 }))
 PYEOF
 )"
@@ -788,6 +854,21 @@ PYEOF
                       --output text 2>/dev/null || printf 'Pending')"
         case "$status" in
             Success)
+                if [ "$tailnet_wait" -gt 0 ]; then
+                    local out
+                    out="$(aws ssm get-command-invocation \
+                               --region "$SPILL_REGION" \
+                               --command-id "$cmd_id" \
+                               --instance-id "$iid" \
+                               --query 'StandardOutputContent' \
+                               --output text 2>/dev/null || true)"
+                    if printf '%s' "$out" | grep -q '^tailnet: up$'; then
+                        printf 'tailnet=up\n'
+                    else
+                        printf 'tailnet=unavailable\n'
+                        printf '::warning::provision.sh: tailnet: unavailable on %s; the job will run cold\n' "$iid" >&2
+                    fi
+                fi
                 return 0
                 ;;
             Failed|Cancelled|TimedOut|Undeliverable|Terminated)
@@ -853,6 +934,10 @@ if [ "$_spill_triggered" -eq 1 ]; then
     # SSM parameter so the IAM condition binds each instance to its own token.
     SPILL_VMTOKEN="$(python3 -c 'import os,binascii; print(binascii.hexlify(os.urandom(16)).decode())')"
 
+    if [ "$SPILL_TAILNET" = "true" ]; then
+        ec2_prepare_tailnet "$SPILL_VMTOKEN"
+    fi
+
     SPILL_INSTANCE_ID="$(ec2_launch "$SPILL_AMI" "$SPILL_VMTOKEN")" || exit 1
 
     # Emit outputs before SSM delivery so teardown can terminate even on failure.
@@ -860,6 +945,10 @@ if [ "$_spill_triggered" -eq 1 ]; then
     printf 'vmtoken=%s\n' "$SPILL_VMTOKEN"
     printf 'backend=ec2\n'
     printf 'instance-id=%s\n' "$SPILL_INSTANCE_ID"
+
+    if [ "$SPILL_TAILNET" = "true" ] && [ -z "$SPILL_USERDATA_FILE" ]; then
+        printf 'tailnet=unavailable\n'
+    fi
 
     ec2_wait_ssm "$SPILL_INSTANCE_ID"                    || exit 1
     ec2_deliver_token "$SPILL_INSTANCE_ID" || exit 1

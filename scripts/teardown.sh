@@ -135,10 +135,27 @@ if [ "${BACKEND:-}" = "ec2" ]; then
         'import json,sys; d=json.load(sys.stdin) or {}; print(d.get("State",{}).get("Name",""))' \
         2>/dev/null || true)"
 
+    # Log the instance out of the tailnet, by name. Best-effort and never
+    # fatal: an ephemeral node leaves on its own once the instance is gone, so
+    # this only makes the departure prompt. A no-op without an OAuth client or
+    # when the run never asked for the tailnet (no such device).
+    _tailnet_logout() {
+        [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_SECRET:-}" ] && [ -n "${VM_TOKEN:-}" ] || return 0
+        # shellcheck source=tailnet.sh
+        . "${TAILNET_SH:-${SCRIPT_DIR}/tailnet.sh}"
+        local n
+        if n="$(tailnet_remove_by_hostname "$(tailnet_hostname "$VM_TOKEN")")"; then
+            printf 'teardown.sh: removed %s tailnet device(s) for %s\n' "$n" "$INSTANCE_ID" >&2
+        else
+            printf 'teardown.sh: tailnet logout failed for %s (ephemeral node will expire on its own)\n' "$INSTANCE_ID" >&2
+        fi
+    }
+
     # Already gone — idempotent exit.
     if [ -z "$_ec2_state" ] || [ "$_ec2_state" = "terminated" ]; then
         printf 'teardown.sh: EC2 instance %s is already terminated (state: %s)\n' \
             "$INSTANCE_ID" "${_ec2_state:-not found}" >&2
+        _tailnet_logout
         exit 0
     fi
 
@@ -202,6 +219,8 @@ print(t)' 2>/dev/null || true)"
         fi
         sleep "$EC2_TERMINATE_POLL"
     done
+
+    _tailnet_logout
 
     # Record instance-seconds and estimated cost.
     _now_epoch="$(date +%s)"

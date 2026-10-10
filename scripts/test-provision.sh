@@ -1545,6 +1545,10 @@ case "$1 $2" in
         printf 'ami-testdeadbeef\n'
         ;;
     "ec2 run-instances")
+        # Keep a copy of any user-data file: provision.sh deletes it on exit.
+        for _a in "$@"; do
+            case "$_a" in file://*) cp "${_a#file://}" "$AWS_USERDATA_COPY" ;; esac
+        done
         if [ -n "${AWS_RUN_INSTANCES_FAIL_N:-}" ]; then
             _ri_state="${TMPDIR:-/tmp}/ri-count"
             _ri_n=$(cat "$_ri_state" 2>/dev/null || echo 0)
@@ -1566,7 +1570,10 @@ case "$1 $2" in
         printf 'cmd-testcmd001\n'
         ;;
     "ssm get-command-invocation")
-        printf 'Success\n'
+        case "$*" in
+            *StandardOutputContent*) printf '%s\n' "${AWS_SSM_STDOUT:-}" ;;
+            *) printf 'Success\n' ;;
+        esac
         ;;
     "ssm delete-parameter")
         ;;
@@ -1579,6 +1586,8 @@ AWSSTUB
 chmod +x "$AWS_BIN"
 export PATH="$SCRATCH:$PATH"
 export AWS_ARGV_FILE
+AWS_USERDATA_COPY="$SCRATCH/userdata-copy"
+export AWS_USERDATA_COPY
 
 # ---------------------------------------------------------------------------
 # Test 27: SPILL=off — capacity failure exits non-zero, no AWS calls
@@ -1903,6 +1912,113 @@ if [ -n "$_emit_vmid_line" ] && [ -n "$_poll_line" ] && [ "$_emit_vmid_line" -lt
 else
     ko "test-33: emit is at or after poll_task in source — ordering violated (emit=${_emit_vmid_line:-missing}, poll=${_poll_line:-missing})"
 fi
+
+# ---------------------------------------------------------------------------
+# Tests 34-36: SPILL_TAILNET (sp-7330sk)
+#
+# The tailnet helper is replaced through TAILNET_SH so no Tailscale API is
+# called; the fake mints the key "tskey-auth-FAKE" and fails when told to.
+#   34: default (false) -- no user-data, no tailnet line, wait parameter 0
+#   35: true -- user-data joins as tag:round-vm under spill-<vmtoken>, the
+#       document is told to wait, tailnet=up when the guest reports it
+#   36: true but the guest reports no join -- tailnet=unavailable and the
+#       provision still succeeds (the job runs cold, it does not fail)
+#   37: true but the key cannot be minted -- launch has no user-data,
+#       tailnet=unavailable, provision still succeeds
+# ---------------------------------------------------------------------------
+FAKE_TAILNET="$SCRATCH/fake-tailnet.sh"
+cat > "$FAKE_TAILNET" <<'FAKEEOF'
+tailnet_hostname() { printf 'spill-%s' "$1"; }
+tailnet_mint_key() {
+    [ -z "${FAKE_TAILNET_MINT_FAIL:-}" ] || return 1
+    printf 'tskey-auth-FAKE'
+}
+FAKEEOF
+
+_run_tailnet_provision() {
+    # $1 = test number; remaining env is set by the caller.
+    rm -f "$AWS_ARGV_FILE" "$AWS_USERDATA_COPY"
+    mkdir -p "$SCRATCH/tmp$1"
+    TMPDIR="$SCRATCH/tmp$1" \
+    CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+        TAILNET_SH="$FAKE_TAILNET" TS_OAUTH_CLIENT_ID=cid TS_OAUTH_SECRET=sec \
+        bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+        >"$SCRATCH/out$1" 2>"$SCRATCH/err$1" && return 0 || return $?
+}
+
+_run_tailnet_provision 34 && _rc=0 || _rc=$?
+[ "$_rc" -eq 0 ] && ok "test-34: default spill-tailnet=false provisions" \
+    || ko "test-34: provision failed (rc=$_rc; $(cat "$SCRATCH/err34"))"
+if ! grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--user-data" && [ ! -e "$AWS_USERDATA_COPY" ]; then
+    ok "test-34: no user-data without spill-tailnet"
+else
+    ko "test-34: user-data present without spill-tailnet"
+fi
+if ! grep -q "^tailnet=" "$SCRATCH/out34"; then
+    ok "test-34: no tailnet= line on stdout"
+else
+    ko "test-34: unexpected tailnet= line: $(grep '^tailnet=' "$SCRATCH/out34")"
+fi
+if grep "send-command" "$AWS_ARGV_FILE" | grep -q '"TailnetWaitSeconds": \["0"\]'; then
+    ok "test-34: document told not to wait for the tailnet"
+else
+    ko "test-34: TailnetWaitSeconds should be 0 (got: $(grep send-command "$AWS_ARGV_FILE" || true))"
+fi
+
+SPILL_TAILNET=true AWS_SSM_STDOUT="tailnet: up" _run_tailnet_provision 35 && _rc=0 || _rc=$?
+[ "$_rc" -eq 0 ] && ok "test-35: spill-tailnet=true provisions" \
+    || ko "test-35: provision failed (rc=$_rc; $(cat "$SCRATCH/err35"))"
+_vmt35="$(sed -n 's/^vmtoken=//p' "$SCRATCH/out35")"
+if grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--user-data file://"; then
+    ok "test-35: run-instances carries --user-data from a file (key not on argv)"
+else
+    ko "test-35: run-instances has no --user-data file"
+fi
+if grep -q "tskey-auth-FAKE" "$AWS_ARGV_FILE"; then
+    ko "test-35: the auth key leaked onto the aws command line"
+else
+    ok "test-35: auth key is not on the aws command line"
+fi
+if [ -f "$AWS_USERDATA_COPY" ] \
+   && grep -q "tailscale up --auth-key='tskey-auth-FAKE'" "$AWS_USERDATA_COPY" \
+   && grep -q "\-\-hostname='spill-${_vmt35}'" "$AWS_USERDATA_COPY" \
+   && grep -q "/run/ephemeral-ci-tailnet" "$AWS_USERDATA_COPY"; then
+    ok "test-35: user-data joins with the minted key under spill-<vmtoken>"
+else
+    ko "test-35: user-data wrong: $(cat "$AWS_USERDATA_COPY" 2>/dev/null || echo missing)"
+fi
+if grep "send-command" "$AWS_ARGV_FILE" | grep -q '"TailnetWaitSeconds": \["90"\]'; then
+    ok "test-35: document told to wait 90s for the tailnet before registering"
+else
+    ko "test-35: TailnetWaitSeconds should be 90 (got: $(grep send-command "$AWS_ARGV_FILE" || true))"
+fi
+grep -q "^tailnet=up$" "$SCRATCH/out35" && ok "test-35: tailnet=up on stdout" \
+    || ko "test-35: expected tailnet=up (stdout: $(cat "$SCRATCH/out35"))"
+# A leftover user-data file would keep the auth key on the caller's disk.
+if [ -n "$(ls -A "$SCRATCH/tmp35")" ]; then
+    ko "test-35: user-data temp file with the auth key survived provision"
+else
+    ok "test-35: user-data temp file removed on exit"
+fi
+
+SPILL_TAILNET=true AWS_SSM_STDOUT="tailnet: unavailable" _run_tailnet_provision 36 && _rc=0 || _rc=$?
+[ "$_rc" -eq 0 ] && ok "test-36: provision succeeds when the tailnet does not come up" \
+    || ko "test-36: provision failed (rc=$_rc; $(cat "$SCRATCH/err36"))"
+grep -q "^tailnet=unavailable$" "$SCRATCH/out36" && ok "test-36: tailnet=unavailable on stdout" \
+    || ko "test-36: expected tailnet=unavailable (stdout: $(cat "$SCRATCH/out36"))"
+grep -q "tailnet: unavailable" "$SCRATCH/err36" && ok "test-36: warning annotated" \
+    || ko "test-36: no tailnet: unavailable warning"
+
+SPILL_TAILNET=true FAKE_TAILNET_MINT_FAIL=1 _run_tailnet_provision 37 && _rc=0 || _rc=$?
+[ "$_rc" -eq 0 ] && ok "test-37: provision succeeds when the key cannot be minted" \
+    || ko "test-37: provision failed (rc=$_rc; $(cat "$SCRATCH/err37"))"
+if ! grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--user-data"; then
+    ok "test-37: no user-data when there is no key"
+else
+    ko "test-37: user-data present despite mint failure"
+fi
+grep -q "^tailnet=unavailable$" "$SCRATCH/out37" && ok "test-37: tailnet=unavailable on stdout" \
+    || ko "test-37: expected tailnet=unavailable (stdout: $(cat "$SCRATCH/out37"))"
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -322,14 +322,14 @@ EOF
 
 if [ "${#RUNNER_VMIDS[@]}" -eq 0 ]; then
     echo "reap.sh: no gh-runner-* VMs visible to this token" >&2
-    exit 0
+    RUNNER_VMIDS=()
 fi
 
 reaped=0
 skipped=0
 unknown_age=0
 
-for VMID in "${RUNNER_VMIDS[@]}"; do
+for VMID in ${RUNNER_VMIDS[@]+"${RUNNER_VMIDS[@]}"}; do
     # Never touch the template, even if it were somehow named gh-runner-*.
     if [ "$VMID" -eq "$TEMPLATE_VMID" ]; then
         echo "reap.sh: skipping template VMID $TEMPLATE_VMID" >&2
@@ -807,6 +807,54 @@ if EC2_VOL_JSON="$(aws ec2 describe-volumes \
     done < <(python3 -c \
         'import json,sys; [print(json.dumps(x)) for x in json.load(sys.stdin)]' \
         <<< "$EC2_VOL_JSON")
+fi
+
+# ---- Orphaned tailnet devices (tag:round-vm, spill-<vmtoken>) ----
+# A spill runner that joined the tailnet is an ephemeral node that leaves when
+# its instance terminates, and teardown logs it out explicitly. This removes
+# the ones neither path caught: a spill-* tag:round-vm device whose vmtoken
+# matches no live instance. Devices younger than TAILNET_GRACE_SECONDS are kept
+# so a node that joins before describe-instances shows its instance is safe.
+# Skipped without an OAuth client. The spill- prefix is what keeps this away
+# from tag:round-vm devices that are not spill runners.
+TAILNET_GRACE_SECONDS="${TAILNET_GRACE_SECONDS:-300}"
+tailnet_reaped=0
+if [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_SECRET:-}" ]; then
+    # shellcheck source=tailnet.sh
+    . "${TAILNET_SH:-${SCRIPT_DIR}/tailnet.sh}"
+    _live_tokens="$(python3 -c '
+import json,sys
+for x in json.load(sys.stdin):
+    for t in x.get("tags") or []:
+        if t["Key"] == "ephemeral-ci:vmtoken":
+            print(t["Value"])' <<< "$EC2_INSTANCES")"
+    if ! _ts_devices="$(tailnet_list_spill_devices)"; then
+        echo "reap.sh: tailnet device list failed; tailnet reaping skipped" >&2
+    else
+        while read -r _ts_id _ts_host _ts_created; do
+            [ -z "$_ts_id" ] && continue
+            _ts_token="${_ts_host#spill-}"
+            if printf '%s\n' "$_live_tokens" | grep -qxF "$_ts_token"; then
+                continue
+            fi
+            if [ $(( NOW - _ts_created )) -lt "$TAILNET_GRACE_SECONDS" ]; then
+                echo "reap.sh: tailnet device $_ts_host: within grace period — keeping" >&2
+                continue
+            fi
+            if "$DRY_RUN"; then
+                echo "reap.sh: DRY RUN — would remove tailnet device $_ts_host (no live instance)" >&2
+                (( tailnet_reaped++ )) || true
+                continue
+            fi
+            if tailnet_delete_device "$_ts_id"; then
+                echo "reap.sh: removed tailnet device $_ts_host (no live instance)" >&2
+                (( tailnet_reaped++ )) || true
+            else
+                echo "reap.sh: tailnet device $_ts_host: delete failed" >&2
+            fi
+        done <<< "$_ts_devices"
+    fi
+    echo "reap.sh: tailnet done — removed $tailnet_reaped orphaned device(s)" >&2
 fi
 
 # ---- EC2 summary ----
