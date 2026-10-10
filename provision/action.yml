@@ -140,6 +140,16 @@ inputs:
       Required when spill=ec2.
     required: false
     default: ''
+  spill-tailnet:
+    description: >-
+      "true" lets an EC2 spill runner join the tailnet as tag:round-vm for the
+      length of its job, so a spilled job reaches the caller's warm build cache.
+      Uses the Tailscale OAuth client above, whose scopes must include auth_keys
+      for tag:round-vm (see the README). Registration waits a bounded time for
+      the join and proceeds without it: the `tailnet` output then reads
+      "unavailable" and the job runs cold. Has no effect on the Proxmox path.
+    required: false
+    default: 'false'
 
 outputs:
   vmid:
@@ -167,6 +177,11 @@ outputs:
       EC2 instance id when backend=ec2, empty otherwise. Pass to teardown
       so it can terminate the instance.
     value: ${{ steps.provision.outputs.instance-id }}
+  tailnet:
+    description: >-
+      "up" or "unavailable" when spill-tailnet was requested and the runner
+      landed on EC2; empty otherwise.
+    value: ${{ steps.provision.outputs.tailnet }}
 
 runs:
   using: composite
@@ -248,6 +263,9 @@ runs:
         SPILL: ${{ inputs.spill }}
         SPILL_AFTER_SECONDS: ${{ inputs.spill-after-seconds }}
         SPILL_MAX_INSTANCES: ${{ inputs.spill-max-instances }}
+        SPILL_TAILNET: ${{ inputs.spill-tailnet }}
+        TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
+        TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}
       run: |
         set +e
         OUT=$(bash "${{ github.action_path }}/../scripts/provision.sh" \
@@ -266,6 +284,8 @@ runs:
         [ -n "$BACKEND" ] && echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
         IID=$(printf '%s\n' "$OUT" | sed -n 's/^instance-id=\(.*\)$/\1/p' | head -1)
         [ -n "$IID" ] && echo "instance-id=$IID" >> "$GITHUB_OUTPUT"
+        TAILNET=$(printf '%s\n' "$OUT" | sed -n 's/^tailnet=\(.*\)$/\1/p' | head -1)
+        [ -n "$TAILNET" ] && echo "tailnet=$TAILNET" >> "$GITHUB_OUTPUT"
         exit "$RC"
 
     # WRITING THE FILE IS NOT PROOF OF REGISTRATION. agent/file-write returns
@@ -323,4 +343,7 @@ runs:
       run: |
         echo "## EC2 spill" >> "$GITHUB_STEP_SUMMARY"
         echo "Runner provisioned on EC2 instance \`${{ steps.provision.outputs.instance-id }}\` (Proxmox capacity was exhausted)." >> "$GITHUB_STEP_SUMMARY"
+        if [ -n "${{ steps.provision.outputs.tailnet }}" ]; then
+          echo "Tailnet: \`${{ steps.provision.outputs.tailnet }}\` (tag:round-vm)." >> "$GITHUB_STEP_SUMMARY"
+        fi
         echo "Instance type: \`${SPILL_INSTANCE_TYPE:-c7i.xlarge}\` — ensure teardown terminates it to avoid ongoing cost." >> "$GITHUB_STEP_SUMMARY"

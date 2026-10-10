@@ -859,6 +859,45 @@ echo "--- Test 26: EC2 path — INSTANCE_ID missing → rc≠0"
 ) && _pass "Test 26" || _fail "Test 26"
 
 # ============================================================
+# TEST 27/28: tailnet logout (sp-7330sk)
+# ============================================================
+echo "--- Test 27: EC2 path with an OAuth client — node removed by spill-<vmtoken> after terminate"
+(
+    _ec2_setup 27
+    TS_LOG="$EC2_SCRATCH/ts-27.log"; : > "$TS_LOG"
+    cat > "$EC2_SCRATCH/tailnet-27.sh" <<'TSEOF'
+tailnet_hostname() { printf 'spill-%s' "$1"; }
+tailnet_remove_by_hostname() { echo "remove $1" >> "$TS_LOG"; printf 1; }
+TSEOF
+    rc=0
+    TAILNET_SH="$EC2_SCRATCH/tailnet-27.sh" TS_LOG="$TS_LOG" TS_OAUTH_CLIENT_ID=c TS_OAUTH_SECRET=s \
+        _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+    _assert_rc "exit code" "$rc" 0 \
+    && grep -qx "remove spill-aabbccdd11223344aabbccdd11223344" "$TS_LOG" \
+        || { echo "  FAIL: tailnet device not removed (log: $(cat "$TS_LOG"))" >&2; exit 1; }
+) && _pass "Test 27" || _fail "Test 27"
+
+echo "--- Test 28: tailnet logout failure and absent OAuth client never fail teardown"
+(
+    _ec2_setup 28
+    TS_LOG="$EC2_SCRATCH/ts-28.log"; : > "$TS_LOG"
+    cat > "$EC2_SCRATCH/tailnet-28.sh" <<'TSEOF'
+tailnet_hostname() { printf 'spill-%s' "$1"; }
+tailnet_remove_by_hostname() { echo "remove $1" >> "$TS_LOG"; return 1; }
+TSEOF
+    rc=0
+    TAILNET_SH="$EC2_SCRATCH/tailnet-28.sh" TS_LOG="$TS_LOG" TS_OAUTH_CLIENT_ID=c TS_OAUTH_SECRET=s \
+        _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+    _assert_rc "exit code with failing logout" "$rc" 0 || exit 1
+    _ec2_setup 28b
+    : > "$TS_LOG"
+    rc=0
+    TAILNET_SH="$EC2_SCRATCH/tailnet-28.sh" TS_LOG="$TS_LOG" _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+    _assert_rc "exit code without OAuth client" "$rc" 0 || exit 1
+    [ ! -s "$TS_LOG" ] || { echo "  FAIL: logout attempted without an OAuth client" >&2; exit 1; }
+) && _pass "Test 28" || _fail "Test 28"
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

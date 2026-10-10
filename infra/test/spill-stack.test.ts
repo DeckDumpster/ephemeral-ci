@@ -728,3 +728,26 @@ test('spill role CreateTags carries ec2:CreateAction=RunInstances condition', ()
   expect(stmt.Condition).toBeDefined();
   expect(stmt.Condition!['StringEquals']['ec2:CreateAction']).toBe('RunInstances');
 });
+
+test('token-delivery document waits for the tailnet only when asked (sp-7330sk)', () => {
+  const docs = template.findResources('AWS::SSM::Document');
+  const content = (Object.values(docs)[0] as { Properties: { Content: any } }).Properties.Content;
+  // Default 0: callers that do not ask for the tailnet neither wait nor print.
+  expect(content.parameters.TailnetWaitSeconds.default).toBe('0');
+  expect(content.parameters.TailnetWaitSeconds.allowedPattern).toBe('^[0-9]{1,4}$');
+  const lines: string[] = content.mainSteps[0].inputs.runCommand;
+  const wait = lines.findIndex((l) => l.includes('{{ TailnetWaitSeconds }}'));
+  const write = lines.findIndex((l) => l.includes('/run/gh-runner-init.partial'));
+  // The wait must come before the init file is written: writing it is what
+  // triggers runner registration.
+  expect(wait).toBeGreaterThanOrEqual(0);
+  expect(wait).toBeLessThan(write);
+  expect(lines.join('\n')).toContain('/run/ephemeral-ci-tailnet');
+});
+
+test('security group still has no ingress: tailnet traffic needs none (sp-7330sk)', () => {
+  const sg = Object.values(template.findResources('AWS::EC2::SecurityGroup'))[0] as {
+    Properties: Record<string, unknown>;
+  };
+  expect(sg.Properties.SecurityGroupIngress ?? []).toHaveLength(0);
+});

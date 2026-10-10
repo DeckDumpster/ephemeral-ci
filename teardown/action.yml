@@ -172,6 +172,9 @@ runs:
         INSTANCE_ID: ${{ inputs.instance-id }}
         VM_TOKEN: ${{ inputs.vm-token }}
         SPILL_REGION: us-west-2
+        # Lets teardown log a tag:round-vm node out of the tailnet by name.
+        TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
+        TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}
       run: bash "${{ github.action_path }}/../scripts/teardown.sh"
 
     # DESTROYING THE VM DOES NOT DEREGISTER THE RUNNER.

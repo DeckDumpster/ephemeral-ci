@@ -63,7 +63,8 @@ jobs:
               scripts/test-reap.sh \
               scripts/test-template-substrate.sh \
               scripts/test-advance-inputs.sh \
-              scripts/test-ami-build.sh; do
+              scripts/test-ami-build.sh \
+              scripts/test-tailnet.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
           done
 
@@ -138,6 +139,9 @@ jobs:
       # No AWS credentials are needed; online tests skip gracefully without them.
       - name: ami-build stack outputs
         run: bash scripts/test-ami-build.sh
+
+      - name: tailnet helpers
+        run: bash scripts/test-tailnet.sh
 
       # A second reap suite, in Python, inherited from deckdumpster. It covers
       # the age and enumeration paths against a stubbed Proxmox API; the bash

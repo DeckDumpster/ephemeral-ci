@@ -238,6 +238,12 @@ export class SpillStack extends cdk.Stack {
             RunnerLabel: { type: 'String', description: 'Runner label' },
             RunnerUrl: { type: 'String', description: 'Registration URL' },
             RunnerGroup: { type: 'String', description: 'Runner group', default: 'ephemeral-ci' },
+            TailnetWaitSeconds: {
+              type: 'String',
+              description: 'Seconds to wait for the user-data tailnet join before registering; 0 skips the wait',
+              default: '0',
+              allowedPattern: '^[0-9]{1,4}$',
+            },
           },
           mainSteps: [
             {
@@ -246,6 +252,11 @@ export class SpillStack extends cdk.Stack {
               inputs: {
                 runCommand: [
                   'set -e',
+                  // Wait (bounded) for the user-data tailnet join. A timeout is not
+                  // an error: the runner registers anyway and the job runs cold.
+                  // The file is /run/ephemeral-ci-tailnet, written "up" or "failed".
+                  'T=/run/ephemeral-ci-tailnet; W={{ TailnetWaitSeconds }}; i=0',
+                  'if [ "$W" -gt 0 ]; then while [ "$i" -lt "$W" ] && [ ! -s "$T" ]; do sleep 2; i=$((i+2)); done; if grep -qx up "$T" 2>/dev/null; then echo "tailnet: up"; else echo "tailnet: unavailable"; fi; fi',
                   "printf 'RUNNER_LABEL={{ RunnerLabel }}\\nRUNNER_TOKEN={{ RunnerToken }}\\nRUNNER_URL={{ RunnerUrl }}\\nRUNNER_GROUP={{ RunnerGroup }}\\n' > /run/gh-runner-init.partial",
                   'mv /run/gh-runner-init.partial /run/gh-runner-init',
                 ],

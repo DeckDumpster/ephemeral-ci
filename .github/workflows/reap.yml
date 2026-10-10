@@ -72,6 +72,9 @@ jobs:
           # says so in the log.
           GITHUB_TOKEN: ${{ secrets.RUNNER_REG_PAT }}
           GH_ORG: ${{ github.repository_owner }}
+          # Lets the EC2 section also remove orphaned tag:round-vm devices.
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
           args=()
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
