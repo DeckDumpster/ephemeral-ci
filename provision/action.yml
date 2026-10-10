@@ -94,9 +94,12 @@ inputs:
       provision jobs can observe the same free memory and both clone, and the
       API has no atomic reserve; this bounds that overshoot instead of trying to
       coordinate across GitHub-hosted runners. It costs that many slots of
-      standing headroom, which is the price of the guarantee -- 0 disables it.
+      standing headroom, which is the price of the guarantee -- and with a Spira
+      round VM and its host VM resident, a slack of 1 left no room for any
+      runner, so every job waited and spilled to EC2. Defaults to 0 (no slack);
+      set 1 to bound the overshoot.
     required: false
-    default: '1'
+    default: '0'
   capacity-timeout-seconds:
     description: >-
       How long to wait for room before giving up. The wait is deliberately long:

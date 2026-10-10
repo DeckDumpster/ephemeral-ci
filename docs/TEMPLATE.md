@@ -156,7 +156,7 @@ runs; the suites themselves peak at about 1.5 GiB; total high-water is about
 binding resource. 12288 MiB was the template default, not a decision.
 
 **Why 6144 MiB and not smaller.** The hypervisor provides 46623 MiB for
-runners. `CAPACITY_SLACK_RUNNERS=1` means a new runner needs room for one
+runners. `CAPACITY_SLACK_RUNNERS=1` (the default is 0) means a new runner needs room for one
 more, so the practical fleet ceiling is `floor(avail / (2 × allocation))`:
 
 | allocation | concurrent runners |

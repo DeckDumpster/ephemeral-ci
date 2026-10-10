@@ -383,7 +383,7 @@ pick_vmid() {
 # EVERYTHING HERE PRINTS TO STDERR. stdout carries the vmid= output contract.
 CAPACITY_TIMEOUT="${CAPACITY_TIMEOUT:-3600}"
 CAPACITY_POLL="${CAPACITY_POLL:-15}"
-CAPACITY_SLACK_RUNNERS="${CAPACITY_SLACK_RUNNERS:-1}"
+CAPACITY_SLACK_RUNNERS="${CAPACITY_SLACK_RUNNERS:-0}"
 CAPACITY_UNCAPPED="${CAPACITY_UNCAPPED:-0}"
 # Left for the hypervisor itself -- ZFS ARC, the kernel, and whatever is not a
 # guest. Not a safety margin for the guests; that is what the slack is for.
