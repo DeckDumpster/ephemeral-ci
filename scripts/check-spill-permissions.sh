@@ -234,7 +234,7 @@ for r in data.get("EvaluationResults", []):
 # colons in condition key names (e.g. ec2:ResourceTag/spill:owner) are
 # preserved verbatim and do not split the key prematurely.
 _sim_json() {
-    POLICY_SOURCE_ARN="$SPILL_ROLE_ARN" python3 - "$@" <<'PYEOF'
+    POLICY_SOURCE_ARN="${SIM_ROLE_ARN:-$SPILL_ROLE_ARN}" python3 - "$@" <<'PYEOF'
 import json, os, sys
 
 policy_arn = os.environ["POLICY_SOURCE_ARN"]
@@ -465,6 +465,23 @@ else
     printf '  SKIPPED: launch template ID not available or describe-launch-template-versions failed\n'
 fi
 printf '\n'
+
+# 20. AMI build role: ami-build.sh launches the builder directly (no launch
+#     template, no vmtoken) and drives it with AWS-RunShellScript.
+AMI_BUILD_ROLE_ARN="${AMI_BUILD_ROLE_ARN:-arn:aws:iam::${ACCOUNT}:role/ephemeral-ci-ami-build}"
+SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" run_sim "ami build role: ec2:RunInstances + CreateTags on instance" "$(SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" _sim_json \
+    ec2:RunInstances \
+    ec2:CreateTags \
+    -- \
+    "$_INSTANCE" \
+    -- \
+    "aws:RequestTag/spill:owner|string|ephemeral-ci" \
+    "ec2:InstanceType|string|c7i.xlarge" \
+    "ec2:CreateAction|string|RunInstances")"
+SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" run_sim "ami build role: ssm:SendCommand (AWS-RunShellScript)" "$(SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" _sim_json \
+    ssm:SendCommand \
+    -- \
+    "arn:aws:ssm:${REGION}::document/AWS-RunShellScript")"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 

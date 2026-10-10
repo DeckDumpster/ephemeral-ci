@@ -471,6 +471,26 @@ export class SpillStack extends cdk.Stack {
     for (const st of spillPolicy.document.toJSON().Statement) {
       amiBuildRole.addToPolicy(iam.PolicyStatement.fromJson(st));
     }
+    // ami-build.sh launches the builder directly (no launch template and no
+    // vmtoken), so the copied spill grant for instance/* — which demands both —
+    // never matches.  This one is bounded by the spill:owner request tag and
+    // the builder's instance type.
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: ['arn:aws:ec2:us-west-2:189923011121:instance/*'],
+      conditions: {
+        StringEquals: {
+          'aws:RequestTag/spill:owner': 'ephemeral-ci',
+          'ec2:InstanceType': 'c7i.xlarge',
+        },
+      },
+    }));
+    // The build drives the instance with the AWS-owned AWS-RunShellScript
+    // document; the spill role's SendCommand grant names only its own document.
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:SendCommand'],
+      resources: ['arn:aws:ssm:us-west-2::document/AWS-RunShellScript'],
+    }));
     const ownedResource = { StringEquals: { 'aws:ResourceTag/spill:owner': 'ephemeral-ci' } };
     amiBuildRole.addToPolicy(new iam.PolicyStatement({
       actions: ['ec2:StopInstances', 'ec2:DeregisterImage', 'ec2:DeleteSnapshot'],

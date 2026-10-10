@@ -339,6 +339,29 @@ fi
 #   0e: --keep-on-failure preserves the instance and prints start-session
 # ---------------------------------------------------------------------------
 
+# 0c2. run-instances failing/empty must stop the build, not continue with an empty id.
+_rd="$(mktemp -d)"
+cat > "${_rd}/aws" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "sts get-caller-identity") printf '189923011121' ;;
+    "cloudformation describe-stacks")
+        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-s1"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-s1"},{"OutputKey":"InstanceProfileName","OutputValue":"prof-s1"}]}]}' ;;
+    "ec2 describe-images") printf 'ami-stubbase001' ;;
+    "ec2 run-instances") printf 'None' ;;
+    "ssm describe-instance-information") printf 'ssm-called-with-empty-id\n' >&2 ;;
+    *) exit 0 ;;
+esac
+STUB
+chmod +x "${_rd}/aws"
+_out_rd="$(PATH="${_rd}:${PATH}" bash "$BOOTSTRAP" 2>&1)" && _rc_rd=0 || _rc_rd=$?
+rm -rf "$_rd"
+if [ "$_rc_rd" -ne 0 ] && grep -q 'no instance id' <<<"$_out_rd" && ! grep -q 'Waiting for' <<<"$_out_rd"; then
+    ok "run-instances empty id: build stops before the SSM wait"
+else
+    ko "run-instances empty id: build did not stop (rc=$_rc_rd, got: $(printf '%s' "$_out_rd" | tail -3))"
+fi
+
 # Helper: write aws + curl stubs into a tempdir.
 # The aws stub bakes $term_file into the terminate-instances arm at write time
 # so the stub can record calls without needing environment variables at runtime.
