@@ -1577,6 +1577,10 @@ case "$1 $2" in
     "ssm put-parameter")
         ;;
     "ssm send-command")
+        if [ -n "${AWS_SEND_COMMAND_FAIL:-}" ]; then
+            printf 'An error occurred (AccessDeniedException) when calling the SendCommand operation\n' >&2
+            exit 1
+        fi
         printf 'cmd-testcmd001\n'
         ;;
     "ssm get-command-invocation")
@@ -1586,6 +1590,8 @@ case "$1 $2" in
         esac
         ;;
     "ssm delete-parameter")
+        ;;
+    "ec2 terminate-instances")
         ;;
     *)
         printf 'aws-stub: unhandled: %s\n' "$*" >&2
@@ -2053,6 +2059,45 @@ if grep -q '^MIN_THREADS_MAX=65536$' "$_g" && [ -n "$_l_set" ] && [ -n "$_l_chk"
     ok "test-38: threads-max raised and verified before the runner registers"
 else
     ko "test-38: threads-max step missing or after config.sh (set=$_l_set chk=$_l_chk cfg=$_l_cfg)"
+fi
+
+# ---------------------------------------------------------------------------
+# test-39: a provision that fails AFTER RunInstances still yields an
+# instance-id output and does not leave the instance running (sp-3grl9x).
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_out39="$SCRATCH/out39"
+_err39="$SCRATCH/err39"
+AWS_SEND_COMMAND_FAIL=1 CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only \
+    SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$_out39" 2>"$_err39" && _rc39=0 || _rc39=$?
+
+if [ "$_rc39" -ne 0 ]; then
+    ok "test-39: failure at SendCommand exits non-zero"
+else
+    ko "test-39: SendCommand failure should exit non-zero"
+fi
+if grep -qx 'instance-id=i-testinstance001' "$_out39"; then
+    ok "test-39: instance-id output is emitted although provision failed"
+else
+    ko "test-39: instance-id missing after a post-launch failure (stdout: $(cat "$_out39"))"
+fi
+if grep -q 'terminate-instances.*i-testinstance001' "$AWS_ARGV_FILE"; then
+    ok "test-39: the launched instance is terminated on failure"
+else
+    ko "test-39: failed provision left i-testinstance001 running (aws calls: $(cat "$AWS_ARGV_FILE"))"
+fi
+
+# A provision that succeeds must NOT terminate what it launched.
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>&1 || true
+if ! grep -q 'terminate-instances' "$AWS_ARGV_FILE"; then
+    ok "test-39: a successful provision terminates nothing"
+else
+    ko "test-39: successful provision terminated its instance"
 fi
 
 # ---------------------------------------------------------------------------

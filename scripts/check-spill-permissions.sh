@@ -312,6 +312,7 @@ esac
 run_sim "describe / read-only (resource: *)" "$(_sim_json \
     ec2:DescribeInstances \
     ec2:DescribeImages \
+    ec2:DescribeVolumes \
     ssm:GetCommandInvocation \
     ssm:DescribeInstanceInformation \
     -- \

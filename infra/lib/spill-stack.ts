@@ -349,6 +349,24 @@ export class SpillStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // Volume reaping (scripts/reap.sh, run from reap.yml under this role):
+    // DescribeVolumes cannot be resource-scoped; DeleteVolume is limited to
+    // volumes the launch template tagged spill:owner=ephemeral-ci.
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeVolumes'],
+      resources: ['*'],
+    }));
+
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:DeleteVolume'],
+      resources: ['arn:aws:ec2:us-west-2:189923011121:volume/*'],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/spill:owner': 'ephemeral-ci',
+        },
+      },
+    }));
+
     // SSM send-command: scoped to this stack's own document only.
     // The AWS-owned wildcard (arn:aws:ssm:region::document/*) addressed documents
     // with an empty account field — AWS-owned documents only — and did not cover

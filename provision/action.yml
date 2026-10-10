@@ -270,25 +270,30 @@ runs:
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
         TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}
       run: |
+        # Each output is published the moment provision.sh prints it, not after
+        # it exits: an instance launched by a provision that then fails must
+        # still be nameable to teardown (sp-3grl9x). vmid= is written empty
+        # first so the EC2 path still exports it; a later real value wins.
+        echo "vmid=" >> "$GITHUB_OUTPUT"
         set +e
-        OUT=$(bash "${{ github.action_path }}/../scripts/provision.sh" \
+        bash "${{ github.action_path }}/../scripts/provision.sh" \
                 "${{ steps.label.outputs.label }}" \
                 "${{ steps.regtoken.outputs.token }}" \
-                "${{ github.server_url }}/${{ github.repository_owner }}")
-        RC=$?
+                "${{ github.server_url }}/${{ github.repository_owner }}" \
+          | while IFS= read -r line; do
+              case "$line" in
+                vmid=?*)     echo "$line" >> "$GITHUB_OUTPUT" ;;
+                vmtoken=*)   v="${line#vmtoken=}"
+                             [ -n "$v" ] && echo "vm-token=$v" >> "$GITHUB_OUTPUT" ;;
+                backend=?*)  echo "$line" >> "$GITHUB_OUTPUT" ;;
+                instance-id=?*)
+                             echo "$line" >> "$GITHUB_OUTPUT"
+                             echo "Launched EC2 instance \`${line#instance-id=}\` (teardown terminates it)." >> "$GITHUB_STEP_SUMMARY" ;;
+                tailnet=?*)  echo "$line" >> "$GITHUB_OUTPUT" ;;
+              esac
+            done
+        RC=${PIPESTATUS[0]}
         set -e
-        # vmid= may be empty on the EC2 path; export it either way so teardown
-        # can distinguish "clone never happened" from "EC2 runner"
-        VMID=$(printf '%s\n' "$OUT" | sed -n 's/^vmid=\(.*\)$/\1/p' | head -1)
-        echo "vmid=${VMID}" >> "$GITHUB_OUTPUT"
-        VMTOKEN=$(printf '%s\n' "$OUT" | sed -n 's/^vmtoken=\([a-f0-9]*\)$/\1/p' | head -1)
-        [ -n "$VMTOKEN" ] && echo "vm-token=$VMTOKEN" >> "$GITHUB_OUTPUT"
-        BACKEND=$(printf '%s\n' "$OUT" | sed -n 's/^backend=\(.*\)$/\1/p' | head -1)
-        [ -n "$BACKEND" ] && echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
-        IID=$(printf '%s\n' "$OUT" | sed -n 's/^instance-id=\(.*\)$/\1/p' | head -1)
-        [ -n "$IID" ] && echo "instance-id=$IID" >> "$GITHUB_OUTPUT"
-        TAILNET=$(printf '%s\n' "$OUT" | sed -n 's/^tailnet=\(.*\)$/\1/p' | head -1)
-        [ -n "$TAILNET" ] && echo "tailnet=$TAILNET" >> "$GITHUB_OUTPUT"
         exit "$RC"
 
     # WRITING THE FILE IS NOT PROOF OF REGISTRATION. agent/file-write returns
