@@ -215,6 +215,11 @@ launch_builder() {
         --query 'Instances[0].InstanceId' \
         --output text)"
 
+    if [ -z "$instance_id" ] || [ "$instance_id" = "None" ]; then
+        printf 'ami-build.sh: run-instances returned no instance id\n' >&2
+        return 1
+    fi
+
     note "launched: $instance_id"
     printf '%s' "$instance_id"
 }
@@ -607,7 +612,8 @@ ami_name="${AMI_NAME_PREFIX}-${build_date}-${git_commit}"
 note "building: $ami_name"
 
 base_ami="$(find_base_ami)"
-instance_id="$(launch_builder "$base_ami" "$build_date" "$git_commit")"
+instance_id="$(launch_builder "$base_ami" "$build_date" "$git_commit")" || exit 1
+[ -n "$instance_id" ] || { printf 'ami-build.sh: no build instance id; stopping\n' >&2; exit 1; }
 
 # On failure after launch, terminate the build instance so it does not linger.
 _instance_id="$instance_id"

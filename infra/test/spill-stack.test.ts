@@ -821,6 +821,27 @@ test('ami build role scopes its build-time grants to spill:owner=ephemeral-ci', 
   expect(describe.length).toBeGreaterThan(0);
 });
 
+test('ami build role holds the launch-and-deliver grants ami-build.sh uses', () => {
+  const sts = amiBuildStatements();
+  const having = (action: string) =>
+    sts.filter((s) => ([] as string[]).concat(s.Action).includes(action));
+  // RunInstances on the instance resource without a vmtoken requirement.
+  const launch = having('ec2:RunInstances').filter((s) =>
+    JSON.stringify(s).includes('instance/*') && !JSON.stringify(s.Condition).includes('vmtoken'));
+  expect(launch).toHaveLength(1);
+  expect(JSON.stringify(launch[0].Condition)).toContain('aws:RequestTag/spill:owner');
+  expect(JSON.stringify(launch[0].Condition)).toContain('c7i.xlarge');
+  expect(having('ec2:RunInstances').length).toBeGreaterThanOrEqual(3);
+  expect(JSON.stringify(having('iam:PassRole'))).toContain('ec2.amazonaws.com');
+  expect(JSON.stringify(having('ec2:TerminateInstances')[0].Condition)).toContain('spill:owner');
+  expect(JSON.stringify(having('ec2:CreateTags'))).toContain('RunInstances');
+  expect(JSON.stringify(having('ssm:SendCommand'))).toContain('document/AWS-RunShellScript');
+  for (const a of ['ssm:GetCommandInvocation', 'ssm:DescribeInstanceInformation',
+    'cloudformation:DescribeStacks', 'ec2:DescribeInstances', 'ec2:DescribeImages']) {
+    expect(having(a).length).toBeGreaterThan(0);
+  }
+});
+
 test('spill role does not hold the build-time grants', () => {
   const policies = template.findResources('AWS::IAM::Policy');
   const roles = template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } });
