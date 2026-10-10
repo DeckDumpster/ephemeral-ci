@@ -27,6 +27,8 @@
 #   spill:owner=ephemeral-ci  (required for the budget filter and the reaper)
 #   build-date=YYYYMMDD
 #   git-commit=SHORT_SHA
+#   substrate-sha=<sha256 of template-substrate.sh>  (provision.sh refuses an
+#     AMI whose tag differs from the substrate at its own ref)
 #   Name=ephemeral-ci-runner
 #
 # --retain N (default 3): keep the N newest ephemeral-ci-runner AMIs;
@@ -444,6 +446,8 @@ wait_command() {
 # ---------------------------------------------------------------------------
 create_ami() {
     local instance_id="$1" ami_name="$2" build_date="$3" git_commit="$4"
+    local substrate_sha
+    substrate_sha="$(sha256sum "${SCRIPT_DIR}/template-substrate.sh" | cut -d' ' -f1)"
     note "stopping $instance_id before snapshot"
 
     aws_w ec2 stop-instances --instance-ids "$instance_id" --region "$REGION" >/dev/null
@@ -457,11 +461,13 @@ create_ami() {
         --arg tk "$TAG_KEY" --arg tv "$TAG_VALUE" \
         --arg name "$AMI_NAME_PREFIX" \
         --arg bd "$build_date" --arg gc "$git_commit" \
+        --arg ss "$substrate_sha" \
         '{ResourceType: $type, Tags: [
             {Key: $tk, Value: $tv},
             {Key: "Name", Value: $name},
             {Key: "build-date", Value: $bd},
-            {Key: "git-commit", Value: $gc}
+            {Key: "git-commit", Value: $gc},
+            {Key: "substrate-sha", Value: $ss}
         ]}')"
     local tag_spec_snap
     tag_spec_snap="$(jq -n --arg type snapshot \

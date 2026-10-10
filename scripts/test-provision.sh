@@ -1539,6 +1539,7 @@ fi
 # the first few arguments.
 AWS_ARGV_FILE="$SCRATCH/aws-argv"
 AWS_BIN="$SCRATCH/aws"
+export AWS_AMI_SUBSTRATE_SHA="$(sha256sum "$(dirname "${BASH_SOURCE[0]}")/template-substrate.sh" | cut -d' ' -f1)"
 cat > "$AWS_BIN" << 'AWSSTUB'
 #!/bin/sh
 SEP=$(printf '\x1e')
@@ -1552,7 +1553,7 @@ case "$1 $2" in
         printf '0\n'
         ;;
     "ec2 describe-images")
-        printf 'ami-testdeadbeef\n'
+        printf 'ami-testdeadbeef\t%s\n' "${AWS_AMI_SUBSTRATE_SHA}"
         ;;
     "ec2 run-instances")
         # Keep a copy of any user-data file: provision.sh deletes it on exit.
@@ -2098,6 +2099,27 @@ if ! grep -q 'terminate-instances' "$AWS_ARGV_FILE"; then
     ok "test-39: a successful provision terminates nothing"
 else
     ko "test-39: successful provision terminated its instance"
+fi
+
+# Stale AMI: its substrate-sha tag differs from template-substrate.sh at this
+# ref. Provision must fail loudly, name the AMI and both hashes, and launch
+# nothing.
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_err40="$SCRATCH/err40"
+AWS_AMI_SUBSTRATE_SHA=staleoldhash CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only \
+    SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err40" && _rc40=0 || _rc40=$?
+if [ "$_rc40" -ne 0 ] && grep -q 'ami-testdeadbeef is stale' "$_err40" \
+   && grep -q 'staleoldhash' "$_err40" && grep -q "$AWS_AMI_SUBSTRATE_SHA" "$_err40"; then
+    ok "test-40: a stale AMI is refused, naming the AMI and both hashes"
+else
+    ko "test-40: stale AMI not refused (rc=$_rc40; err: $(cat "$_err40"))"
+fi
+if ! grep -q 'run-instances' "$AWS_ARGV_FILE"; then
+    ok "test-40: a stale AMI launches nothing"
+else
+    ko "test-40: stale AMI was launched"
 fi
 
 # ---------------------------------------------------------------------------

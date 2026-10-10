@@ -620,22 +620,34 @@ ec2_wait_ceiling() {
     done
 }
 
-# Print the AMI id of the newest AMI tagged spill:owner=ephemeral-ci.
+# Print the AMI id of the newest AMI tagged spill:owner=ephemeral-ci, but only
+# if its substrate-sha tag equals the sha256 of template-substrate.sh at this
+# provision ref. A stale AMI (built before the substrate changed) fails the
+# job here, naming both hashes, rather than failing later in a consumer's
+# "Install runner dependencies" step.
 ec2_find_ami() {
-    local ami
-    ami="$(aws ec2 describe-images \
+    local out ami have want
+    out="$(aws ec2 describe-images \
                --region "$SPILL_REGION" \
                --filters \
                  'Name=tag:spill:owner,Values=ephemeral-ci' \
                  'Name=state,Values=available' \
-               --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+               --query 'sort_by(Images, &CreationDate)[-1].[ImageId, Tags[?Key==`substrate-sha`]|[0].Value]' \
                --output text 2>/dev/null)" || {
         printf '::error::provision.sh: cannot find spill AMI\n' >&2
         return 1
     }
+    ami="$(printf '%s' "$out" | awk '{print $1}')"
+    have="$(printf '%s' "$out" | awk '{print $2}')"
     if [ -z "$ami" ] || [ "$ami" = "None" ]; then
         printf '::error::provision.sh: no available AMI tagged spill:owner=ephemeral-ci in %s; run ami-build.sh first\n' \
             "$SPILL_REGION" >&2
+        return 1
+    fi
+    want="$(sha256sum "${SCRIPT_DIR}/template-substrate.sh" | cut -d' ' -f1)"
+    if [ "$have" != "$want" ]; then
+        printf '::error::provision.sh: spill AMI %s is stale: substrate-sha=%s, template-substrate.sh at this ref is %s; rebuild with the ami-build workflow\n' \
+            "$ami" "${have:-none}" "$want" >&2
         return 1
     fi
     printf '%s' "$ami"

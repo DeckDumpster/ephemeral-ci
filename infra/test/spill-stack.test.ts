@@ -790,3 +790,46 @@ test('spill role holds exactly what reap.sh needs, tag-conditioned (sp-3grl9x)',
     expect(found[0].Condition?.StringEquals?.['ec2:ResourceTag/spill:owner']).toBe('ephemeral-ci');
   }
 });
+
+// ── AMI build role ─────────────────────────────────────────────────────────
+
+function amiBuildStatements(): Array<{ Action: string | string[]; Condition?: unknown }> {
+  const policies = template.findResources('AWS::IAM::Policy');
+  const roles = template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-ami-build' } });
+  const roleId = Object.keys(roles)[0];
+  const pol = Object.values(policies).find((p) =>
+    JSON.stringify((p as { Properties: { Roles: unknown } }).Properties.Roles).includes(roleId),
+  ) as { Properties: { PolicyDocument: { Statement: Array<{ Action: string | string[]; Condition?: unknown }> } } };
+  return pol.Properties.PolicyDocument.Statement;
+}
+
+test('ami build role trusts only ephemeral-ci on refs/heads/main', () => {
+  const subs = getOidcSubs('ephemeral-ci-ami-build');
+  expect(subs).toBe('repo:DeckDumpster@262905033/ephemeral-ci@1371818598:ref:refs/heads/main');
+});
+
+test('ami build role scopes its build-time grants to spill:owner=ephemeral-ci', () => {
+  const sts = amiBuildStatements();
+  for (const action of ['ec2:StopInstances', 'ec2:DeregisterImage', 'ec2:DeleteSnapshot', 'ec2:CreateImage']) {
+    const hit = sts.filter((s) => ([] as string[]).concat(s.Action).includes(action));
+    expect(hit.length).toBeGreaterThan(0);
+    for (const s of hit) {
+      expect(JSON.stringify(s.Condition)).toContain('ephemeral-ci');
+    }
+  }
+  const describe = sts.filter((s) => ([] as string[]).concat(s.Action).includes('ec2:DescribeSnapshots'));
+  expect(describe.length).toBeGreaterThan(0);
+});
+
+test('spill role does not hold the build-time grants', () => {
+  const policies = template.findResources('AWS::IAM::Policy');
+  const roles = template.findResources('AWS::IAM::Role', { Properties: { RoleName: 'ephemeral-ci-spill' } });
+  const roleId = Object.keys(roles)[0];
+  const pol = Object.values(policies).find((p) =>
+    JSON.stringify((p as { Properties: { Roles: unknown } }).Properties.Roles).includes(roleId),
+  );
+  const txt = JSON.stringify(pol);
+  for (const a of ['ec2:CreateImage', 'ec2:DeregisterImage', 'ec2:DeleteSnapshot', 'ec2:StopInstances']) {
+    expect(txt).not.toContain(a);
+  }
+});
