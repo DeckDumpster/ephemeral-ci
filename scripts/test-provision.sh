@@ -2176,6 +2176,63 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 44 -- per-repo runner size (sp-wwihwm)
+#   memory-mib / cores are PUT to the clone's config before start, and the
+#   capacity check uses the requested size instead of the template's.
+# ---------------------------------------------------------------------------
+export CURL_NODE_TOTAL_MIB=131072
+export CURL_TEMPLATE_MIB=6144
+export CAPACITY_POLL=1
+export CAPACITY_TIMEOUT=3
+
+_config_put_has() {   # a PUT to .../config whose record carries the exact arg
+    awk -v a="$1" '
+        /^---$/ { if (isput && hasa) { found = 1 }; isput = 0; hasa = 0; next }
+        /\/config$/ { isc = 1 }
+        $0 == "PUT" { isput = 1 }
+        $0 == a { hasa = 1 }
+        END { exit(found ? 0 : 1) }' "$CURL_ARGV_FILE" 2>/dev/null
+}
+
+rm -f "$CURL_ARGV_FILE"
+RUNNER_MEMORY_MIB=16384 RUNNER_CORES=8 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if _config_put_has "memory=16384" && _config_put_has "cores=8"; then
+    ok "test-44: provision sets the requested memory and cores on the clone"
+else
+    ko "test-44: no config PUT carrying memory=16384 / cores=8"
+fi
+
+rm -f "$CURL_ARGV_FILE"
+run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+if grep -q '^memory=' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ko "test-44: memory set although none was requested"
+else
+    ok "test-44: default leaves the template's size alone"
+fi
+
+# Capacity: 131072 - 8192 reserve - 100000 alloc = 22784 free. The 6144 template
+# fits; a 32768 request must not, which proves the request is what is counted.
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=100000 run_provision valid-label test-token https://github.com/owner/repo >/dev/null
+grep -qxF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null \
+    && ok "test-44: control: the template-sized runner fits" \
+    || ko "test-44: control: template-sized runner did not clone"
+rm -f "$CURL_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=100000 RUNNER_MEMORY_MIB=32768 bash "$PROVISION" valid-label test-token \
+    https://github.com/owner/repo >/dev/null 2>&1 && _rc44=0 || _rc44=$?
+if [ "$_rc44" -ne 0 ] && ! grep -qF 'pool=ephemeral-ci' "$CURL_ARGV_FILE" 2>/dev/null; then
+    ok "test-44: capacity check uses the requested memory, not the template's"
+else
+    ko "test-44: a 32768 MiB request cloned onto 22784 MiB free (rc=$_rc44)"
+fi
+
+RUNNER_MEMORY_MIB=lots bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>&1 && ko "test-44: non-numeric memory accepted" || ok "test-44: non-numeric memory refused"
+SPILL_INSTANCE_TYPE=m5.large bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>&1 && ko "test-44: disallowed instance family accepted" || ok "test-44: disallowed instance family refused"
+unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CAPACITY_POLL CAPACITY_TIMEOUT
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))

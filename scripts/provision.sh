@@ -115,6 +115,17 @@
 set -euo pipefail
 
 TEMPLATE_VMID="${TEMPLATE_VMID:-101}"
+# Per-consumer VM size. Empty means the template's own memory / cores. Applied to
+# the clone (PUT /config) after the clone task and before start, and used in place
+# of the template's size by the capacity check.
+RUNNER_MEMORY_MIB="${RUNNER_MEMORY_MIB:-}"
+RUNNER_CORES="${RUNNER_CORES:-}"
+for _sz in RUNNER_MEMORY_MIB RUNNER_CORES; do
+    if [ -n "${!_sz}" ] && ! [[ "${!_sz}" =~ ^[1-9][0-9]*$ ]]; then
+        printf 'provision.sh: %s=%s is not a positive integer\n' "$_sz" "${!_sz}" >&2
+        exit 1
+    fi
+done
 CLONE_RETRIES="${CLONE_RETRIES:-5}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-120}"
 AGENT_TIMEOUT="${AGENT_TIMEOUT:-120}"
@@ -433,6 +444,14 @@ SPILL_REGION="${SPILL_REGION:-us-west-2}"
 SPILL_SESSION_SECONDS="${SPILL_SESSION_SECONDS:-3000}"
 SPILL_STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
 SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.xlarge}"
+# Same families the spill role's ec2:InstanceType condition admits (spill-stack.ts).
+# Refused here, up front, rather than as an opaque RunInstances AccessDenied
+# after the Proxmox wait has already been spent.
+case "$SPILL_INSTANCE_TYPE" in
+    c7i.*|c8i.*) ;;
+    *) printf 'provision.sh: SPILL_INSTANCE_TYPE=%s is outside the allowed families (c7i.*, c8i.*)\n' \
+           "$SPILL_INSTANCE_TYPE" >&2; exit 1 ;;
+esac
 SPILL_SSM_WAIT_SECONDS="${SPILL_SSM_WAIT_SECONDS:-300}"
 #   SPILL_TAILNET       true | false (default false). When true the instance
 #                       joins the tailnet as tag:round-vm before the runner
@@ -509,6 +528,9 @@ wait_for_capacity() {
         set -- $resources
         total_mib="$1"; total_cpus="$2"; alloc_mib="$3"; want_mib="$4"
         alloc_cpus="$5"; want_cpus="$6"; repo_count="${7:-0}"
+        # The requested size, not the template's, is what this runner will hold.
+        [ -z "$RUNNER_MEMORY_MIB" ] || want_mib="$RUNNER_MEMORY_MIB"
+        [ -z "$RUNNER_CORES" ] || want_cpus="$RUNNER_CORES"
         if [ "${want_mib:-0}" -le 0 ]; then
             printf '::warning::provision.sh: template %s reports no memory -- proceeding with NO capacity cap\n' "$TEMPLATE_VMID" >&2
             return 0
@@ -1151,6 +1173,24 @@ if [ -n "${REPO_TAG:-}" ]; then
         printf 'provision.sh: WARNING could not tag VM %s with %s — the per-repo cap will undercount this runner\n' \
             "$VMID" "$REPO_TAG" >&2
     fi
+fi
+
+# --- Size the clone ---
+#
+# FATAL, unlike the tag: a runner left at the template's size is the OOM this
+# input exists to prevent, so proceeding silently would hide the failure until
+# the consumer's link step is killed.
+if [ -n "$RUNNER_MEMORY_MIB" ] || [ -n "$RUNNER_CORES" ]; then
+    _size_args=()
+    [ -z "$RUNNER_MEMORY_MIB" ] || _size_args+=(--data-urlencode "memory=${RUNNER_MEMORY_MIB}")
+    [ -z "$RUNNER_CORES" ] || _size_args+=(--data-urlencode "cores=${RUNNER_CORES}")
+    if ! pvapi PUT "/nodes/${PVE_NODE}/qemu/${VMID}/config" "${_size_args[@]}" >/dev/null; then
+        printf 'provision.sh: could not size VM %s (memory=%s cores=%s)\n' \
+            "$VMID" "${RUNNER_MEMORY_MIB:-template}" "${RUNNER_CORES:-template}" >&2
+        exit 1
+    fi
+    printf 'provision.sh: sized VM %s: memory=%s MiB cores=%s\n' \
+        "$VMID" "${RUNNER_MEMORY_MIB:-template}" "${RUNNER_CORES:-template}" >&2
 fi
 
 # --- Serialize boot by template ---

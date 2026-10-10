@@ -68,6 +68,25 @@ inputs:
   template-vmid:
     description: VMID of the runner template to clone.
     required: true
+  memory-mib:
+    description: >-
+      Memory in MiB for this consumer's runner VM, applied to the clone before
+      it starts; the capacity check requires this much room. Empty uses the
+      template's size. Raise it for a consumer whose job does not fit (a Rust
+      link plus a headless browser OOMs the 6 GiB template).
+    required: false
+    default: ''
+  cores:
+    description: vCPU count for this consumer's runner VM. Empty uses the template's.
+    required: false
+    default: ''
+  instance-type:
+    description: >-
+      EC2 instance type for a spilled runner, e.g. c7i.2xlarge for 16 GiB.
+      Must be in the c7i or c8i families the spill role allows. Empty uses
+      c7i.xlarge. No effect on the Proxmox path.
+    required: false
+    default: ''
   runner-group:
     description: >-
       Org runner group the guest registers into. The group's repository access
@@ -257,6 +276,9 @@ runs:
         PVE_TOKEN_ID: ${{ inputs.pve-token-id }}
         PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
         RUNNER_GROUP: ${{ inputs.runner-group }}
+        RUNNER_MEMORY_MIB: ${{ inputs.memory-mib }}
+        RUNNER_CORES: ${{ inputs.cores }}
+        SPILL_INSTANCE_TYPE: ${{ inputs.instance-type }}
         NODE_MEM_RESERVE_MIB: ${{ inputs.node-memory-reserve-mib }}
         CAPACITY_SLACK_RUNNERS: ${{ inputs.capacity-slack-runners }}
         CAPACITY_TIMEOUT: ${{ inputs.capacity-timeout-seconds }}
@@ -362,4 +384,4 @@ runs:
         if [ -n "${{ steps.provision.outputs.tailnet }}" ]; then
           echo "Tailnet: \`${{ steps.provision.outputs.tailnet }}\` (tag:round-vm)." >> "$GITHUB_STEP_SUMMARY"
         fi
-        echo "Instance type: \`${SPILL_INSTANCE_TYPE:-c7i.xlarge}\` — ensure teardown terminates it to avoid ongoing cost." >> "$GITHUB_STEP_SUMMARY"
+        echo "Instance type: \`${{ inputs.instance-type || 'c7i.xlarge' }}\` — ensure teardown terminates it to avoid ongoing cost." >> "$GITHUB_STEP_SUMMARY"
