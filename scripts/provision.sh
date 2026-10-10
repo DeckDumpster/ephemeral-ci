@@ -428,6 +428,9 @@ SPILL="${SPILL:-off}"
 SPILL_AFTER_SECONDS="${SPILL_AFTER_SECONDS:-0}"
 SPILL_MAX_INSTANCES="${SPILL_MAX_INSTANCES:-4}"
 SPILL_REGION="${SPILL_REGION:-us-west-2}"
+# Seconds of AWS role session to trust, counted from provision.sh's start. The
+# default session is 3600s; the margin leaves room to launch after the wait.
+SPILL_SESSION_SECONDS="${SPILL_SESSION_SECONDS:-3000}"
 SPILL_STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
 SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.xlarge}"
 SPILL_SSM_WAIT_SECONDS="${SPILL_SSM_WAIT_SECONDS:-300}"
@@ -593,7 +596,10 @@ ec2_count_instances() {
                'Name=tag:spill:owner,Values=ephemeral-ci' \
                'Name=instance-state-name,Values=pending,running' \
              --query 'length(Reservations[].Instances[])' \
-             --output text 2>/dev/null)" || { printf '0'; return 0; }
+             --output text 2>&1)" || {
+        printf '::error::provision.sh: cannot count spill instances (aws ec2 describe-instances failed; expired credentials look like this): %s\n' "$n" >&2
+        return 1
+    }
     case "$n" in
         ''|None) printf '0' ;;
         *)       printf '%s' "$n" ;;
@@ -601,20 +607,31 @@ ec2_count_instances() {
 }
 
 # Block until there is room under SPILL_MAX_INSTANCES.
+#
+# The AWS credentials were assumed before provision.sh started and cannot be
+# re-acquired from here (the OIDC token belongs to the action step), so the
+# wait is bounded below the role session: SPILL_SESSION_SECONDS is measured
+# from provision.sh's start, and the wait gives up before the session can
+# expire rather than polling with dead credentials (sp-3psa7i).
 ec2_wait_ceiling() {
-    local waited=0 count
+    local waited=0 count limit="$CAPACITY_TIMEOUT" session_left
+    session_left=$(( SPILL_SESSION_SECONDS - SECONDS ))
+    [ "$session_left" -lt 0 ] && session_left=0
+    if [ "$session_left" -lt "$limit" ]; then
+        limit="$session_left"
+    fi
     while true; do
-        count="$(ec2_count_instances)"
+        count="$(ec2_count_instances)" || return 1
         if [ "${count:-0}" -lt "$SPILL_MAX_INSTANCES" ]; then
             return 0
         fi
-        if [ "$waited" -ge "$CAPACITY_TIMEOUT" ]; then
-            printf '::error::provision.sh: EC2 spill ceiling reached (%s/%s running); waited %ss. Raise spill-max-instances or wait for instances to terminate.\n' \
-                "$count" "$SPILL_MAX_INSTANCES" "$waited" >&2
+        if [ "$waited" -ge "$limit" ]; then
+            printf '::error::provision.sh: EC2 spill ceiling reached (%s/%s running); waited %ss (limit %ss; capped below the %ss AWS session). Raise spill-max-instances or wait for instances to terminate.\n' \
+                "$count" "$SPILL_MAX_INSTANCES" "$waited" "$limit" "$SPILL_SESSION_SECONDS" >&2
             return 1
         fi
         printf 'provision.sh: EC2 spill ceiling reached (%s/%s instances running); waiting (%ss/%ss)\n' \
-            "$count" "$SPILL_MAX_INSTANCES" "$waited" "$CAPACITY_TIMEOUT" >&2
+            "$count" "$SPILL_MAX_INSTANCES" "$waited" "$limit" >&2
         sleep "$CAPACITY_POLL"
         waited=$(( waited + CAPACITY_POLL ))
     done
@@ -633,8 +650,8 @@ ec2_find_ami() {
                  'Name=tag:spill:owner,Values=ephemeral-ci' \
                  'Name=state,Values=available' \
                --query 'sort_by(Images, &CreationDate)[-1].[ImageId, Tags[?Key==`substrate-sha`]|[0].Value]' \
-               --output text 2>/dev/null)" || {
-        printf '::error::provision.sh: cannot find spill AMI\n' >&2
+               --output text 2>&1)" || {
+        printf '::error::provision.sh: cannot find spill AMI: aws ec2 describe-images failed: %s\n' "$out" >&2
         return 1
     }
     ami="$(printf '%s' "$out" | awk '{print $1}')"
