@@ -455,6 +455,52 @@ export class SpillStack extends cdk.Stack {
     }));
 
 
+    // ── AMI build role: assumed only by ami-build.yml on main ───────────────
+    // ami-build.sh launches a builder, drives it over SSM and snapshots it, so
+    // the role carries every spill-role grant plus the build-time operations
+    // ami-build.sh's header lists beyond them.  The trust sub is pinned to
+    // refs/heads/main of this repository: a PR branch cannot assume it.  The
+    // extra grants are scoped to resources tagged spill:owner=ephemeral-ci.
+    const AMI_BUILD_OIDC_SUB =
+      'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:ref:refs/heads/main';
+    const amiBuildRole = new iam.Role(this, 'AmiBuildRole', {
+      roleName: 'ephemeral-ci-ami-build',
+      assumedBy: oidcPrincipal(AMI_BUILD_OIDC_SUB),
+    });
+    const spillPolicy = spillRole.node.findChild('DefaultPolicy') as iam.Policy;
+    for (const st of spillPolicy.document.toJSON().Statement) {
+      amiBuildRole.addToPolicy(iam.PolicyStatement.fromJson(st));
+    }
+    const ownedResource = { StringEquals: { 'aws:ResourceTag/spill:owner': 'ephemeral-ci' } };
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:StopInstances', 'ec2:DeregisterImage', 'ec2:DeleteSnapshot'],
+      resources: [
+        'arn:aws:ec2:us-west-2:189923011121:instance/*',
+        'arn:aws:ec2:us-west-2::image/*',
+        'arn:aws:ec2:us-west-2::snapshot/*',
+      ],
+      conditions: ownedResource,
+    }));
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:CreateImage'],
+      resources: ['arn:aws:ec2:us-west-2:189923011121:instance/*'],
+      conditions: ownedResource,
+    }));
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:CreateImage', 'ec2:CreateTags'],
+      resources: [
+        'arn:aws:ec2:us-west-2::image/*',
+        'arn:aws:ec2:us-west-2::snapshot/*',
+      ],
+      conditions: { StringEquals: { 'aws:RequestTag/spill:owner': 'ephemeral-ci' } },
+    }));
+    // DescribeSnapshots has no resource-level permissions.
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeSnapshots'],
+      resources: ['*'],
+    }));
+    new cdk.CfnOutput(this, 'AmiBuildRoleArn', { value: amiBuildRole.roleArn });
+
     // ── CI test role: minimal grants for policy assertions ───────────────────
     // ReadOnlyAccess was the prior grant; it includes ssm:List* which let any
     // branch of this repository read SSM command history (including, until this
