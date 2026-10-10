@@ -2123,6 +2123,58 @@ else
     ko "test-40: stale AMI was launched"
 fi
 
+# Expired credentials: describe-images fails auth. The error must be surfaced,
+# not reported as a bare "cannot find spill AMI".
+_aws_real="$SCRATCH/aws.real"; cp "$AWS_BIN" "$_aws_real"
+cat > "$AWS_BIN" << 'AWSAUTH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
+case "$1 $2" in
+    "cloudformation describe-stacks") exec AWS_REAL_PATH "$@" ;;
+    "ec2 describe-instances") if [ -n "${AWS_COUNT:-}" ]; then printf '%s\n' "$AWS_COUNT"; exit 0; fi ;;
+esac
+printf 'An error occurred (ExpiredToken) when calling the %s operation: The security token included in the request is expired\n' "$2" >&2
+exit 254
+AWSAUTH
+sed -i "s|AWS_REAL_PATH|$_aws_real|" "$AWS_BIN"
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_err41="$SCRATCH/err41"
+AWS_COUNT=0 CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err41" && _rc41=0 || _rc41=$?
+if [ "$_rc41" -ne 0 ] && grep -q 'ExpiredToken' "$_err41"; then
+    ok "test-41: a failing describe-images surfaces the AWS error"
+else
+    ko "test-41: AWS error swallowed (rc=$_rc41; err: $(cat "$_err41"))"
+fi
+
+# A failing describe-instances during the ceiling wait is an error, not "0 running".
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_err42="$SCRATCH/err42"
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err42" && _rc42=0 || _rc42=$?
+if [ "$_rc42" -ne 0 ] && grep -q 'ExpiredToken' "$_err42" && ! grep -q 'describe-images' "$AWS_ARGV_FILE"; then
+    ok "test-42: failed instance count aborts instead of reading as zero"
+else
+    ko "test-42: failed count treated as zero (rc=$_rc42; err: $(cat "$_err42"))"
+fi
+
+# Ceiling wait is capped below the session: ceiling full, session budget 0.
+AWS_COUNT=2
+export AWS_COUNT
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+_err43="$SCRATCH/err43"
+SPILL_MAX_INSTANCES=2 SPILL_SESSION_SECONDS=0 CAPACITY_POLL=1 CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=3600 SPILL=ec2-only \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>"$_err43" && _rc43=0 || _rc43=$?
+unset AWS_COUNT
+if [ "$_rc43" -ne 0 ] && grep -q 'below the 0s AWS session' "$_err43"; then
+    ok "test-43: ceiling wait is capped below the AWS session"
+else
+    ko "test-43: ceiling wait not capped (rc=$_rc43; err: $(cat "$_err43"))"
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
