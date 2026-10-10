@@ -29,10 +29,17 @@ done
 echo "$method $url $body" >> "$CALLS"
 case "$url" in
     */oauth/token) echo '{"access_token":"tok"}' ;;
-    */keys) echo '{"key":"tskey-auth-XYZ"}' ;;
+    */keys)
+        if [ -n "${KEYS_FAIL:-}" ]; then
+            echo '{"message":"requested tags [tag:round-vm] are invalid or not permitted"}'
+            printf '\n400'
+            exit 0
+        fi
+        echo '{"key":"tskey-auth-XYZ"}' ;;
     */devices*) cat "$DEVICES_JSON" ;;
     */device/*) echo '{}' ;;
 esac
+printf '\n200'
 STUB
 chmod +x "$SCRATCH/curl"
 export CALLS PATH="$SCRATCH:$PATH" TS_OAUTH_CLIENT_ID=cid TS_OAUTH_SECRET=sec
@@ -57,6 +64,14 @@ c = body["capabilities"]["devices"]["create"]
 assert c == {"reusable": False, "ephemeral": True, "preauthorized": True, "tags": ["tag:round-vm"]}, c
 assert body["expirySeconds"] <= 900
 PY
+
+err="$(KEYS_FAIL=1 tailnet_mint_key 2>&1 >/dev/null)" && rc=0 || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$err" | grep -q 'HTTP 400' \
+   && printf '%s' "$err" | grep -q 'tag:round-vm\] are invalid or not permitted'; then
+    ok "a failed mint names the HTTP status and the API's message"
+else
+    ko "failed mint rc=$rc stderr: $err"
+fi
 
 list="$(tailnet_list_spill_devices)"
 [ "$(printf '%s\n' "$list" | awk '{print $2}')" = "spill-aaaa" ] \
