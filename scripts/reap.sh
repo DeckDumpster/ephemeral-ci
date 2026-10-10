@@ -322,14 +322,14 @@ EOF
 
 if [ "${#RUNNER_VMIDS[@]}" -eq 0 ]; then
     echo "reap.sh: no gh-runner-* VMs visible to this token" >&2
-    exit 0
+    RUNNER_VMIDS=()
 fi
 
 reaped=0
 skipped=0
 unknown_age=0
 
-for VMID in "${RUNNER_VMIDS[@]}"; do
+for VMID in ${RUNNER_VMIDS[@]+"${RUNNER_VMIDS[@]}"}; do
     # Never touch the template, even if it were somehow named gh-runner-*.
     if [ "$VMID" -eq "$TEMPLATE_VMID" ]; then
         echo "reap.sh: skipping template VMID $TEMPLATE_VMID" >&2
