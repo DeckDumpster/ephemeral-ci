@@ -1959,10 +1959,11 @@ if ! grep -q "^tailnet=" "$SCRATCH/out34"; then
 else
     ko "test-34: unexpected tailnet= line: $(grep '^tailnet=' "$SCRATCH/out34")"
 fi
-if grep "send-command" "$AWS_ARGV_FILE" | grep -q '"TailnetWaitSeconds": \["0"\]'; then
-    ok "test-34: document told not to wait for the tailnet"
+if grep "send-command" "$AWS_ARGV_FILE" | grep -q '"RunnerGroup"' \
+   && ! grep "send-command" "$AWS_ARGV_FILE" | grep -q 'TailnetWaitSeconds'; then
+    ok "test-34: document sent without a tailnet wait parameter"
 else
-    ko "test-34: TailnetWaitSeconds should be 0 (got: $(grep send-command "$AWS_ARGV_FILE" || true))"
+    ko "test-34: TailnetWaitSeconds should be absent (got: $(grep send-command "$AWS_ARGV_FILE" || true))"
 fi
 
 SPILL_TAILNET=true AWS_SSM_STDOUT="tailnet: up" _run_tailnet_provision 35 && _rc=0 || _rc=$?
@@ -2019,6 +2020,14 @@ else
 fi
 grep -q "^tailnet=unavailable$" "$SCRATCH/out37" && ok "test-37: tailnet=unavailable on stdout" \
     || ko "test-37: expected tailnet=unavailable (stdout: $(cat "$SCRATCH/out37"))"
+# sp-k9fhgr: the degraded SSM send must be the same request a no-tailnet run
+# makes -- no TailnetWaitSeconds -- so it is valid against any document revision.
+if grep "send-command" "$AWS_ARGV_FILE" | grep -q '"RunnerToken"' \
+   && ! grep "send-command" "$AWS_ARGV_FILE" | grep -q 'TailnetWaitSeconds'; then
+    ok "test-37: SSM document sent as a no-tailnet run sends it"
+else
+    ko "test-37: degraded send carries a tailnet parameter (got: $(grep send-command "$AWS_ARGV_FILE" || true))"
+fi
 
 # ---------------------------------------------------------------------------
 # test-38: the guest raises kernel.threads-max to >= 65536 and verifies it

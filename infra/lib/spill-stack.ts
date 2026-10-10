@@ -267,6 +267,17 @@ export class SpillStack extends cdk.Stack {
       },
     });
 
+    // ── Spot service-linked role ─────────────────────────────────────────────
+    // The first spot request in an account needs AWSServiceRoleForEC2Spot, and
+    // the spill role may not create it (AuthFailure.ServiceLinkedRoleCreation-
+    // NotPermitted), so every spill silently fell through to on-demand
+    // (sp-k9fhgr). An account holds at most one; if it already exists, import
+    // it into the stack rather than letting this create fail.
+    new iam.CfnServiceLinkedRole(this, 'SpotServiceLinkedRole', {
+      awsServiceName: 'spot.amazonaws.com',
+      description: 'Lets EC2 Spot launch and manage spot instances for the spill runners',
+    });
+
     // ── Spill role ────────────────────────────────────────────────────────────
     // All refs are trusted (not just main) because CI spills from queue branches
     // and pull request branches too. Cost is bounded: launch template required

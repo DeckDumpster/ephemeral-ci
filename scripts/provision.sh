@@ -816,18 +816,25 @@ ec2_deliver_token() {
     [ "$SPILL_TAILNET" = "true" ] && [ -n "$SPILL_USERDATA_FILE" ] \
         && tailnet_wait="$SPILL_TAILNET_WAIT_SECONDS"
 
+    # TailnetWaitSeconds is sent only when there is a join to wait for. The
+    # document defaults it to 0, so omitting it is the same request, and it
+    # works against a document revision that predates the parameter; a run with
+    # no tailnet (spill-tailnet false, or the key could not be minted) therefore
+    # sends exactly the original four parameters.
     local params
     params="$(python3 - "$RUNNER_TOKEN" "$RUNNER_LABEL" "$RUNNER_URL" \
               "${RUNNER_GROUP:-ephemeral-ci}" "$tailnet_wait" <<'PYEOF'
 import json, sys
 token, label, url, grp, wait = sys.argv[1:6]
-print(json.dumps({
+params = {
     'RunnerToken': [token],
     'RunnerLabel': [label],
     'RunnerUrl': [url],
     'RunnerGroup': [grp],
-    'TailnetWaitSeconds': [wait],
-}))
+}
+if int(wait) > 0:
+    params['TailnetWaitSeconds'] = [wait]
+print(json.dumps(params))
 PYEOF
 )"
 

@@ -751,3 +751,11 @@ test('security group still has no ingress: tailnet traffic needs none (sp-7330sk
   };
   expect(sg.Properties.SecurityGroupIngress ?? []).toHaveLength(0);
 });
+
+test('stack creates the EC2 Spot service-linked role', () => {
+  // sp-k9fhgr: without it every spot launch fails with
+  // ServiceLinkedRoleCreationNotPermitted and falls through to on-demand.
+  template.hasResourceProperties('AWS::IAM::ServiceLinkedRole', {
+    AWSServiceName: 'spot.amazonaws.com',
+  });
+});

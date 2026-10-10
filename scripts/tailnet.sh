@@ -24,11 +24,35 @@ TAILNET_TAG="tag:round-vm"
 
 tailnet_hostname() { printf '%s%s' "$TAILNET_HOST_PREFIX" "$1"; }
 
+# curl wrapper: print the response body on 2xx; otherwise name the HTTP status
+# and the API's own message on stderr and fail. curl -f would discard the body,
+# leaving a policy fault (a 400 naming the tag or scope) to read as a JSON
+# decode error downstream.
+_tailnet_curl() {
+    local what="$1" out code body msg
+    shift
+    out="$(curl -sS --max-time 30 -w '\n%{http_code}' "$@")" || return 1
+    code="${out##*$'\n'}"
+    body="${out%$'\n'*}"
+    case "$code" in
+        2??) printf '%s' "$body"; return 0 ;;
+    esac
+    msg="$(printf '%s' "$body" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    print(json.loads(raw).get("message") or raw.strip()[:300])
+except Exception:
+    print(raw.strip()[:300])' 2>/dev/null)"
+    printf 'tailnet.sh: %s failed: HTTP %s: %s\n' "$what" "$code" "$msg" >&2
+    return 1
+}
+
 # Print a short-lived API access token for the OAuth client.
 _tailnet_access_token() {
     : "${TS_OAUTH_CLIENT_ID:?TS_OAUTH_CLIENT_ID is not set}"
     : "${TS_OAUTH_SECRET:?TS_OAUTH_SECRET is not set}"
-    curl -fsS --max-time 20 "${TAILNET_API}/api/v2/oauth/token" \
+    _tailnet_curl "OAuth token request" "${TAILNET_API}/api/v2/oauth/token" \
         --data-urlencode "client_id=${TS_OAUTH_CLIENT_ID}" \
         --data-urlencode "client_secret=${TS_OAUTH_SECRET}" \
         --data-urlencode "grant_type=client_credentials" \
@@ -40,11 +64,11 @@ _tailnet_api() {
     local method="$1" path="$2" body="${3:-}" token
     token="$(_tailnet_access_token)" || return 1
     if [ -n "$body" ]; then
-        curl -fsS --max-time 30 -X "$method" "${TAILNET_API}${path}" \
+        _tailnet_curl "$method $path" -X "$method" "${TAILNET_API}${path}" \
             -H "Authorization: Bearer ${token}" \
             -H 'Content-Type: application/json' --data "$body"
     else
-        curl -fsS --max-time 30 -X "$method" "${TAILNET_API}${path}" \
+        _tailnet_curl "$method $path" -X "$method" "${TAILNET_API}${path}" \
             -H "Authorization: Bearer ${token}"
     fi
 }
