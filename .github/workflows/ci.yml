@@ -63,6 +63,7 @@ jobs:
               scripts/test-reap.sh \
               scripts/test-template-substrate.sh \
               scripts/test-advance-inputs.sh \
+              scripts/test-advance-credentials.sh \
               scripts/test-ami-build.sh \
               scripts/test-tailnet.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
@@ -132,6 +133,11 @@ jobs:
       # and passes candidates that add only optional or defaulted inputs.
       - name: advance-v1 input diff
         run: bash scripts/test-advance-inputs.sh
+
+      # The advance job's checkout must not persist GITHUB_TOKEN, or the tag
+      # push authenticates as the GitHub App instead of V1_TAG_PAT (sp-ku3ugt).
+      - name: advance-v1 credentials
+        run: bash scripts/test-advance-credentials.sh
 
       # ami-build offline section: stubs describe-stacks to verify that
       # ami-build.sh reads the EphemeralCiSpill stack outputs correctly and

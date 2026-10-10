@@ -191,9 +191,15 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
     steps:
+      # persist-credentials: false is load-bearing. Checkout otherwise writes
+      # GITHUB_TOKEN into http.https://github.com/.extraheader, which git sends
+      # in preference to the PAT in the remote URL, so the tag push would
+      # authenticate as the GitHub App and be refused across a workflow-file
+      # change (run 38074627406). scripts/test-advance-credentials.sh asserts it.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Show current tag and target
         run: |
@@ -348,6 +354,7 @@ jobs:
             exit 1
           fi
           target="${{ needs.find-green.outputs.target }}"
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin \
             "https://x-access-token:${GH_TOKEN_WORKFLOW}@github.com/${{ github.repository }}.git"
           git tag -f "$TAG" "$target"
