@@ -731,7 +731,9 @@ test('spill role CreateTags carries ec2:CreateAction=RunInstances condition', ()
 
 test('token-delivery document waits for the tailnet only when asked (sp-7330sk)', () => {
   const docs = template.findResources('AWS::SSM::Document');
-  const content = (Object.values(docs)[0] as { Properties: { Content: any } }).Properties.Content;
+  const content = (Object.values(docs) as { Properties: { Content: any } }[])
+    .map((d) => d.Properties.Content)
+    .find((c) => c.parameters?.TailnetWaitSeconds)!;
   // Default 0: callers that do not ask for the tailnet neither wait nor print.
   expect(content.parameters.TailnetWaitSeconds.default).toBe('0');
   expect(content.parameters.TailnetWaitSeconds.allowedPattern).toBe('^[0-9]{1,4}$');
@@ -852,5 +854,34 @@ test('spill role does not hold the build-time grants', () => {
   const txt = JSON.stringify(pol);
   for (const a of ['ec2:CreateImage', 'ec2:DeregisterImage', 'ec2:DeleteSnapshot', 'ec2:StopInstances']) {
     expect(txt).not.toContain(a);
+  }
+});
+
+test('spill role can read console output of spill:owner instances only (sp-5cgnxb)', () => {
+  const stmts = Object.values(template.findResources('AWS::IAM::Policy'))
+    .flatMap((p) => (p as any).Properties.PolicyDocument.Statement)
+    .filter((st: any) => ([] as string[]).concat(st.Action).includes('ec2:GetConsoleOutput'));
+  expect(stmts).toHaveLength(1);
+  expect(stmts[0].Condition.StringEquals['ec2:ResourceTag/spill:owner']).toBe('ephemeral-ci');
+});
+
+test('token-delivery document raises threads-max as root before the init file (sp-5cgnxb)', () => {
+  const docs = Object.values(template.findResources('AWS::SSM::Document')) as any[];
+  const lines: string[] = docs
+    .map((d) => d.Properties.Content)
+    .find((c) => c.parameters?.RunnerToken).mainSteps[0].inputs.runCommand;
+  const sysctl = lines.findIndex((l) => l.includes('kernel.threads-max'));
+  const write = lines.findIndex((l) => l.includes('/run/gh-runner-init.partial'));
+  expect(sysctl).toBeGreaterThanOrEqual(0);
+  expect(sysctl).toBeLessThan(write);
+});
+
+test('a read-only diagnose document is exported for ec2-diag.sh (sp-5cgnxb)', () => {
+  expect(Object.keys(template.findOutputs('DiagnoseDocumentName'))).toHaveLength(1);
+  const docs = Object.values(template.findResources('AWS::SSM::Document')) as any[];
+  const diag = docs.map((d) => d.Properties.Content).find((c) => !c.parameters);
+  const text = JSON.stringify(diag);
+  for (const needle of ['journalctl', '_diag', 'ip route get', 'tailscale status']) {
+    expect(text).toContain(needle);
   }
 });
