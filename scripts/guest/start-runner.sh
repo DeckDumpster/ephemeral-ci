@@ -43,6 +43,25 @@ grep -q '^RUNNER_GROUP=' "$INIT" || fail "$INIT is incomplete - refusing to sour
 
 cd "$RUNNER_DIR" || fail "$RUNNER_DIR missing"
 
+# The template boots with kernel.threads-max 26115 (sized from its small RAM),
+# below the 32768 pids limit Spira's testenv containers ask for; testenv then
+# refuses to start and the job fails after it has already been accepted. Raise
+# it BEFORE registering, and refuse to register if it did not take, so a runner
+# that cannot run Spira's suites never appears in the pool. The drop-in
+# persists it for the VM's life; the VM is single-use.
+MIN_THREADS_MAX=65536
+cur=$(cat /proc/sys/kernel/threads-max 2>/dev/null || echo 0)
+if [ "$cur" -lt "$MIN_THREADS_MAX" ]; then
+    echo "kernel.threads-max = $MIN_THREADS_MAX" \
+        | sudo -n tee /etc/sysctl.d/90-ephemeral-ci-threads.conf >/dev/null \
+        || fail "cannot write /etc/sysctl.d/90-ephemeral-ci-threads.conf"
+    sudo -n sysctl -w "kernel.threads-max=$MIN_THREADS_MAX" >/dev/null \
+        || fail "sysctl -w kernel.threads-max=$MIN_THREADS_MAX failed"
+fi
+cur=$(cat /proc/sys/kernel/threads-max 2>/dev/null || echo 0)
+[ "$cur" -ge "$MIN_THREADS_MAX" ] \
+    || fail "kernel.threads-max is $cur, need >= $MIN_THREADS_MAX; refusing to register"
+
 # RUNNER_URL is the ORGANIZATION url, because the token is an org registration
 # token. --runnergroup is what then keeps that runner usable by one repository.
 # Without it the runner joins the Default group, which is visible to every
