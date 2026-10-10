@@ -2021,6 +2021,22 @@ grep -q "^tailnet=unavailable$" "$SCRATCH/out37" && ok "test-37: tailnet=unavail
     || ko "test-37: expected tailnet=unavailable (stdout: $(cat "$SCRATCH/out37"))"
 
 # ---------------------------------------------------------------------------
+# test-38: the guest raises kernel.threads-max to >= 65536 and verifies it
+# BEFORE config.sh registers the runner (sp-1737ar: testenv refuses to start
+# with the template's 26115).
+# ---------------------------------------------------------------------------
+_g="$SCRIPT_DIR/guest/start-runner.sh"
+_l_set=$(grep -n 'sysctl -w "kernel.threads-max=' "$_g" | head -1 | cut -d: -f1)
+_l_chk=$(grep -n 'refusing to register' "$_g" | head -1 | cut -d: -f1)
+_l_cfg=$(grep -n '^\./config\.sh' "$_g" | head -1 | cut -d: -f1)
+if grep -q '^MIN_THREADS_MAX=65536$' "$_g" && [ -n "$_l_set" ] && [ -n "$_l_chk" ] \
+   && [ -n "$_l_cfg" ] && [ "$_l_set" -lt "$_l_cfg" ] && [ "$_l_chk" -lt "$_l_cfg" ]; then
+    ok "test-38: threads-max raised and verified before the runner registers"
+else
+    ko "test-38: threads-max step missing or after config.sh (set=$_l_set chk=$_l_chk cfg=$_l_cfg)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 total=$(( pass + fail ))
