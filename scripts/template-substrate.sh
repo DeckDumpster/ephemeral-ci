@@ -358,7 +358,7 @@ check_mem_size() {
         fi
     else
         # CLOUD/EC2 (SUBSTRATE_MEM_DECLARED=0): instance type sets RAM; only the floor matters.
-        remedy="use an instance type with ≥${RUNNER_MEM_MIB}MiB RAM (e.g. c7i.xlarge)"
+        remedy="use an instance type with ≥${RUNNER_MEM_MIB}MiB RAM (e.g. c7i.2xlarge)"
         if [ "$memtotal_mib" -lt "$lo" ]; then
             lack "mem~${RUNNER_MEM_MIB}MiB" "MemTotal is ${memtotal_mib}MiB; need at least ${lo}MiB (${RUNNER_MEM_MIB}MiB − 20%); resize with: ${remedy}"
             return 1

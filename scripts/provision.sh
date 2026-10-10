@@ -443,7 +443,7 @@ SPILL_REGION="${SPILL_REGION:-us-west-2}"
 # default session is 3600s; the margin leaves room to launch after the wait.
 SPILL_SESSION_SECONDS="${SPILL_SESSION_SECONDS:-3000}"
 SPILL_STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
-SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.xlarge}"
+SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.2xlarge}"
 # Same families the spill role's ec2:InstanceType condition admits (spill-stack.ts).
 # Refused here, up front, rather than as an opaque RunInstances AccessDenied
 # after the Proxmox wait has already been spent.

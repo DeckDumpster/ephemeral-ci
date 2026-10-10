@@ -832,7 +832,7 @@ test('ami build role holds the launch-and-deliver grants ami-build.sh uses', () 
     JSON.stringify(s).includes('instance/*') && !JSON.stringify(s.Condition).includes('vmtoken'));
   expect(launch).toHaveLength(1);
   expect(JSON.stringify(launch[0].Condition)).toContain('aws:RequestTag/spill:owner');
-  expect(JSON.stringify(launch[0].Condition)).toContain('c7i.xlarge');
+  expect(JSON.stringify(launch[0].Condition)).toContain('c7i.2xlarge');
   expect(having('ec2:RunInstances').length).toBeGreaterThanOrEqual(3);
   expect(JSON.stringify(having('iam:PassRole'))).toContain('ec2.amazonaws.com');
   expect(JSON.stringify(having('ec2:TerminateInstances')[0].Condition)).toContain('spill:owner');

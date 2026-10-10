@@ -76,15 +76,15 @@ jobs:
 ### EC2 spill
 
 Set `spill: ec2` on the provision step to enable overflow onto EC2. When Proxmox
-capacity is exhausted, `provision` launches a `c7i.xlarge` in us-west-2 and
+capacity is exhausted, `provision` launches a `c7i.2xlarge` in us-west-2 and
 registers it as the run's runner; teardown terminates it. `spill-after-seconds`
 sets how long to wait for Proxmox before spilling — leave it at `0` to exhaust
 the full `capacity-timeout-seconds` first. `spill-max-instances` caps concurrent
 EC2 runners from this run (default 4); the reaper terminates any instance older
 than 8 hours.
 
-**EC2 spill costs money.** On-demand `c7i.xlarge` in us-west-2 is roughly
-$0.20/hr; spot is typically half that. An account-wide $100/month budget is in
+**EC2 spill costs money.** On-demand `c7i.2xlarge` in us-west-2 is roughly
+$0.40/hr; spot is typically half that. An account-wide $100/month budget is in
 place, with email alerts at 80% of actual spend and when the month's forecasted
 total exceeds the limit. `SPILL_MAX_INSTANCES` (the `spill-max-instances` input)
 is the main lever for bounding cost per run.
