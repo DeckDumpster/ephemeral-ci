@@ -257,8 +257,47 @@ export class SpillStack extends cdk.Stack {
                   // The file is /run/ephemeral-ci-tailnet, written "up" or "failed".
                   'T=/run/ephemeral-ci-tailnet; W={{ TailnetWaitSeconds }}; i=0',
                   'if [ "$W" -gt 0 ]; then while [ "$i" -lt "$W" ] && [ ! -s "$T" ]; do sleep 2; i=$((i+2)); done; if grep -qx up "$T" 2>/dev/null; then echo "tailnet: up"; else echo "tailnet: unavailable"; fi; fi',
+                  // start-runner.sh (baked into the AMI) raises kernel.threads-max with
+                  // `sudo -n`, but the AMI's runner user has no sudo, so on an instance
+                  // whose default is below 65536 it fails before config.sh and the runner
+                  // never registers (sp-5cgnxb). This document runs as root: do it here.
+                  'M=65536; C=$(cat /proc/sys/kernel/threads-max); if [ "$C" -lt "$M" ]; then sysctl -w kernel.threads-max=$M; fi',
                   "printf 'RUNNER_LABEL={{ RunnerLabel }}\\nRUNNER_TOKEN={{ RunnerToken }}\\nRUNNER_URL={{ RunnerUrl }}\\nRUNNER_GROUP={{ RunnerGroup }}\\n' > /run/gh-runner-init.partial",
                   'mv /run/gh-runner-init.partial /run/gh-runner-init',
+                ],
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    // ── SSM document: read-only runner diagnostics ───────────────────────────
+    // Run by scripts/ec2-diag.sh when a spilled runner fails to register, before
+    // teardown terminates the instance. Reads only; takes no parameters.
+    const diagnoseRunnerDocument = new cdk.CfnResource(this, 'DiagnoseRunnerDocument', {
+      type: 'AWS::SSM::Document',
+      properties: {
+        DocumentType: 'Command',
+        DocumentFormat: 'JSON',
+        Content: {
+          schemaVersion: '2.2',
+          description: 'Print the state of the ephemeral runner units, logs and network.',
+          mainSteps: [
+            {
+              action: 'aws:runShellScript',
+              name: 'Diagnose',
+              inputs: {
+                runCommand: [
+                  'echo "== init file =="; ls -l /run/gh-runner-init /run/gh-runner-init.partial /run/ephemeral-ci-tailnet 2>&1; cat /run/ephemeral-ci-tailnet 2>&1',
+                  'echo "== systemctl status =="; systemctl status ephemeral-runner.path ephemeral-runner.service --no-pager -l 2>&1 | tail -n 40',
+                  'echo "== journalctl =="; journalctl -u ephemeral-runner.path -u ephemeral-runner.service --no-pager -n 80 2>&1',
+                  'echo "== runner _diag =="; for f in $(ls -t /home/runner/actions-runner/_diag/*.log 2>/dev/null | head -n 2); do echo "-- $f"; tail -n 40 "$f"; done',
+                  'echo "== ip route get api.github.com =="; ip route get "$(getent hosts api.github.com | head -n 1 | cut -d" " -f1)" 2>&1',
+                  'echo "== resolv.conf =="; cat /etc/resolv.conf 2>&1 | head -n 10',
+                  'echo "== tailscale status =="; tailscale status 2>&1 | head -n 20',
+                  'echo "== threads-max =="; cat /proc/sys/kernel/threads-max',
+                  'true',
                 ],
               },
             },
@@ -381,6 +420,26 @@ export class SpillStack extends cdk.Stack {
         resource: 'document',
         resourceName: deliverRunnerTokenDocument.ref,
       })],
+    }));
+
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:SendCommand'],
+      resources: [this.formatArn({
+        service: 'ssm',
+        resource: 'document',
+        resourceName: diagnoseRunnerDocument.ref,
+      })],
+    }));
+
+    // Console output of spill instances, for a boot that never reached SSM.
+    spillRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:GetConsoleOutput'],
+      resources: ['arn:aws:ec2:us-west-2:189923011121:instance/*'],
+      conditions: {
+        StringEquals: {
+          'ec2:ResourceTag/spill:owner': 'ephemeral-ci',
+        },
+      },
     }));
 
     spillRole.addToPolicy(new iam.PolicyStatement({
@@ -596,5 +655,6 @@ export class SpillStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LaunchTemplateName', { value: 'ephemeral-ci-spill' });
     new cdk.CfnOutput(this, 'InstanceProfileName', { value: instanceProfile.ref });
     new cdk.CfnOutput(this, 'DeliverDocumentName', { value: deliverRunnerTokenDocument.ref });
+    new cdk.CfnOutput(this, 'DiagnoseDocumentName', { value: diagnoseRunnerDocument.ref });
   }
 }

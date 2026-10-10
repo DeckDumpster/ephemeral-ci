@@ -340,6 +340,14 @@ runs:
         CRED_FILE: /dev/null
       run: bash "${{ github.action_path }}/../scripts/guest-diag.sh" "${{ steps.provision.outputs.vmid }}"
 
+    # EC2 counterpart of the step above: collects the runner's own evidence over
+    # SSM before the Teardown step terminates the instance.
+    - name: Dump EC2 runner state on failure
+      if: failure() && steps.provision.outputs.instance-id != ''
+      continue-on-error: true
+      shell: bash
+      run: bash "${{ github.action_path }}/../scripts/ec2-diag.sh" "${{ steps.provision.outputs.instance-id }}"
+
     # Emit a job summary note when an EC2 instance was launched so the cost
     # is visible in the Actions UI. On-demand c7i.xlarge in us-west-2 is
     # roughly $0.20/hr; spot is typically half that.  Teardown must terminate
