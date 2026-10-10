@@ -225,6 +225,7 @@ _run_reap() {
         extra_env+=("$1")
         shift
     done
+    env \
     PATH="$BIN:$PATH" \
     SNIPPETS_DIR="$REAP_SNIPPETS" \
     TEMPLATE_VMID="${TEMPLATE_VMID:-101}" \
