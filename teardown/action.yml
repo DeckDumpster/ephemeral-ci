@@ -190,6 +190,9 @@ runs:
     # paginated -- enough dead registrations and a real runner lands on a later
     # page. It also counts against the org's runner limit.
     #
+    # NEVER DELETES A BUSY RUNNER: that cancels the job it is running
+    # (sp-o6zz16); deregister-runner.sh leaves it and says so.
+    #
     # Best-effort and never fails the job: this runs under `if: always()` in a
     # job whose purpose is to clean up after a failure, and turning a cleanup
     # into a second failure buries the first one.
@@ -200,12 +203,4 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.runner-reg-pat }}
         LABEL: ${{ inputs.label }}
-      run: |
-        id=$(gh api "orgs/${{ github.repository_owner }}/actions/runners" \
-               --paginate --jq ".runners[] | select(.name == \"$LABEL\") | .id" | head -1)
-        if [ -z "$id" ]; then
-          echo "no runner registration named $LABEL -- it deregistered itself"
-          exit 0
-        fi
-        gh api -X DELETE "orgs/${{ github.repository_owner }}/actions/runners/$id" \
-          && echo "removed stale runner registration $LABEL (id $id)"
+      run: bash "${{ github.action_path }}/../scripts/deregister-runner.sh" "${{ github.repository_owner }}" "$LABEL"

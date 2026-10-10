@@ -106,6 +106,9 @@ jobs:
       - name: reap
         run: bash scripts/test-reap.sh
 
+      - name: deregister runner
+        run: bash scripts/test-deregister-runner.sh
+
       # The substrate list is mostly DATA -- a set of package names and machine
       # properties -- and data has no behaviour to observe, so this suite asserts
       # the content of the list and that --check mutates nothing. It matters
