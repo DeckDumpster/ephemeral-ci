@@ -540,7 +540,7 @@ export class SpillStack extends cdk.Stack {
       conditions: {
         StringEquals: {
           'aws:RequestTag/spill:owner': 'ephemeral-ci',
-          'ec2:InstanceType': 'c7i.xlarge',
+          'ec2:InstanceType': 'c7i.2xlarge',
         },
       },
     }));

@@ -13,7 +13,7 @@
 #   headroom over the measured minimum. The Proxmox template uses 40 GiB,
 #   but that was not derived from measurement.
 #
-# INSTANCE TYPE: c7i.xlarge (4 vCPU, 8 GiB). Must match the spill runner
+# INSTANCE TYPE: c7i.2xlarge (8 vCPU, 16 GiB). Must match the spill runner
 # type so that template-substrate.sh's memory contract is validated on the
 # machine that will actually run CI, not on a smaller builder that passes the
 # build and fails the check on first use.
@@ -55,7 +55,7 @@ ACCOUNT_ID="189923011121"
 TAG_KEY="spill:owner"
 TAG_VALUE="ephemeral-ci"
 AMI_NAME_PREFIX="ephemeral-ci-runner"
-BUILDER_TYPE="c7i.xlarge"
+BUILDER_TYPE="c7i.2xlarge"
 ROOT_DISK_GIB=32
 RETAIN_COUNT=3
 # Budget for build instance to register with SSM after launch.

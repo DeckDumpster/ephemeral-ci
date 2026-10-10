@@ -476,7 +476,7 @@ SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" run_sim "ami build role: ec2:RunInstances + C
     "$_INSTANCE" \
     -- \
     "aws:RequestTag/spill:owner|string|ephemeral-ci" \
-    "ec2:InstanceType|string|c7i.xlarge" \
+    "ec2:InstanceType|string|c7i.2xlarge" \
     "ec2:CreateAction|string|RunInstances")"
 SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" run_sim "ami build role: ssm:SendCommand (AWS-RunShellScript)" "$(SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" _sim_json \
     ssm:SendCommand \

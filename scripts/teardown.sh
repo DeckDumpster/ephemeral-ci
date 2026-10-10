@@ -235,11 +235,11 @@ print(int(t.timestamp()))" 2>/dev/null || echo 0)"
         fi
     fi
     _instance_minutes=$(( (_instance_seconds + 59) / 60 ))
-    # On-demand c7i.xlarge us-west-2: $0.2013/hr
+    # On-demand c7i.2xlarge us-west-2: $0.4026/hr
     _cost_usd="$(python3 -c \
-        "print('%.4f' % ($_instance_seconds / 3600.0 * 0.2013))" 2>/dev/null || echo '?')"
+        "print('%.4f' % ($_instance_seconds / 3600.0 * 0.4026))" 2>/dev/null || echo '?')"
 
-    printf 'teardown.sh: EC2 instance %s ran for %ss (%s min); estimated cost ~$%s USD (on-demand c7i.xlarge)\n' \
+    printf 'teardown.sh: EC2 instance %s ran for %ss (%s min); estimated cost ~$%s USD (on-demand c7i.2xlarge)\n' \
         "$INSTANCE_ID" "$_instance_seconds" "$_instance_minutes" "$_cost_usd" >&2
 
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -247,7 +247,7 @@ print(int(t.timestamp()))" 2>/dev/null || echo 0)"
             echo "## EC2 spill teardown"
             printf -- '- Instance: `%s`\n' "$INSTANCE_ID"
             printf -- '- Instance-seconds: %s (%s minutes)\n' "$_instance_seconds" "$_instance_minutes"
-            printf -- '- Estimated cost: ~\$%s USD (on-demand c7i.xlarge in %s)\n' \
+            printf -- '- Estimated cost: ~\$%s USD (on-demand c7i.2xlarge in %s)\n' \
                 "$_cost_usd" "$SPILL_REGION"
         } >> "$GITHUB_STEP_SUMMARY"
     fi
