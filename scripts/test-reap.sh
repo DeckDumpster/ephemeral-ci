@@ -834,7 +834,7 @@ TSEOF
     [ "$(wc -l < "$TS_LOG")" -eq 1 ] || { echo "  expected fail: deleted more than the orphan: $(cat "$TS_LOG")" >&2; exit 1; }
 
     : > "$TS_LOG"
-    output=$(_run_reap --dry-run TAILNET_SH="$RD/tailnet.sh" TS_LOG="$TS_LOG" TS_OAUTH_CLIENT_ID=c TS_OAUTH_SECRET=s 2>&1 || true)
+    output=$(_run_reap TAILNET_SH="$RD/tailnet.sh" TS_LOG="$TS_LOG" TS_OAUTH_CLIENT_ID=c TS_OAUTH_SECRET=s --dry-run 2>&1 || true)
     [ ! -s "$TS_LOG" ] || { echo "  expected fail: dry run deleted a device" >&2; exit 1; }
     printf '%s\n' "$output" | grep -q "would remove tailnet device spill-deadtoken" \
         || { echo "  expected fail: dry run did not report the orphan: $output" >&2; exit 1; }
