@@ -114,7 +114,9 @@ jobs:
           fail=0
           for action in provision teardown; do
             echo "--- ${action}/action.yml ---"
-            if ! bash scripts/check-action-inputs.sh \
+            also=""
+            [ "$action" = teardown ] && also="consumer-result"
+            if ! ALSO_REQUIRE="$also" bash scripts/check-action-inputs.sh \
                  "${action}/action.yml" \
                  ".github/workflows/advance-v1.yml"; then
               fail=1
@@ -184,6 +186,7 @@ jobs:
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
+          consumer-result:    ${{ needs.probe-provision.result }}
 
   advance:
     needs: [find-green, probe-provision, probe-teardown]

@@ -77,6 +77,12 @@ _guest "units" \
 _guest "runner journal" \
     /bin/sh -c 'journalctl -u ephemeral-runner --no-pager -n 100 2>&1'
 
+# The runner's Worker log records WHY a job ended, including a cancel that
+# arrived from GitHub's side (sp-oifl4c). _diag lives under the runner's
+# install dir; the glob is expanded by the guest shell, newest file first.
+_guest "runner Worker log (cancel reason)" \
+    /bin/sh -c 'f=$(ls -t /home/runner/*/_diag/Worker_*.log /home/runner/_diag/Worker_*.log 2>/dev/null | head -1); if [ -n "$f" ]; then echo "file: $f"; grep -iE "cancel|JobResult|Finish job|Job result|result:" "$f" 2>&1 | tail -40; echo "--- tail ---"; tail -60 "$f" 2>&1; else echo "(no Worker_*.log found under /home/runner)"; fi'
+
 _guest "network" \
     /bin/sh -c 'ip -4 -br a 2>&1; echo "---"; getent hosts github.com 2>&1 || echo "DNS FAILED"'
 
