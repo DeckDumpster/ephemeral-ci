@@ -347,13 +347,24 @@ Images carry no repository's packages, so the substrate writes
 `sudo -n apt-get`. Instances are single-job and ephemeral. If per-job apt time
 matters, the repository should publish its own prebuilt layer, not bake into the image.
 
-### apt proxy — installed by the substrate script
+### apt proxy — optional, fails open
 
-The substrate writes `/etc/apt/apt.conf.d/02ephemeral-ci-proxy` pointing apt at a
-LAN/tailnet cache (apt-cacher-ng), so a repository's per-job runner-deps install is a
-local fetch. Supply the URL as `SUBSTRATE_APT_PROXY=http://host:3142` when running the
-script (`sudo env SUBSTRATE_APT_PROXY=... bash scripts/template-substrate.sh`); it is
-required and has no default. `ami-build.sh` reads it from `APT_PROXY_URL`.
+The substrate can point apt at a LAN/tailnet cache (apt-cacher-ng) so a repository's
+per-job runner-deps install is a local fetch. It is an optimisation: `SUBSTRATE_APT_PROXY`
+(`APT_PROXY_URL` for `ami-build.sh`) is **optional**; unset means no drop-in and a build
+from the public mirrors. When set, the substrate writes the URL to
+`/etc/ephemeral-ci/apt-cache-url`, installs a small hook at
+`/usr/local/bin/ephemeral-ci-apt-proxy-detect`, and configures
+`Acquire::http::Proxy-Auto-Detect` in `/etc/apt/apt.conf.d/02ephemeral-ci-proxy`. The hook
+prints the URL when the cache accepts a TCP connection within ~1 s and `DIRECT` otherwise,
+so a cache that is down or unreachable from an EC2 spill instance never breaks apt.
+
+The cache itself: `sudo bash scripts/apt-cache/install.sh` on the serving host (default
+port 3142, bound on all interfaces so tailnet peers reach it), then
+`bash scripts/apt-cache/check.sh http://HOST:3142` fetches a package twice through it and
+requires identical bodies (add `APT_CACHE_DIR=/var/cache/apt-cacher-ng` on the cache host
+to also require the file in the cache). The cache host and port are chosen at deploy and
+passed as the URL above; the host must be on the tailnet for spill instances to use it.
 
 ### git, curl, jq — installed by the substrate script
 
