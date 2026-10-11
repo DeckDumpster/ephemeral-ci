@@ -607,10 +607,17 @@ export class SpillStack extends cdk.Stack {
     const roundSpillUser = new iam.User(this, 'RoundSpillUser', {
       userName: 'spira-round-spill',
     });
+    // A managed policy, not addToPolicy: the statements exceed the 2,048-byte
+    // cap on a user's inline policies (deploy failed, sp-ifzkdi); the managed
+    // limit is 6,144 bytes, and spill-stack.test.ts fails the build above that.
+    const roundSpillPolicy = new iam.ManagedPolicy(this, 'RoundSpillPolicy', {
+      description: 'spira-round-spill: launch and manage spill:owner=round instances only',
+      users: [roundSpillUser],
+    });
     const roundOwned = { 'ec2:ResourceTag/spill:owner': 'round' };
 
     // The instance itself: tag required on create, c7i family only.
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
       resources: [`${ACCT_EC2}:instance/*`],
       conditions: {
@@ -619,7 +626,7 @@ export class SpillStack extends cdk.Stack {
       },
     }));
     // Network placement: only this stack's subnets and security group.
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
       resources: [
         ...[subnetA, subnetB, subnetC].map((sn) => `${ACCT_EC2}:subnet/${sn.ref}`),
@@ -627,13 +634,13 @@ export class SpillStack extends cdk.Stack {
       ],
     }));
     // Image: only AMIs tagged spill:owner=round.
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
       resources: ['arn:aws:ec2:us-west-2::image/*'],
       conditions: { StringEquals: roundOwned },
     }));
     // Companion resources RunInstances creates (spot request included).
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ec2:RunInstances'],
       resources: [
         `${ACCT_EC2}:volume/*`,
@@ -641,7 +648,7 @@ export class SpillStack extends cdk.Stack {
         `${ACCT_EC2}:spot-instances-request/*`,
       ],
     }));
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ec2:CreateTags'],
       resources: [
         `${ACCT_EC2}:instance/*`,
@@ -650,29 +657,29 @@ export class SpillStack extends cdk.Stack {
       ],
       conditions: { StringEquals: { 'ec2:CreateAction': 'RunInstances' } },
     }));
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ec2:TerminateInstances', 'ec2:StopInstances', 'ec2:StartInstances'],
       resources: [`${ACCT_EC2}:instance/*`],
       conditions: { StringEquals: roundOwned },
     }));
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ec2:Describe*'],
       resources: ['*'],
     }));
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ssm:SendCommand'],
       resources: ['arn:aws:ssm:us-west-2::document/AWS-RunShellScript'],
     }));
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ssm:SendCommand'],
       resources: [`${ACCT_EC2}:instance/*`],
       conditions: { StringEquals: { 'aws:ResourceTag/spill:owner': 'round' } },
     }));
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['ssm:GetCommandInvocation', 'ssm:DescribeInstanceInformation'],
       resources: ['*'],
     }));
-    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+    roundSpillPolicy.addStatements(new iam.PolicyStatement({
       actions: ['iam:PassRole'],
       resources: [instanceRole.roleArn],
       conditions: { StringEquals: { 'iam:PassedToService': 'ec2.amazonaws.com' } },
