@@ -73,6 +73,25 @@ for pkg in podman uidmap fuse-overlayfs slirp4netns passt catatonit; do
     fi
 done
 
+# THE BROWSER-TIER LIBRARIES. The spill AMI is built from this script alone, so a
+# package the Proxmox template has by hand and this list lacks is a package the AMI
+# lacks (sp-4tmf61: deckdumpster's runner-deps failed on libgl1 and the chromium
+# libraries). Both the install and the --check path must read the one list.
+for pkg in libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
+           libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
+           libpango-1.0-0 libpangocairo-1.0-0 libgl1; do
+    if printf '%s' "$PKG_ARRAYS" | grep -E '^UI_PKGS=' | grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))"; then
+        ok "UI_PKGS names $pkg"
+    else
+        bad "UI_PKGS names $pkg" "absent from UI_PKGS; the spill AMI would lack it"
+    fi
+done
+if [ "$(printf '%s' "$JOINED" | grep -c '"${UI_PKGS\[@\]}"')" -ge 2 ]; then
+    ok "UI_PKGS is both installed and checked"
+else
+    bad "UI_PKGS is both installed and checked" "apt_install and check_pkgs must both take it"
+fi
+
 # Rust links through cc, and so do native Python wheels; the failure reads as a
 # broken language toolchain rather than a missing Debian package.
 if printf '%s' "$PKG_ARRAYS" | grep -qE '(\(|[[:space:]])build-essential([[:space:]]|\))'; then
