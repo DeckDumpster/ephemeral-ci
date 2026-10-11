@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as budgets from 'aws-cdk-lib/aws-budgets';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 
 export class SpillStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -596,6 +597,29 @@ export class SpillStack extends cdk.Stack {
       resources: ['*'],
     }));
     new cdk.CfnOutput(this, 'AmiBuildRoleArn', { value: amiBuildRole.roleArn });
+
+    // Round AMI staging: the spira round-ami-build workflow uploads the guest
+    // payload here and the builder pulls it back over SSM.  Objects are scratch,
+    // so a one-day lifecycle rule bounds the bucket.
+    const roundAmiStaging = new s3.Bucket(this, 'RoundAmiStaging', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: false,
+      lifecycleRules: [{ expiration: cdk.Duration.days(1), abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) }],
+    });
+    roundAmiStaging.grantReadWrite(amiBuildRole);
+    // Canonical's public parameter for Ubuntu 24.04 amd64 hvm ebs-gp3, the same
+    // image family scripts/ami-build.sh resolves by describe-images.
+    const ROUND_AMI_BASE_PARAM =
+      '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id';
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: ['arn:aws:ssm:us-west-2::parameter' + ROUND_AMI_BASE_PARAM],
+    }));
+    new cdk.CfnOutput(this, 'RoundAmiStagingBucket', { value: roundAmiStaging.bucketName });
+    new cdk.CfnOutput(this, 'RoundAmiBaseParam', { value: ROUND_AMI_BASE_PARAM });
 
     // ── Round-VM spill user (spira-round-spill) ─────────────────────────────
     // The spira round-vm EC2 provider launches c7i instances for round passes
