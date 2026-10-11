@@ -1,9 +1,16 @@
 import * as cdk from 'aws-cdk-lib';
 import { SpillStack } from '../lib/spill-stack';
+import { BackupStack } from '../lib/backup-stack';
 import { BootstrapIdentityStack } from '../lib/bootstrap-identity-stack';
 
 const app = new cdk.App();
 new SpillStack(app, 'EphemeralCiSpill', {
+  env: {
+    account: '189923011121',
+    region: 'us-west-2',
+  },
+});
+new BackupStack(app, 'EphemeralCiBackup', {
   env: {
     account: '189923011121',
     region: 'us-west-2',
