@@ -284,6 +284,11 @@ wait_ssm() {
 apply_substrate() {
     local instance_id="$1"
 
+    if [ -z "${APT_PROXY_URL:-}" ]; then
+        printf 'ami-build.sh: APT_PROXY_URL is not set (the LAN apt cache, e.g. http://host:3142)\n' >&2
+        return 1
+    fi
+
     # Fetch the latest Actions runner release tag.
     local runner_version
     runner_version="$(curl -sf \
@@ -312,7 +317,7 @@ id runner 2>/dev/null || sudo useradd --system --create-home --shell /bin/bash r
 
 # ---- substrate ----
 printf '%s' "${substrate_b64}" | base64 -d > /tmp/template-substrate.sh
-sudo env SUBSTRATE_MEM_DECLARED=0 SUBSTRATE_USER=runner bash /tmp/template-substrate.sh
+sudo env SUBSTRATE_MEM_DECLARED=0 SUBSTRATE_USER=runner SUBSTRATE_APT_PROXY='${APT_PROXY_URL}' bash /tmp/template-substrate.sh
 rm -f /tmp/template-substrate.sh
 
 # ---- GitHub Actions runner tarball ----

@@ -347,6 +347,14 @@ Images carry no repository's packages, so the substrate writes
 `sudo -n apt-get`. Instances are single-job and ephemeral. If per-job apt time
 matters, the repository should publish its own prebuilt layer, not bake into the image.
 
+### apt proxy — installed by the substrate script
+
+The substrate writes `/etc/apt/apt.conf.d/02ephemeral-ci-proxy` pointing apt at a
+LAN/tailnet cache (apt-cacher-ng), so a repository's per-job runner-deps install is a
+local fetch. Supply the URL as `SUBSTRATE_APT_PROXY=http://host:3142` when running the
+script (`sudo env SUBSTRATE_APT_PROXY=... bash scripts/template-substrate.sh`); it is
+required and has no default. `ami-build.sh` reads it from `APT_PROXY_URL`.
+
 ### git, curl, jq — installed by the substrate script
 
 
