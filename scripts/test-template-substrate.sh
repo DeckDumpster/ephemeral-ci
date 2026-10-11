@@ -584,7 +584,8 @@ else bad "--check verifies the drop-in" "check_sudoers not in run_checks"; fi
 # Both images are built by this one script: the Proxmox template (provision.sh)
 # and the spill AMI (ami-build.sh), so the drop-in is identical on both.
 for f in provision.sh ami-build.sh; do
-    if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/$f" | grep -q 'template-substrate.sh'; then ok "$f builds through template-substrate.sh"
+    code_refs="$(grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/$f" | grep -c 'template-substrate.sh' || true)"
+    if [ "$code_refs" -gt 0 ]; then ok "$f builds through template-substrate.sh"
     else bad "$f builds through template-substrate.sh" "does not reference it in code"; fi
 done
 
