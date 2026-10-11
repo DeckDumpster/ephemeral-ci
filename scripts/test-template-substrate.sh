@@ -316,7 +316,7 @@ STUB
 }
 _idstub
 : > "$CALLS"
-_apply_out="$(PATH="$STUBS:$PATH" bash "$SUBSTRATE" 2>&1)"
+_apply_out="$(SUBSTRATE_APT_PROXY=http://cache.test:3142 APT_PROXY_FILE="$(mktemp)" PATH="$STUBS:$PATH" bash "$SUBSTRATE" 2>&1)"
 if grep -q '^apt-get ' "$CALLS"; then
     ok "the apply path reaches apt-get when running as root"
 else
@@ -378,7 +378,7 @@ for _t in systemctl loginctl usermod sysctl; do
     printf '#!/bin/sh\nexit 0\n' > "$_TSTUBS/$_t"; chmod +x "$_TSTUBS/$_t"
 done
 
-PATH="$_TSTUBS:$PATH" bash "$SUBSTRATE" >/dev/null 2>&1 || true
+SUBSTRATE_APT_PROXY=http://cache.test:3142 APT_PROXY_FILE="$(mktemp)" PATH="$_TSTUBS:$PATH" bash "$SUBSTRATE" >/dev/null 2>&1 || true
 
 if grep -q '^apt-get install' "$_TCALLS" 2>/dev/null; then
     ok "apt-get install is called (update ran before probe; packages selected)"
@@ -481,7 +481,7 @@ for _t in systemctl loginctl usermod sysctl tee; do
 done
 
 _upd_rc=0
-_upd_out="$(PATH="$_upd_dir:$PATH" bash "$SUBSTRATE" 2>&1)" || _upd_rc=$?
+_upd_out="$(SUBSTRATE_APT_PROXY=http://cache.test:3142 APT_PROXY_FILE="$(mktemp)" PATH="$_upd_dir:$PATH" bash "$SUBSTRATE" 2>&1)" || _upd_rc=$?
 
 if [ "$_upd_rc" -ne 0 ]; then
     ok "apt-update failure: substrate exits non-zero"
@@ -580,6 +580,27 @@ if has 'install -m 0440 .*"\$SUDOERS_FILE"' && has 'visudo -cf'; then ok "the dr
 else bad "the drop-in is installed 0440 after visudo validation" "install or visudo step missing"; fi
 if has '^[[:space:]]*check_sudoers$'; then ok "--check verifies the drop-in"
 else bad "--check verifies the drop-in" "check_sudoers not in run_checks"; fi
+
+# The apt proxy: exact drop-in content from the function itself, written before the
+# first apt-get update, verified by --check, required with no default, and handed
+# through by ami-build.sh.
+_ap_fn="$(sed -n '/^apt_proxy_content()/,/^}/p' "$SUBSTRATE")"
+_ap_got="$(SUBSTRATE_APT_PROXY=http://cache.lan:3142 bash -c "$_ap_fn; apt_proxy_content")"
+if [ "$_ap_got" = 'Acquire::http::Proxy "http://cache.lan:3142";' ]; then ok "apt proxy drop-in content is the Acquire::http::Proxy line"
+else bad "apt proxy drop-in content is the Acquire::http::Proxy line" "got: $_ap_got"; fi
+if has '^[[:space:]]*check_apt_proxy$'; then ok "--check verifies the apt proxy"
+else bad "--check verifies the apt proxy" "check_apt_proxy not in run_checks"; fi
+_ap_w="$(printf '%s\n' "$CODE" | grep -n 'tee "\$APT_PROXY_FILE"' | head -1 | cut -d: -f1)"
+_ap_u="$(printf '%s\n' "$CODE" | grep -n 'apt_install "\${PODMAN_PKGS' | head -1 | cut -d: -f1)"
+if [ -n "$_ap_w" ] && [ -n "$_ap_u" ] && [ "$_ap_w" -lt "$_ap_u" ]; then ok "the proxy is written before the first apt-get update"
+else bad "the proxy is written before the first apt-get update" "write at ${_ap_w:-none}, install at ${_ap_u:-none}"; fi
+if has 'SUBSTRATE_APT_PROXY:-'; then ok "install refuses an unset SUBSTRATE_APT_PROXY"
+else bad "install refuses an unset SUBSTRATE_APT_PROXY" "no guard"; fi
+if env -u SUBSTRATE_APT_PROXY bash "$SUBSTRATE" >/dev/null 2>&1; then
+    bad "install without SUBSTRATE_APT_PROXY exits non-zero" "exited 0"
+else ok "install without SUBSTRATE_APT_PROXY exits non-zero"; fi
+if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh" | grep -q "SUBSTRATE_APT_PROXY='\${APT_PROXY_URL}'"; then ok "ami-build.sh passes SUBSTRATE_APT_PROXY to the substrate"
+else bad "ami-build.sh passes SUBSTRATE_APT_PROXY to the substrate" "not passed"; fi
 
 # Both images are built by this one script: the Proxmox template (provision.sh)
 # and the spill AMI (ami-build.sh), so the drop-in is identical on both.

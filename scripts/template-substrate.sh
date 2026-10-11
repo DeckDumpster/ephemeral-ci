@@ -316,6 +316,25 @@ check_unattended() {
     return 0
 }
 
+# APT GOES THROUGH THE LAN CACHE. Every job's runner-deps step apt-installs its
+# repository's libraries and runs apt update; against the public mirrors that is
+# tens of seconds per job. A caching proxy on the LAN/tailnet (apt-cacher-ng) makes
+# it a local fetch. The URL is the CALLER'S to supply (SUBSTRATE_APT_PROXY) and has
+# no default here: a guessed host that is down fails every apt call on the image.
+# Both image builds (Proxmox template, EC2 spill AMI) run this script, so both get it.
+APT_PROXY_FILE="${APT_PROXY_FILE:-/etc/apt/apt.conf.d/02ephemeral-ci-proxy}"   # overridable only so the suite never writes /etc
+apt_proxy_content() {
+    printf 'Acquire::http::Proxy "%s";\n' "$SUBSTRATE_APT_PROXY"
+}
+
+check_apt_proxy() {
+    if ! grep -qE '^Acquire::http::Proxy "http://[^"]+";$' "$APT_PROXY_FILE" 2>/dev/null; then
+        lack "$APT_PROXY_FILE" "apt is not routed through the LAN cache; every job pays public-mirror latency for its runner-deps step"
+        return 1
+    fi
+    return 0
+}
+
 # THE RUNNER MAY INSTALL PACKAGES. Runner images are general purpose; a repository
 # declares its own dependencies (deckdumpster's deploy/runner-deps.sh) and installs
 # them with `sudo -n apt-get`. The instances are single-job and ephemeral, so this
@@ -407,6 +426,7 @@ run_checks() {
     check_userns
     check_unattended
     check_sudoers
+    check_apt_proxy
     check_tmp_backing
     check_mem_size
 }
@@ -424,6 +444,20 @@ fi
 
 # --------------------------------- install ---------------------------------
 note "applying substrate for ${RUNUSER} on $(hostname)"
+
+# The apt proxy goes in BEFORE the first apt-get update below, so the build itself
+# is served from the cache too.
+if [ -z "${SUBSTRATE_APT_PROXY:-}" ]; then
+    printf 'substrate: error: SUBSTRATE_APT_PROXY is not set -- give the apt cache URL, e.g. http://host:3142\n' >&2
+    exit 1
+fi
+case "$SUBSTRATE_APT_PROXY" in
+    http://*) ;;
+    *) printf 'substrate: error: SUBSTRATE_APT_PROXY must be an http:// URL, got [%s]\n' "$SUBSTRATE_APT_PROXY" >&2; exit 1 ;;
+esac
+note "routing apt through ${SUBSTRATE_APT_PROXY} (${APT_PROXY_FILE})"
+apt_proxy_content | $SUDO tee "$APT_PROXY_FILE" >/dev/null \
+    || { note "could not write ${APT_PROXY_FILE}"; exit 1; }
 
 # Mask apt automation BEFORE the first apt-get update. On a freshly booted
 # instance unattended-upgrades runs at the same moment provisioning does;
