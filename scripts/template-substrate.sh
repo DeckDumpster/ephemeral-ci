@@ -316,20 +316,53 @@ check_unattended() {
     return 0
 }
 
-# APT GOES THROUGH THE LAN CACHE. Every job's runner-deps step apt-installs its
-# repository's libraries and runs apt update; against the public mirrors that is
-# tens of seconds per job. A caching proxy on the LAN/tailnet (apt-cacher-ng) makes
-# it a local fetch. The URL is the CALLER'S to supply (SUBSTRATE_APT_PROXY) and has
-# no default here: a guessed host that is down fails every apt call on the image.
-# Both image builds (Proxmox template, EC2 spill AMI) run this script, so both get it.
+# APT USES THE LAN CACHE WHEN IT ANSWERS. Every job's runner-deps step apt-installs its
+# repository's libraries; against the public mirrors that is tens of seconds per job. A
+# caching proxy (apt-cacher-ng, scripts/apt-cache/) makes it a local fetch. The cache is
+# an optimisation and OPTIONAL: SUBSTRATE_APT_PROXY unset installs nothing, and when set
+# the drop-in uses Proxy-Auto-Detect, so a cache that is down or unreachable (an EC2 spill
+# instance off the tailnet) yields DIRECT after ~1 s instead of failing every apt call.
 APT_PROXY_FILE="${APT_PROXY_FILE:-/etc/apt/apt.conf.d/02ephemeral-ci-proxy}"   # overridable only so the suite never writes /etc
+APT_PROXY_URL_FILE="${APT_PROXY_URL_FILE:-/etc/ephemeral-ci/apt-cache-url}"
+APT_PROXY_DETECT="${APT_PROXY_DETECT:-/usr/local/bin/ephemeral-ci-apt-proxy-detect}"
+apt_proxy_detect_content() {
+    cat <<'DETECT'
+#!/usr/bin/env bash
+# apt Proxy-Auto-Detect hook: prints the cache URL when it accepts a TCP connection
+# within ~1 s, else DIRECT. Embedded here (not a separate file) because ami-build.sh
+# ships this one script over SSM. URL read from the file named below.
+set -u
+
+CACHE_FILE="${APT_PROXY_CACHE_FILE:-/etc/ephemeral-ci/apt-cache-url}"
+url="$(head -n1 "$CACHE_FILE" 2>/dev/null | tr -d '[:space:]')"
+
+hostport="${url#http://}"
+hostport="${hostport%%/*}"
+host="${hostport%%:*}"
+port="${hostport##*:}"
+[ "$port" = "$hostport" ] && port=80
+
+case "$url" in http://?*) ;; *) echo DIRECT; exit 0 ;; esac
+case "$host" in ''|*[!A-Za-z0-9._-]*) echo DIRECT; exit 0 ;; esac
+case "$port" in ''|*[!0-9]*) echo DIRECT; exit 0 ;; esac
+
+if timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" 2>/dev/null; then
+    echo "$url"
+else
+    echo DIRECT
+fi
+DETECT
+}
 apt_proxy_content() {
-    printf 'Acquire::http::Proxy "%s";\n' "$SUBSTRATE_APT_PROXY"
+    printf 'Acquire::http::Proxy-Auto-Detect "%s";\n' "$APT_PROXY_DETECT"
 }
 
+# With no URL supplied there is nothing to check: the absence is the valid state.
 check_apt_proxy() {
-    if ! grep -qE '^Acquire::http::Proxy "http://[^"]+";$' "$APT_PROXY_FILE" 2>/dev/null; then
-        lack "$APT_PROXY_FILE" "apt is not routed through the LAN cache; every job pays public-mirror latency for its runner-deps step"
+    [ -n "${SUBSTRATE_APT_PROXY:-}" ] || return 0
+    if ! grep -qE '^Acquire::http::Proxy-Auto-Detect "[^"]+";$' "$APT_PROXY_FILE" 2>/dev/null \
+        || [ ! -x "$APT_PROXY_DETECT" ]; then
+        lack "$APT_PROXY_FILE" "apt is not set to auto-detect the LAN cache; every job pays public-mirror latency for its runner-deps step"
         return 1
     fi
     return 0
@@ -446,18 +479,21 @@ fi
 note "applying substrate for ${RUNUSER} on $(hostname)"
 
 # The apt proxy goes in BEFORE the first apt-get update below, so the build itself
-# is served from the cache too.
-if [ -z "${SUBSTRATE_APT_PROXY:-}" ]; then
-    printf 'substrate: error: SUBSTRATE_APT_PROXY is not set -- give the apt cache URL, e.g. http://host:3142\n' >&2
-    exit 1
+# is served from the cache too. Optional: unset means no drop-in and a public-mirror build.
+if [ -n "${SUBSTRATE_APT_PROXY:-}" ]; then
+    case "$SUBSTRATE_APT_PROXY" in
+        http://*) ;;
+        *) printf 'substrate: error: SUBSTRATE_APT_PROXY must be an http:// URL, got [%s]\n' "$SUBSTRATE_APT_PROXY" >&2; exit 1 ;;
+    esac
+    note "auto-detecting apt cache ${SUBSTRATE_APT_PROXY} (${APT_PROXY_FILE}); DIRECT when it does not answer"
+    $SUDO mkdir -p "$(dirname "$APT_PROXY_URL_FILE")" "$(dirname "$APT_PROXY_DETECT")" \
+        && printf '%s\n' "$SUBSTRATE_APT_PROXY" | $SUDO tee "$APT_PROXY_URL_FILE" >/dev/null \
+        && { apt_proxy_detect_content | $SUDO tee "$APT_PROXY_DETECT" >/dev/null && $SUDO chmod 0755 "$APT_PROXY_DETECT"; } \
+        && apt_proxy_content | $SUDO tee "$APT_PROXY_FILE" >/dev/null \
+        || { note "could not write the apt proxy files"; exit 1; }
+else
+    note "SUBSTRATE_APT_PROXY unset: apt goes direct to the public mirrors"
 fi
-case "$SUBSTRATE_APT_PROXY" in
-    http://*) ;;
-    *) printf 'substrate: error: SUBSTRATE_APT_PROXY must be an http:// URL, got [%s]\n' "$SUBSTRATE_APT_PROXY" >&2; exit 1 ;;
-esac
-note "routing apt through ${SUBSTRATE_APT_PROXY} (${APT_PROXY_FILE})"
-apt_proxy_content | $SUDO tee "$APT_PROXY_FILE" >/dev/null \
-    || { note "could not write ${APT_PROXY_FILE}"; exit 1; }
 
 # Mask apt automation BEFORE the first apt-get update. On a freshly booted
 # instance unattended-upgrades runs at the same moment provisioning does;

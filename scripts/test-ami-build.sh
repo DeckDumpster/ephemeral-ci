@@ -37,8 +37,6 @@ TAG_VALUE="ephemeral-ci"
 AMI_NAME_PREFIX="ephemeral-ci-runner"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOOTSTRAP="${SCRIPT_DIR}/ami-build.sh"
-# ami-build.sh refuses to apply the substrate without the LAN apt cache URL.
-export APT_PROXY_URL=http://cache.test:3142
 
 # Populated from EphemeralCiSpill stack outputs for online tests (section 3).
 SUBNET_ID=""

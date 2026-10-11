@@ -316,7 +316,7 @@ STUB
 }
 _idstub
 : > "$CALLS"
-_apply_out="$(SUBSTRATE_APT_PROXY=http://cache.test:3142 APT_PROXY_FILE="$(mktemp)" PATH="$STUBS:$PATH" bash "$SUBSTRATE" 2>&1)"
+_apply_out="$(PATH="$STUBS:$PATH" bash "$SUBSTRATE" 2>&1)"
 if grep -q '^apt-get ' "$CALLS"; then
     ok "the apply path reaches apt-get when running as root"
 else
@@ -378,7 +378,7 @@ for _t in systemctl loginctl usermod sysctl; do
     printf '#!/bin/sh\nexit 0\n' > "$_TSTUBS/$_t"; chmod +x "$_TSTUBS/$_t"
 done
 
-SUBSTRATE_APT_PROXY=http://cache.test:3142 APT_PROXY_FILE="$(mktemp)" PATH="$_TSTUBS:$PATH" bash "$SUBSTRATE" >/dev/null 2>&1 || true
+PATH="$_TSTUBS:$PATH" bash "$SUBSTRATE" >/dev/null 2>&1 || true
 
 if grep -q '^apt-get install' "$_TCALLS" 2>/dev/null; then
     ok "apt-get install is called (update ran before probe; packages selected)"
@@ -481,7 +481,7 @@ for _t in systemctl loginctl usermod sysctl tee; do
 done
 
 _upd_rc=0
-_upd_out="$(SUBSTRATE_APT_PROXY=http://cache.test:3142 APT_PROXY_FILE="$(mktemp)" PATH="$_upd_dir:$PATH" bash "$SUBSTRATE" 2>&1)" || _upd_rc=$?
+_upd_out="$(PATH="$_upd_dir:$PATH" bash "$SUBSTRATE" 2>&1)" || _upd_rc=$?
 
 if [ "$_upd_rc" -ne 0 ]; then
     ok "apt-update failure: substrate exits non-zero"
@@ -581,26 +581,58 @@ else bad "the drop-in is installed 0440 after visudo validation" "install or vis
 if has '^[[:space:]]*check_sudoers$'; then ok "--check verifies the drop-in"
 else bad "--check verifies the drop-in" "check_sudoers not in run_checks"; fi
 
-# The apt proxy: exact drop-in content from the function itself, written before the
-# first apt-get update, verified by --check, required with no default, and handed
-# through by ami-build.sh.
+# The apt proxy is OPTIONAL and FAILS OPEN: the drop-in is a Proxy-Auto-Detect hook,
+# not a static Proxy; the hook prints the URL when the cache answers and DIRECT when not.
 _ap_fn="$(sed -n '/^apt_proxy_content()/,/^}/p' "$SUBSTRATE")"
-_ap_got="$(SUBSTRATE_APT_PROXY=http://cache.lan:3142 bash -c "$_ap_fn; apt_proxy_content")"
-if [ "$_ap_got" = 'Acquire::http::Proxy "http://cache.lan:3142";' ]; then ok "apt proxy drop-in content is the Acquire::http::Proxy line"
-else bad "apt proxy drop-in content is the Acquire::http::Proxy line" "got: $_ap_got"; fi
+_ap_got="$(APT_PROXY_DETECT=/usr/local/bin/x bash -c "$_ap_fn; apt_proxy_content")"
+if [ "$_ap_got" = 'Acquire::http::Proxy-Auto-Detect "/usr/local/bin/x";' ]; then ok "apt proxy drop-in is a Proxy-Auto-Detect line"
+else bad "apt proxy drop-in is a Proxy-Auto-Detect line" "got: $_ap_got"; fi
+if printf '%s' "$CODE" | grep -qE '^Acquire::http::Proxy "'; then bad "no static Acquire::http::Proxy anywhere" "found one"
+else ok "no static Acquire::http::Proxy anywhere"; fi
 if has '^[[:space:]]*check_apt_proxy$'; then ok "--check verifies the apt proxy"
 else bad "--check verifies the apt proxy" "check_apt_proxy not in run_checks"; fi
 _ap_w="$(printf '%s\n' "$CODE" | grep -n 'tee "\$APT_PROXY_FILE"' | head -1 | cut -d: -f1)"
 _ap_u="$(printf '%s\n' "$CODE" | grep -n 'apt_install "\${PODMAN_PKGS' | head -1 | cut -d: -f1)"
 if [ -n "$_ap_w" ] && [ -n "$_ap_u" ] && [ "$_ap_w" -lt "$_ap_u" ]; then ok "the proxy is written before the first apt-get update"
 else bad "the proxy is written before the first apt-get update" "write at ${_ap_w:-none}, install at ${_ap_u:-none}"; fi
-if has 'SUBSTRATE_APT_PROXY:-'; then ok "install refuses an unset SUBSTRATE_APT_PROXY"
-else bad "install refuses an unset SUBSTRATE_APT_PROXY" "no guard"; fi
-if env -u SUBSTRATE_APT_PROXY bash "$SUBSTRATE" >/dev/null 2>&1; then
-    bad "install without SUBSTRATE_APT_PROXY exits non-zero" "exited 0"
-else ok "install without SUBSTRATE_APT_PROXY exits non-zero"; fi
-if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh" | grep -q "SUBSTRATE_APT_PROXY='\${APT_PROXY_URL}'"; then ok "ami-build.sh passes SUBSTRATE_APT_PROXY to the substrate"
-else bad "ami-build.sh passes SUBSTRATE_APT_PROXY to the substrate" "not passed"; fi
+if has 'exit 1 ;;' && ! has 'SUBSTRATE_APT_PROXY is not set'; then ok "install does not refuse an unset SUBSTRATE_APT_PROXY"
+else bad "install does not refuse an unset SUBSTRATE_APT_PROXY" "refusal still present"; fi
+if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh" | grep -q "SUBSTRATE_APT_PROXY='\${APT_PROXY_URL:-}'"; then ok "ami-build.sh passes an optional SUBSTRATE_APT_PROXY to the substrate"
+else bad "ami-build.sh passes an optional SUBSTRATE_APT_PROXY to the substrate" "not passed with a :- default"; fi
+if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh" | grep -q 'APT_PROXY_URL is not set'; then bad "ami-build.sh runs with APT_PROXY_URL unset" "still refuses"
+else ok "ami-build.sh runs with APT_PROXY_URL unset"; fi
+
+# The detect hook itself, extracted from the substrate and run against real sockets.
+_dt="$(mktemp -d)"
+bash -c "$(sed -n '/^apt_proxy_detect_content()/,/^}/p' "$SUBSTRATE"); apt_proxy_detect_content" > "$_dt/detect.sh"
+_dt_port="$(python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')"
+printf 'http://127.0.0.1:%s\n' "$_dt_port" > "$_dt/url"
+_dt_closed="$(APT_PROXY_CACHE_FILE="$_dt/url" bash "$_dt/detect.sh" example.com)"
+if [ "$_dt_closed" = DIRECT ]; then ok "detect prints DIRECT when the cache port is closed"
+else bad "detect prints DIRECT when the cache port is closed" "got: $_dt_closed"; fi
+python3 -I -c 'import socket,time;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(("127.0.0.1",'"$_dt_port"'));s.listen(5);time.sleep(15)' &
+_dt_pid=$!
+sleep 1
+_dt_open="$(APT_PROXY_CACHE_FILE="$_dt/url" bash "$_dt/detect.sh" example.com)"
+kill "$_dt_pid" 2>/dev/null; wait "$_dt_pid" 2>/dev/null
+if [ "$_dt_open" = "http://127.0.0.1:$_dt_port" ]; then ok "detect prints the URL when the cache port is open"
+else bad "detect prints the URL when the cache port is open" "got: $_dt_open"; fi
+_dt_none="$(APT_PROXY_CACHE_FILE="$_dt/absent" bash "$_dt/detect.sh" example.com)"
+if [ "$_dt_none" = DIRECT ]; then ok "detect prints DIRECT with no URL file"
+else bad "detect prints DIRECT with no URL file" "got: $_dt_none"; fi
+printf 'garbage; rm -rf\n' > "$_dt/bad"
+if [ "$(APT_PROXY_CACHE_FILE="$_dt/bad" bash "$_dt/detect.sh" x)" = DIRECT ]; then ok "detect prints DIRECT for an unparseable URL"
+else bad "detect prints DIRECT for an unparseable URL" "not DIRECT"; fi
+printf 'http://10.255.255.1:3142\n' > "$_dt/blackhole"
+_dt_t0=$SECONDS
+APT_PROXY_CACHE_FILE="$_dt/blackhole" bash "$_dt/detect.sh" x >/dev/null
+if [ $((SECONDS - _dt_t0)) -le 3 ]; then ok "detect answers within ~1 s for an unroutable cache"
+else bad "detect answers within ~1 s for an unroutable cache" "took $((SECONDS - _dt_t0))s"; fi
+rm -rf "$_dt"
+
+# --check with the variable unset passes the proxy item.
+if env -u SUBSTRATE_APT_PROXY APT_PROXY_FILE=/nonexistent bash -c "$(sed -n '/^check_apt_proxy()/,/^}/p' "$SUBSTRATE"); check_apt_proxy"; then ok "check_apt_proxy passes when no proxy was requested"
+else bad "check_apt_proxy passes when no proxy was requested" "reported missing"; fi
 
 # Both images are built by this one script: the Proxmox template (provision.sh)
 # and the spill AMI (ami-build.sh), so the drop-in is identical on both.
