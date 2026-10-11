@@ -62,8 +62,6 @@ RETAIN_COUNT=3
 SSM_WAIT_SECONDS=300
 # Budget for template-substrate.sh + runner install to complete.
 BUILD_WAIT_SECONDS=600
-# Budget for AMI snapshot to become available.
-AMI_WAIT_SECONDS=600
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_NAME="EphemeralCiSpill"
@@ -87,6 +85,9 @@ done
 # ---------------------------------------------------------------------------
 
 note() { printf 'ami-build: %s\n' "$*" >&2; }
+
+# shellcheck source=ami-wait.sh
+. "${SCRIPT_DIR}/ami-wait.sh"
 
 # aws_w: mutating aws call -- skipped in dry-run; returns a placeholder string
 aws_w() {
@@ -497,28 +498,10 @@ create_ami() {
         --query 'ImageId' \
         --output text)"
 
-    note "AMI: $ami_id (waiting up to ${AMI_WAIT_SECONDS}s)"
+    note "AMI: $ami_id (hang guard ${AMI_WAIT_SECONDS}s)"
 
     if [ "$DRY_RUN" -eq 0 ]; then
-        local deadline=$(( $(date +%s) + AMI_WAIT_SECONDS ))
-        while true; do
-            local state
-            state="$(aws ec2 describe-images \
-                --image-ids "$ami_id" \
-                --query 'Images[0].State' \
-                --output text --region "$REGION" 2>/dev/null)" || state="pending"
-            [ "$state" = "available" ] && break
-            if [ "$state" = "failed" ]; then
-                printf 'ami-build.sh: AMI %s failed\n' "$ami_id" >&2; return 1
-            fi
-            if [ "$(date +%s)" -gt "$deadline" ]; then
-                printf 'ami-build.sh: AMI %s not available within %ss\n' \
-                    "$ami_id" "$AMI_WAIT_SECONDS" >&2
-                return 1
-            fi
-            sleep 15
-        done
-        note "AMI $ami_id is available"
+        wait_for_ami "$ami_id"
     fi
 
     printf '%s' "$ami_id"

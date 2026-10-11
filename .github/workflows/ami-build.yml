@@ -15,6 +15,7 @@ on:
     paths:
       - scripts/template-substrate.sh
       - scripts/ami-build.sh
+      - scripts/ami-wait.sh
       - scripts/guest/start-runner.sh
       - .github/workflows/ami-build.yml
   schedule:
