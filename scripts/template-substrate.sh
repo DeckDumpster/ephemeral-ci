@@ -22,8 +22,9 @@
 #
 # WHAT BELONGS HERE, AND WHAT DOES NOT. This file is the SUBSTRATE: properties of
 # the machine that every consumer needs and no consumer should have to know about.
-# A dependency of one repository's suite -- uv, a Rust toolchain, metric-compatible fonts for visual
-# regression -- belongs in that repository's own runner-deps check, which declares what IS its own. The test for
+# A dependency of one repository's suite -- uv, Chromium's shared libraries, a Rust
+# toolchain, metric-compatible fonts for visual regression -- belongs in that
+# repository's own runner-deps check, which declares what IS its own. The test for
 # the boundary: if a second repository would be surprised to need it, it is not
 # substrate.
 set -uo pipefail
@@ -202,16 +203,6 @@ BUILD_PKGS=(build-essential pkg-config)
 # The runner itself and the scripts every consumer's CI calls directly.
 BASE_PKGS=(git curl ca-certificates jq)
 
-# THE BROWSER-TIER LIBRARIES, IN THE SUBSTRATE BECAUSE THE TWO BUILDS MUST NOT DRIFT.
-# The Proxmox template had these installed by hand while the spill AMI, built from
-# this script alone, did not: an EC2-spilled deckdumpster gate died in its
-# runner-deps check ("need root to install: libatk1.0-0t64 ... libgl1") while the
-# same gate passed locally. This file is the one list both builds read -- the
-# template is built by running it, and ami-build.sh ships it to the AMI builder --
-# so a package added here reaches both. Names are the pre-t64 names; apt_install and
-# check_pkgs fall back to the ${p}t64 rename on Ubuntu 24.04.
-UI_PKGS=(libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libpangocairo-1.0-0 libgl1)
-
 check_podman() {
     command -v podman >/dev/null 2>&1 || { lack podman "every consumer runs containers"; return 1; }
     local v major minor
@@ -325,6 +316,23 @@ check_unattended() {
     return 0
 }
 
+# THE RUNNER MAY INSTALL PACKAGES. Runner images are general purpose; a repository
+# declares its own dependencies (deckdumpster's deploy/runner-deps.sh) and installs
+# them with `sudo -n apt-get`. The instances are single-job and ephemeral, so this
+# grants apt-get and apt to the runner user and nothing else.
+SUDOERS_FILE=/etc/sudoers.d/ephemeral-ci-runner-apt
+sudoers_content() {
+    printf '%s ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt\n' "$RUNUSER"
+}
+
+check_sudoers() {
+    if [ "$($SUDO cat "$SUDOERS_FILE" 2>/dev/null)" != "$(sudoers_content)" ]; then
+        lack "$SUDOERS_FILE" "the runner cannot install the packages its repository's runner-deps step declares"
+        return 1
+    fi
+    return 0
+}
+
 # THE DECLARED RUNNER ALLOCATION. A template with a different size silently caps
 # the runner fleet: every concurrent run holds its full allocation for the length
 # of the run, so node_capacity / per_runner_allocation IS the fleet ceiling. Six
@@ -393,11 +401,12 @@ run_checks() {
     MISSING=()
     check_podman
     check_netns_backend
-    check_pkgs "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" "${UI_PKGS[@]}"
+    check_pkgs "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}"
     check_subid
     check_linger
     check_userns
     check_unattended
+    check_sudoers
     check_tmp_backing
     check_mem_size
 }
@@ -437,7 +446,7 @@ if command -v systemctl >/dev/null 2>&1; then
     done
 fi
 
-apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" "${UI_PKGS[@]}" || exit 1
+apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" || exit 1
 
 if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null \
    || ! grep -q "^${RUNUSER}:" /etc/subgid 2>/dev/null; then
@@ -459,6 +468,19 @@ if [ -n "$(sysctl -n "$APPARMOR_SYSCTL" 2>/dev/null)" ]; then
     printf '%s = 0\n' "$APPARMOR_SYSCTL" | $SUDO tee "$SYSCTL_FILE" >/dev/null \
         || note "could not write ${SYSCTL_FILE}"
     $SUDO sysctl -q -w "${APPARMOR_SYSCTL}=0" || note "could not set ${APPARMOR_SYSCTL} live"
+fi
+
+if ! check_sudoers 2>/dev/null; then
+    note "granting ${RUNUSER} passwordless apt-get/apt in ${SUDOERS_FILE}"
+    _sudoers_tmp="$(mktemp)"
+    sudoers_content > "$_sudoers_tmp"
+    if ! command -v visudo >/dev/null 2>&1 || visudo -cf "$_sudoers_tmp" >/dev/null; then
+        $SUDO install -m 0440 -o root -g root "$_sudoers_tmp" "$SUDOERS_FILE" \
+            || note "could not write ${SUDOERS_FILE}"
+    else
+        note "refusing to install an invalid sudoers drop-in"
+    fi
+    rm -f "$_sudoers_tmp"
 fi
 
 # Re-check and report. A partial apply is a failure here rather than a surprise
