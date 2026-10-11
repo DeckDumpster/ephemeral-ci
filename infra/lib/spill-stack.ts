@@ -596,6 +596,12 @@ export class SpillStack extends cdk.Stack {
       actions: ['ec2:DescribeSnapshots'],
       resources: ['*'],
     }));
+    // The round workflow waits on `ec2 wait instance-status-ok`, which polls
+    // DescribeInstanceStatus; it has no resource-level permissions.
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:DescribeInstanceStatus'],
+      resources: ['*'],
+    }));
     new cdk.CfnOutput(this, 'AmiBuildRoleArn', { value: amiBuildRole.roleArn });
 
     // Round AMI staging: the spira round-ami-build workflow uploads the guest
