@@ -885,3 +885,96 @@ test('a read-only diagnose document is exported for ec2-diag.sh (sp-5cgnxb)', ()
     expect(text).toContain(needle);
   }
 });
+
+// ── Round-VM spill user (sp-12hi6j) ────────────────────────────────────────
+
+type RStmt = { Action: string | string[]; Resource: unknown; Condition?: any };
+function roundUserStatements(): RStmt[] {
+  const userId = Object.keys(template.findResources('AWS::IAM::User', { Properties: { UserName: 'spira-round-spill' } }))[0];
+  expect(userId).toBeDefined();
+  return Object.values(template.findResources('AWS::IAM::Policy')).flatMap((p: any) =>
+    (p.Properties.Users ?? []).some((u: any) => u.Ref === userId) ? p.Properties.PolicyDocument.Statement : []);
+}
+const rHaving = (sts: RStmt[], a: string) => sts.filter((s) => ([] as string[]).concat(s.Action).includes(a));
+
+test('round spill user exists, has no access key and no managed policy', () => {
+  template.resourceCountIs('AWS::IAM::AccessKey', 0);
+  const users = template.findResources('AWS::IAM::User', { Properties: { UserName: 'spira-round-spill' } });
+  expect(Object.keys(users)).toHaveLength(1);
+  expect((Object.values(users)[0] as any).Properties.ManagedPolicyArns).toBeUndefined();
+  expect(Object.keys(template.findOutputs('RoundSpillUserName'))).toHaveLength(1);
+  expect(Object.keys(template.findOutputs('RoundSpillInstanceProfileName'))).toHaveLength(1);
+});
+
+test('round spill user launches only c7i.* tagged round into the spill subnets and SG', () => {
+  const runs = rHaving(roundUserStatements(), 'ec2:RunInstances');
+  const inst = runs.filter((s) => JSON.stringify(s.Resource).includes(':instance/*'));
+  expect(inst).toHaveLength(1);
+  expect(inst[0].Condition.StringEquals['aws:RequestTag/spill:owner']).toBe('round');
+  expect(inst[0].Condition.StringLike['ec2:InstanceType']).toBe('c7i.*');
+  const net = JSON.stringify(runs.filter((s) => JSON.stringify(s.Resource).includes(':subnet/')));
+  for (const id of ['PublicSubnet', 'PublicSubnetB', 'PublicSubnetC', 'SecurityGroup']) {
+    expect(net).toContain(id);
+  }
+  expect(net).not.toContain('subnet/*');
+  expect(net).not.toContain('security-group/*');
+  const img = runs.filter((s) => JSON.stringify(s.Resource).includes('image/*'));
+  expect(img).toHaveLength(1);
+  expect(img[0].Condition.StringEquals['ec2:ResourceTag/spill:owner']).toBe('round');
+});
+
+test('round spill user tags only on create and manages only round instances', () => {
+  const sts = roundUserStatements();
+  const tags = rHaving(sts, 'ec2:CreateTags');
+  expect(tags).toHaveLength(1);
+  expect(tags[0].Condition.StringEquals['ec2:CreateAction']).toBe('RunInstances');
+  for (const a of ['ec2:TerminateInstances', 'ec2:StopInstances', 'ec2:StartInstances']) {
+    const h = rHaving(sts, a);
+    expect(h).toHaveLength(1);
+    expect(h[0].Condition.StringEquals['ec2:ResourceTag/spill:owner']).toBe('round');
+  }
+});
+
+test('round spill user reaches SSM only via AWS-RunShellScript and round-tagged instances', () => {
+  const sts = roundUserStatements();
+  const send = rHaving(sts, 'ssm:SendCommand');
+  expect(send).toHaveLength(2);
+  expect(JSON.stringify(send.map((s) => s.Resource))).toContain('document/AWS-RunShellScript');
+  const onInst = send.find((s) => JSON.stringify(s.Resource).includes(':instance/*'))!;
+  expect(onInst.Condition.StringEquals['aws:ResourceTag/spill:owner']).toBe('round');
+  expect(rHaving(sts, 'ssm:GetCommandInvocation')).toHaveLength(1);
+  expect(rHaving(sts, 'ssm:DescribeInstanceInformation')).toHaveLength(1);
+  const pass = rHaving(sts, 'iam:PassRole');
+  expect(pass).toHaveLength(1);
+  expect(pass[0].Condition.StringEquals['iam:PassedToService']).toBe('ec2.amazonaws.com');
+  expect(JSON.stringify(pass[0].Resource)).toContain('InstanceRole');
+});
+
+test('round spill user holds nothing broader than the allowed action set', () => {
+  const allowed = new Set([
+    'ec2:RunInstances', 'ec2:CreateTags', 'ec2:TerminateInstances', 'ec2:StopInstances',
+    'ec2:StartInstances', 'ec2:Describe*', 'ssm:SendCommand', 'ssm:GetCommandInvocation',
+    'ssm:DescribeInstanceInformation', 'iam:PassRole',
+  ]);
+  const sts = roundUserStatements();
+  for (const s of sts) {
+    expect((s as any).Effect).toBe('Allow');
+    for (const a of ([] as string[]).concat(s.Action)) expect(allowed.has(a)).toBe(true);
+    // Every wildcard resource is a read-only action.
+    if (JSON.stringify(s.Resource) === '"*"') {
+      for (const a of ([] as string[]).concat(s.Action)) {
+        expect(/^(ec2:Describe\*|ssm:(GetCommandInvocation|DescribeInstanceInformation))$/.test(a)).toBe(true);
+      }
+    }
+  }
+});
+
+test('ami build role is also assumable from spira main and may use the round tag', () => {
+  const subs = ([] as string[]).concat(getOidcSubs('ephemeral-ci-ami-build') as any);
+  expect(subs).toContain('repo:DeckDumpster@262905033/spira@1358347130:ref:refs/heads/main');
+  expect(subs).toContain('repo:DeckDumpster@262905033/ephemeral-ci@1371818598:ref:refs/heads/main');
+  const sts = amiBuildStatements();
+  const launch = sts.filter((s: any) => JSON.stringify(s).includes('c7i.2xlarge'));
+  expect(JSON.stringify(launch)).toContain('"round"');
+  expect(JSON.stringify(sts.filter((s) => ([] as string[]).concat(s.Action).includes('ec2:TerminateInstances')))).toContain('round');
+});

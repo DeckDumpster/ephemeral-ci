@@ -522,9 +522,14 @@ export class SpillStack extends cdk.Stack {
     // extra grants are scoped to resources tagged spill:owner=ephemeral-ci.
     const AMI_BUILD_OIDC_SUB =
       'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:ref:refs/heads/main';
+    // The spira repo builds the round-VM AMI (round-ami-build.yml) under this same
+    // role, from main only; its instances and images carry spill:owner=round.
+    const ROUND_AMI_BUILD_OIDC_SUB =
+      'repo:DeckDumpster@262905033/spira@1358347130:ref:refs/heads/main';
+    const SPILL_OWNERS = ['ephemeral-ci', 'round'];
     const amiBuildRole = new iam.Role(this, 'AmiBuildRole', {
       roleName: 'ephemeral-ci-ami-build',
-      assumedBy: oidcPrincipal(AMI_BUILD_OIDC_SUB),
+      assumedBy: oidcPrincipal([AMI_BUILD_OIDC_SUB, ROUND_AMI_BUILD_OIDC_SUB]),
     });
     const spillPolicy = spillRole.node.findChild('DefaultPolicy') as iam.Policy;
     for (const st of spillPolicy.document.toJSON().Statement) {
@@ -539,7 +544,7 @@ export class SpillStack extends cdk.Stack {
       resources: ['arn:aws:ec2:us-west-2:189923011121:instance/*'],
       conditions: {
         StringEquals: {
-          'aws:RequestTag/spill:owner': 'ephemeral-ci',
+          'aws:RequestTag/spill:owner': SPILL_OWNERS,
           'ec2:InstanceType': 'c7i.2xlarge',
         },
       },
@@ -550,7 +555,7 @@ export class SpillStack extends cdk.Stack {
       actions: ['ssm:SendCommand'],
       resources: ['arn:aws:ssm:us-west-2::document/AWS-RunShellScript'],
     }));
-    const ownedResource = { StringEquals: { 'aws:ResourceTag/spill:owner': 'ephemeral-ci' } };
+    const ownedResource = { StringEquals: { 'aws:ResourceTag/spill:owner': SPILL_OWNERS } };
     amiBuildRole.addToPolicy(new iam.PolicyStatement({
       actions: ['ec2:StopInstances', 'ec2:DeregisterImage', 'ec2:DeleteSnapshot'],
       resources: [
@@ -571,7 +576,19 @@ export class SpillStack extends cdk.Stack {
         'arn:aws:ec2:us-west-2::image/*',
         'arn:aws:ec2:us-west-2::snapshot/*',
       ],
-      conditions: { StringEquals: { 'aws:RequestTag/spill:owner': 'ephemeral-ci' } },
+      conditions: { StringEquals: { 'aws:RequestTag/spill:owner': SPILL_OWNERS } },
+    }));
+    // The copied spill grants terminate and command only spill:owner=ephemeral-ci
+    // instances; a round AMI builder carries spill:owner=round.
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:TerminateInstances'],
+      resources: ['arn:aws:ec2:us-west-2:189923011121:instance/*'],
+      conditions: { StringEquals: { 'ec2:ResourceTag/spill:owner': 'round' } },
+    }));
+    amiBuildRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:SendCommand'],
+      resources: ['arn:aws:ec2:us-west-2:189923011121:instance/*'],
+      conditions: { StringEquals: { 'aws:ResourceTag/spill:owner': 'round' } },
     }));
     // DescribeSnapshots has no resource-level permissions.
     amiBuildRole.addToPolicy(new iam.PolicyStatement({
@@ -579,6 +596,89 @@ export class SpillStack extends cdk.Stack {
       resources: ['*'],
     }));
     new cdk.CfnOutput(this, 'AmiBuildRoleArn', { value: amiBuildRole.roleArn });
+
+    // ── Round-VM spill user (spira-round-spill) ─────────────────────────────
+    // The spira round-vm EC2 provider launches c7i instances for round passes
+    // when the hypervisor is full.  A static key was chosen over a role
+    // (design round-ec2-spill-2026-10-10, D1), so this user carries only what
+    // launching and managing tag=round instances needs.  No access key is
+    // created here: the operator creates it after deploy, with MFA.
+    const ACCT_EC2 = 'arn:aws:ec2:us-west-2:189923011121';
+    const roundSpillUser = new iam.User(this, 'RoundSpillUser', {
+      userName: 'spira-round-spill',
+    });
+    const roundOwned = { 'ec2:ResourceTag/spill:owner': 'round' };
+
+    // The instance itself: tag required on create, c7i family only.
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: [`${ACCT_EC2}:instance/*`],
+      conditions: {
+        StringEquals: { 'aws:RequestTag/spill:owner': 'round' },
+        StringLike: { 'ec2:InstanceType': 'c7i.*' },
+      },
+    }));
+    // Network placement: only this stack's subnets and security group.
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: [
+        ...[subnetA, subnetB, subnetC].map((sn) => `${ACCT_EC2}:subnet/${sn.ref}`),
+        `${ACCT_EC2}:security-group/${sg.ref}`,
+      ],
+    }));
+    // Image: only AMIs tagged spill:owner=round.
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: ['arn:aws:ec2:us-west-2::image/*'],
+      conditions: { StringEquals: roundOwned },
+    }));
+    // Companion resources RunInstances creates (spot request included).
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:RunInstances'],
+      resources: [
+        `${ACCT_EC2}:volume/*`,
+        `${ACCT_EC2}:network-interface/*`,
+        `${ACCT_EC2}:spot-instances-request/*`,
+      ],
+    }));
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:CreateTags'],
+      resources: [
+        `${ACCT_EC2}:instance/*`,
+        `${ACCT_EC2}:volume/*`,
+        `${ACCT_EC2}:network-interface/*`,
+      ],
+      conditions: { StringEquals: { 'ec2:CreateAction': 'RunInstances' } },
+    }));
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:TerminateInstances', 'ec2:StopInstances', 'ec2:StartInstances'],
+      resources: [`${ACCT_EC2}:instance/*`],
+      conditions: { StringEquals: roundOwned },
+    }));
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ec2:Describe*'],
+      resources: ['*'],
+    }));
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:SendCommand'],
+      resources: ['arn:aws:ssm:us-west-2::document/AWS-RunShellScript'],
+    }));
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:SendCommand'],
+      resources: [`${ACCT_EC2}:instance/*`],
+      conditions: { StringEquals: { 'aws:ResourceTag/spill:owner': 'round' } },
+    }));
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetCommandInvocation', 'ssm:DescribeInstanceInformation'],
+      resources: ['*'],
+    }));
+    roundSpillUser.addToPolicy(new iam.PolicyStatement({
+      actions: ['iam:PassRole'],
+      resources: [instanceRole.roleArn],
+      conditions: { StringEquals: { 'iam:PassedToService': 'ec2.amazonaws.com' } },
+    }));
+    new cdk.CfnOutput(this, 'RoundSpillUserName', { value: roundSpillUser.userName });
+    new cdk.CfnOutput(this, 'RoundSpillInstanceProfileName', { value: instanceProfile.ref });
 
     // ── CI test role: minimal grants for policy assertions ───────────────────
     // ReadOnlyAccess was the prior grant; it includes ssm:List* which let any
