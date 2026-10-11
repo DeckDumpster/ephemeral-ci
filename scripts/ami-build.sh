@@ -310,7 +310,10 @@ apply_substrate() {
 set -euo pipefail
 
 # ---- runner user (Ubuntu cloud images have no 'runner' user by default) ----
-id runner 2>/dev/null || sudo useradd --system --create-home --shell /bin/bash runner
+# A REGULAR user, like the Proxmox template's: a --system user (uid < 1000) is not
+# given a logind user manager, so /run/user/<uid> and rootless podman's runroot
+# behave differently and the repo's netns store-isolation checks fail.
+id runner 2>/dev/null || sudo useradd --create-home --shell /bin/bash runner
 
 # ---- substrate ----
 printf '%s' "${substrate_b64}" | base64 -d > /tmp/template-substrate.sh
@@ -346,11 +349,13 @@ UNIT
 sudo tee /etc/systemd/system/ephemeral-runner.service >/dev/null <<'UNIT'
 [Unit]
 Description=GitHub Actions ephemeral runner (EC2 spill)
-After=network-online.target
+After=network-online.target user@%U.service
 Requires=network-online.target
+Wants=user@%U.service
 
 [Service]
 User=runner
+Environment=XDG_RUNTIME_DIR=/run/user/%U
 ExecStart=/home/runner/start-runner.sh
 Restart=no
 StandardOutput=journal

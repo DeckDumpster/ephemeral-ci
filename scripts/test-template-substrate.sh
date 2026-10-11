@@ -642,6 +642,16 @@ for f in provision.sh ami-build.sh; do
     else bad "$f builds through template-substrate.sh" "does not reference it in code"; fi
 done
 
+# The spill AMI's runner must give rootless podman the same user-manager and
+# runtime dir the Proxmox template's does (sp-oauh2n).
+_ab="$(grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh")"
+if printf '%s\n' "$_ab" | grep -q 'useradd --system'; then bad "the spill runner is a regular user" "useradd --system gives no user manager"
+else ok "the spill runner is a regular user"; fi
+if printf '%s\n' "$_ab" | grep -q '^Environment=XDG_RUNTIME_DIR=/run/user/%U'; then ok "the spill runner service sets XDG_RUNTIME_DIR"
+else bad "the spill runner service sets XDG_RUNTIME_DIR" "missing"; fi
+if printf '%s\n' "$_ab" | grep -q '^Wants=user@%U.service' && printf '%s\n' "$_ab" | grep -q '^After=.*user@%U.service'; then ok "the spill runner service waits for the user manager"
+else bad "the spill runner service waits for the user manager" "no Wants/After user@%U.service"; fi
+
 echo
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
