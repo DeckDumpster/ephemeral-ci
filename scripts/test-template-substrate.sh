@@ -573,9 +573,9 @@ else ok "TEMPLATE.md has no apt install of Chromium libs"; fi
 # Exact drop-in content, taken by running the function itself.
 _sd_fn="$(sed -n '/^sudoers_content()/,/^}/p' "$SUBSTRATE")"
 _sd_got="$(RUNUSER=runner bash -c "$_sd_fn; sudoers_content")"
-_sd_want='runner ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt'
-if [ "$_sd_got" = "$_sd_want" ]; then ok "sudoers drop-in content is exactly apt-get/apt NOPASSWD"
-else bad "sudoers drop-in content is exactly apt-get/apt NOPASSWD" "got: $_sd_got"; fi
+_sd_want='runner ALL=(ALL) NOPASSWD: ALL'
+if [ "$_sd_got" = "$_sd_want" ]; then ok "sudoers drop-in content is exactly full NOPASSWD sudo"
+else bad "sudoers drop-in content is exactly full NOPASSWD sudo" "got: $_sd_got"; fi
 if has 'install -m 0440 .*"\$SUDOERS_FILE"' && has 'visudo -cf'; then ok "the drop-in is installed 0440 after visudo validation"
 else bad "the drop-in is installed 0440 after visudo validation" "install or visudo step missing"; fi
 if has '^[[:space:]]*check_sudoers$'; then ok "--check verifies the drop-in"

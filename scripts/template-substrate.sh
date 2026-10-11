@@ -370,11 +370,13 @@ check_apt_proxy() {
 
 # THE RUNNER MAY INSTALL PACKAGES. Runner images are general purpose; a repository
 # declares its own dependencies (deckdumpster's deploy/runner-deps.sh) and installs
-# them with `sudo -n apt-get`. The instances are single-job and ephemeral, so this
-# grants apt-get and apt to the runner user and nothing else.
-SUDOERS_FILE=/etc/sudoers.d/ephemeral-ci-runner-apt
+# them with `sudo -n`: apt-get, but also NodeSource's setup script (needs root to
+# write the apt source), `sudo -n true` probes and the like. An apt-only grant made
+# the first EC2 spill fail with "runner-deps: need root to install node". The
+# instances are single-job and ephemeral, so the runner gets full passwordless sudo.
+SUDOERS_FILE=/etc/sudoers.d/ephemeral-ci-runner
 sudoers_content() {
-    printf '%s ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt\n' "$RUNUSER"
+    printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$RUNUSER"
 }
 
 check_sudoers() {
@@ -541,7 +543,7 @@ if [ -n "$(sysctl -n "$APPARMOR_SYSCTL" 2>/dev/null)" ]; then
 fi
 
 if ! check_sudoers 2>/dev/null; then
-    note "granting ${RUNUSER} passwordless apt-get/apt in ${SUDOERS_FILE}"
+    note "granting ${RUNUSER} passwordless sudo in ${SUDOERS_FILE}"
     _sudoers_tmp="$(mktemp)"
     sudoers_content > "$_sudoers_tmp"
     if ! command -v visudo >/dev/null 2>&1 || visudo -cf "$_sudoers_tmp" >/dev/null; then

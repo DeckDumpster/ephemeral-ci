@@ -338,13 +338,14 @@ One consumer's dependency; see the boundary note under "uv". The template carrie
 none of it — the consuming repository installs its own through its declared-deps
 step (deckdumpster: `deploy/runner-deps.sh`) using the passwordless apt below.
 
-### Passwordless apt for the runner — installed by the substrate script
+### Passwordless sudo for the runner — installed by the substrate script
 
 Images carry no repository's packages, so the substrate writes
-`/etc/sudoers.d/ephemeral-ci-runner-apt` granting the runner user `NOPASSWD` for
-`/usr/bin/apt-get` and `/usr/bin/apt` only. A repository's declared-deps step
-(e.g. deckdumpster's `deploy/runner-deps.sh`) installs what it needs with
-`sudo -n apt-get`. Instances are single-job and ephemeral. If per-job apt time
+`/etc/sudoers.d/ephemeral-ci-runner` granting the runner user
+`NOPASSWD: ALL`, the same privilege as the Proxmox runner. An apt-only grant is not
+enough: NodeSource's setup script needs root ("need root to install node"). A
+repository's declared-deps step (e.g. deckdumpster's `deploy/runner-deps.sh`)
+installs what it needs with `sudo -n`. Instances are single-job and ephemeral. If per-job apt time
 matters, the repository should publish its own prebuilt layer, not bake into the image.
 
 ### apt proxy — optional, fails open
