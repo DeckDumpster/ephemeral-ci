@@ -892,13 +892,20 @@ type RStmt = { Action: string | string[]; Resource: unknown; Condition?: any };
 function roundUserStatements(): RStmt[] {
   const userId = Object.keys(template.findResources('AWS::IAM::User', { Properties: { UserName: 'spira-round-spill' } }))[0];
   expect(userId).toBeDefined();
-  return Object.values(template.findResources('AWS::IAM::Policy')).flatMap((p: any) =>
+  return Object.values(template.findResources('AWS::IAM::ManagedPolicy')).flatMap((p: any) =>
     (p.Properties.Users ?? []).some((u: any) => u.Ref === userId) ? p.Properties.PolicyDocument.Statement : []);
 }
 const rHaving = (sts: RStmt[], a: string) => sts.filter((s) => ([] as string[]).concat(s.Action).includes(a));
 
-test('round spill user exists, has no access key and no managed policy', () => {
+test('round spill user exists, has no access key and no inline policy', () => {
   template.resourceCountIs('AWS::IAM::AccessKey', 0);
+  const userId = Object.keys(template.findResources('AWS::IAM::User', { Properties: { UserName: 'spira-round-spill' } }))[0];
+  const inline = Object.values(template.findResources('AWS::IAM::Policy')).filter((p: any) =>
+    (p.Properties.Users ?? []).some((u: any) => u.Ref === userId));
+  expect(inline).toHaveLength(0);
+  const managed = Object.values(template.findResources('AWS::IAM::ManagedPolicy')).filter((p: any) =>
+    (p.Properties.Users ?? []).some((u: any) => u.Ref === userId));
+  expect(managed).toHaveLength(1);
   const users = template.findResources('AWS::IAM::User', { Properties: { UserName: 'spira-round-spill' } });
   expect(Object.keys(users)).toHaveLength(1);
   expect((Object.values(users)[0] as any).Properties.ManagedPolicyArns).toBeUndefined();
@@ -977,4 +984,13 @@ test('ami build role is also assumable from spira main and may use the round tag
   const launch = sts.filter((s: any) => JSON.stringify(s).includes('c7i.2xlarge'));
   expect(JSON.stringify(launch)).toContain('"round"');
   expect(JSON.stringify(sts.filter((s) => ([] as string[]).concat(s.Action).includes('ec2:TerminateInstances')))).toContain('round');
+});
+
+test('round spill managed policy stays within the 6,144-byte managed-policy limit', () => {
+  // Compact JSON of the unresolved template overstates the deployed size
+  // (intrinsics expand to shorter ids), so passing here is conservative.
+  const doc = (Object.values(template.findResources('AWS::IAM::ManagedPolicy'))
+    .find((p: any) => JSON.stringify(p.Properties.Users).includes('RoundSpillUser')) as any)
+    .Properties.PolicyDocument;
+  expect(JSON.stringify(doc).length).toBeLessThanOrEqual(6144);
 });
