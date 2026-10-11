@@ -823,6 +823,25 @@ test('ami build role scopes its build-time grants to spill:owner=ephemeral-ci', 
   expect(describe.length).toBeGreaterThan(0);
 });
 
+test('ami build role grants every action spira round-ami-build.yml calls (sp-xtfbyg)', () => {
+  const sts = amiBuildStatements();
+  const granted = new Set<string>();
+  for (const s of sts) for (const a of ([] as string[]).concat(s.Action)) granted.add(a);
+  const needed = [
+    'ec2:DescribeImages', 'ssm:GetParameter', 'ec2:RunInstances', 'iam:PassRole',
+    'ec2:CreateTags', 'ec2:TerminateInstances', 'ec2:DescribeInstanceStatus',
+    'ec2:DescribeInstances', 'ssm:SendCommand', 'ssm:GetCommandInvocation',
+    'ec2:CreateImage', 's3:PutObject', 's3:DeleteObject',
+  ];
+  for (const a of needed) {
+    const ok = granted.has(a) || granted.has(a.split(':')[0] + ':*') ||
+      [...granted].some((g) => g.endsWith('*') && a.startsWith(g.slice(0, -1)));
+    expect([a, ok]).toEqual([a, true]);
+  }
+  const dis = sts.filter((s) => ([] as string[]).concat(s.Action).includes('ec2:DescribeInstanceStatus'));
+  expect(dis).toHaveLength(1);
+});
+
 test('ami build role holds the launch-and-deliver grants ami-build.sh uses', () => {
   const sts = amiBuildStatements();
   const having = (action: string) =>
