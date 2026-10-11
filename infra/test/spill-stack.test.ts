@@ -994,3 +994,29 @@ test('round spill managed policy stays within the 6,144-byte managed-policy limi
     .Properties.PolicyDocument;
   expect(JSON.stringify(doc).length).toBeLessThanOrEqual(6144);
 });
+
+test('round ami staging bucket is exported, expires objects, and the build role may read and write it', () => {
+  const buckets = template.findResources('AWS::S3::Bucket');
+  expect(Object.keys(buckets)).toHaveLength(1);
+  const [logicalId, bucket] = Object.entries(buckets)[0] as [string, any];
+  expect(bucket.Properties.LifecycleConfiguration.Rules[0]).toMatchObject({
+    Status: 'Enabled',
+    ExpirationInDays: 1,
+  });
+  expect(bucket.Properties.PublicAccessBlockConfiguration.BlockPublicAcls).toBe(true);
+  const outs = template.toJSON().Outputs;
+  expect(outs.RoundAmiStagingBucket.Value).toEqual({ Ref: logicalId });
+  expect(outs.RoundAmiBaseParam.Value).toBe(
+    '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id',
+  );
+  const sts = amiBuildStatements();
+  const actions = new Set<string>();
+  for (const s of sts) {
+    if (JSON.stringify((s as any).Resource).includes(logicalId)) {
+      for (const a of ([] as string[]).concat(s.Action)) actions.add(a);
+    }
+  }
+  expect(actions.has('s3:PutObject')).toBe(true);
+  expect(actions.has('s3:GetObject*') || actions.has('s3:GetObject')).toBe(true);
+  expect(sts.some((s: any) => ([] as string[]).concat(s.Action).includes('ssm:GetParameter'))).toBe(true);
+});

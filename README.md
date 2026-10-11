@@ -97,6 +97,24 @@ The spill role's OIDC trust currently covers ephemeral-ci, pokedumpster,
 household, spira, and deckdumpster. Per-repository setup is required before spill
 works; see "One-time setup" below.
 
+#### Round AMI build (consumer variables)
+
+A repository that builds its round-VM AMI with the spill role (spira's
+`round-ami-build.yml`) sets these repository variables from the
+`EphemeralCiSpill` stack outputs (`aws cloudformation describe-stacks`; region
+`us-west-2`):
+
+| Variable | Source |
+| --- | --- |
+| `ROUND_AMI_REGION` | `us-west-2` |
+| `ROUND_AMI_ROLE_ARN` | output `AmiBuildRoleArn` |
+| `ROUND_AMI_SUBNET` | one entry of output `SubnetIds` |
+| `ROUND_AMI_SECURITY_GROUP` | output `SecurityGroupId` |
+| `ROUND_AMI_INSTANCE_PROFILE` | output `InstanceProfileName` |
+| `ROUND_AMI_INSTANCE_TYPE` | `c7i.2xlarge` (the only type the role may launch) |
+| `ROUND_AMI_BASE_PARAM` | output `RoundAmiBaseParam` |
+| `ROUND_AMI_STAGING_BUCKET` | output `RoundAmiStagingBucket` (objects expire after one day) |
+
 #### Joining the tailnet (`spill-tailnet`)
 
 By default a spill runner sits in a public subnet with internet egress and no
