@@ -540,7 +540,7 @@ echo
 echo "runner images are general purpose; the runner may install its repository's deps:"
 
 # No repository's packages in the shared substrate (sp-kfadex reverses sp-4tmf61).
-for pkg in libnss3 libatk1.0-0 libgbm1 libgl1 libasound2 libpango-1.0-0 chromium; do
+for pkg in libnss3 libatk1.0-0 libgbm1 libgl1 libasound2 libpango-1.0-0 chromium fonts-liberation; do
     if printf '%s' "$PKG_ARRAYS" | grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))"; then
         bad "the list does not name $pkg" "repo-specific package in the shared substrate"
     else
@@ -552,6 +552,21 @@ if printf '%s' "$PKG_ARRAYS" | grep -q '^UI_PKGS='; then
 else
     ok "no UI_PKGS array"
 fi
+
+# Absence over the whole code, not only the arrays: no installer line may name them.
+for pkg in libnss3 libatk1.0-0 libgbm1 libgl1 fonts-liberation; do
+    if has "(^|[^A-Za-z0-9.+-])${pkg}([^A-Za-z0-9.+-]|\$)"; then bad "substrate code never names $pkg" "found in code"
+    else ok "substrate code never names $pkg"; fi
+done
+
+# Doc lint: TEMPLATE.md must not tell a human to bake a repository's packages.
+_doc="$SCRIPT_DIR/../docs/TEMPLATE.md"
+if grep -qi 'before baking the template' "$_doc" && grep -qE 'apt(-get)? install.*(libnss3|libatk|libgbm|libgl1|fonts-liberation)|^[[:space:]]+libnss3' "$_doc"; then
+    bad "TEMPLATE.md does not instruct baking repo packages" "found 'before baking the template' with an apt install of a repo package"
+else ok "TEMPLATE.md does not instruct baking repo packages"; fi
+if grep -qE 'apt(-get)? install.*(libnss3|libatk1\.0-0|libgbm1|libgl1)' "$_doc"; then
+    bad "TEMPLATE.md has no apt install of Chromium libs" "found"
+else ok "TEMPLATE.md has no apt install of Chromium libs"; fi
 
 # Exact drop-in content, taken by running the function itself.
 _sd_fn="$(sed -n '/^sudoers_content()/,/^}/p' "$SUBSTRATE")"

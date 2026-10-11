@@ -332,33 +332,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 itself. Install as the runner user so `~/.local/bin/uv` is on `PATH`.
 Confirm with `uv --version`.
 
-### Playwright / Chromium system libraries — NOT substrate
+### Playwright / Chromium system libraries and fonts — NOT substrate
 
-Also one consumer's dependency; see the boundary note under "uv". The same applies
-to metric-compatible fonts (`fonts-liberation`): a runner without them renders form
-controls through a fallback face and turns a visual-regression suite red in a way
-that looks like a CSS change. That is real, and it belongs to the repository that
-does visual regression.
-
-
-`deploy/ci.sh` runs:
-```bash
-uv run shot-scraper install
-```
-This downloads the Chromium binary but **not** its shared-library
-dependencies. Those must be present in the OS image. Install them before
-baking the template:
-
-```bash
-sudo apt install -y \
-    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-    libgbm1 libasound2 libpango-1.0-0 libpangocairo-1.0-0
-```
-
-Without these, `shot-scraper install` succeeds but the first Playwright
-launch fails with `error while loading shared libraries: libnss3.so`.
-That failure happens mid-suite, long after everything looks fine.
+One consumer's dependency; see the boundary note under "uv". The template carries
+none of it — the consuming repository installs its own through its declared-deps
+step (deckdumpster: `deploy/runner-deps.sh`) using the passwordless apt below.
 
 ### Passwordless apt for the runner — installed by the substrate script
 
