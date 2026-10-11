@@ -854,6 +854,40 @@ else
     fi
 fi
 
+
+# ---------------------------------------------------------------------------
+# wait_for_ami: pending N times then available passes; failed fails at once
+# ---------------------------------------------------------------------------
+_wd="$(mktemp -d)"
+cat > "${_wd}/aws" <<'STUB'
+#!/usr/bin/env bash
+n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$STUB_COUNT"
+if [ "$n" -le "${STUB_PENDING:-0}" ]; then printf 'pending'; else printf '%s' "$STUB_FINAL"; fi
+STUB
+chmod +x "${_wd}/aws"
+_run_wait() {  # <pending> <final> [guard]
+    : > "${_wd}/count"
+    PATH="${_wd}:${PATH}" STUB_COUNT="${_wd}/count" STUB_PENDING="$1" STUB_FINAL="$2"         AMI_POLL_SECONDS=0 AMI_WAIT_SECONDS="${3:-2700}" REGION=us-east-1         GITHUB_STEP_SUMMARY="${_wd}/summary"         bash -c '. "$1"; note() { echo "$*" >&2; }; wait_for_ami ami-x' _ "${SCRIPT_DIR}/ami-wait.sh" 2>&1
+}
+if _run_wait 4 available >/dev/null && [ "$(cat "${_wd}/count")" = 5 ] && grep -q 'ami-x availability latency' "${_wd}/summary"; then
+    ok "wait_for_ami: pending x4 then available passes; latency in job summary"
+else
+    ko "wait_for_ami: pending then available did not pass"
+fi
+_wout="$(_run_wait 2 failed)" && _wrc=0 || _wrc=$?
+if [ "$_wrc" -ne 0 ] && [ "$(cat "${_wd}/count")" = 3 ] && grep -q 'failed' <<<"$_wout"; then
+    ok "wait_for_ami: failed state fails immediately"
+else
+    ko "wait_for_ami: failed state did not fail at once (rc=$_wrc)"
+fi
+_wout="$(_run_wait 99999 available -1)" && _wrc=0 || _wrc=$?
+if [ "$_wrc" -ne 0 ] && grep -q 'still "pending"' <<<"$_wout"; then
+    ok "wait_for_ami: hang guard names the image and last state"
+else
+    ko "wait_for_ami: hang guard message wrong (rc=$_wrc): $_wout"
+fi
+rm -rf "$_wd"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
