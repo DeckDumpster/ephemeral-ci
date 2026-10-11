@@ -73,25 +73,6 @@ for pkg in podman uidmap fuse-overlayfs slirp4netns passt catatonit; do
     fi
 done
 
-# THE BROWSER-TIER LIBRARIES. The spill AMI is built from this script alone, so a
-# package the Proxmox template has by hand and this list lacks is a package the AMI
-# lacks (sp-4tmf61: deckdumpster's runner-deps failed on libgl1 and the chromium
-# libraries). Both the install and the --check path must read the one list.
-for pkg in libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
-           libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
-           libpango-1.0-0 libpangocairo-1.0-0 libgl1; do
-    if printf '%s' "$PKG_ARRAYS" | grep -E '^UI_PKGS=' | grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))"; then
-        ok "UI_PKGS names $pkg"
-    else
-        bad "UI_PKGS names $pkg" "absent from UI_PKGS; the spill AMI would lack it"
-    fi
-done
-if [ "$(printf '%s' "$JOINED" | grep -c '"${UI_PKGS\[@\]}"')" -ge 2 ]; then
-    ok "UI_PKGS is both installed and checked"
-else
-    bad "UI_PKGS is both installed and checked" "apt_install and check_pkgs must both take it"
-fi
-
 # Rust links through cc, and so do native Python wheels; the failure reads as a
 # broken language toolchain rather than a missing Debian package.
 if printf '%s' "$PKG_ARRAYS" | grep -qE '(\(|[[:space:]])build-essential([[:space:]]|\))'; then
@@ -554,6 +535,41 @@ else
 fi
 
 rm -rf "$_absent_dir"
+
+echo
+echo "runner images are general purpose; the runner may install its repository's deps:"
+
+# No repository's packages in the shared substrate (sp-kfadex reverses sp-4tmf61).
+for pkg in libnss3 libatk1.0-0 libgbm1 libgl1 libasound2 libpango-1.0-0 chromium; do
+    if printf '%s' "$PKG_ARRAYS" | grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))"; then
+        bad "the list does not name $pkg" "repo-specific package in the shared substrate"
+    else
+        ok "the list does not name $pkg"
+    fi
+done
+if printf '%s' "$PKG_ARRAYS" | grep -q '^UI_PKGS='; then
+    bad "no UI_PKGS array" "UI_PKGS is back"
+else
+    ok "no UI_PKGS array"
+fi
+
+# Exact drop-in content, taken by running the function itself.
+_sd_fn="$(sed -n '/^sudoers_content()/,/^}/p' "$SUBSTRATE")"
+_sd_got="$(RUNUSER=runner bash -c "$_sd_fn; sudoers_content")"
+_sd_want='runner ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt'
+if [ "$_sd_got" = "$_sd_want" ]; then ok "sudoers drop-in content is exactly apt-get/apt NOPASSWD"
+else bad "sudoers drop-in content is exactly apt-get/apt NOPASSWD" "got: $_sd_got"; fi
+if has 'install -m 0440 .*"\$SUDOERS_FILE"' && has 'visudo -cf'; then ok "the drop-in is installed 0440 after visudo validation"
+else bad "the drop-in is installed 0440 after visudo validation" "install or visudo step missing"; fi
+if has '^[[:space:]]*check_sudoers$'; then ok "--check verifies the drop-in"
+else bad "--check verifies the drop-in" "check_sudoers not in run_checks"; fi
+
+# Both images are built by this one script: the Proxmox template (provision.sh)
+# and the spill AMI (ami-build.sh), so the drop-in is identical on both.
+for f in provision.sh ami-build.sh; do
+    if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/$f" | grep -q 'template-substrate.sh'; then ok "$f builds through template-substrate.sh"
+    else bad "$f builds through template-substrate.sh" "does not reference it in code"; fi
+done
 
 echo
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
