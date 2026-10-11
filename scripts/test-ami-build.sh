@@ -707,7 +707,7 @@ fi
 # ---------------------------------------------------------------------------
 if [ "$_ssm_online" -eq 1 ]; then
     # Extract the package arrays from template-substrate.sh by parsing them.
-    substrate_pkgs="$(grep -E '^(PODMAN_PKGS|BUILD_PKGS|BASE_PKGS)=\(' \
+    substrate_pkgs="$(grep -E '^(PODMAN_PKGS|BUILD_PKGS|BASE_PKGS|UI_PKGS)=\(' \
         "${SCRIPT_DIR}/template-substrate.sh" \
         | grep -oP '\(.*?\)' | tr -d '()' | tr ' ' '\n' | grep -v '^$' \
         | sort -u | tr '\n' ' ')" || substrate_pkgs=""

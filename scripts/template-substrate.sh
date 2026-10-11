@@ -22,9 +22,8 @@
 #
 # WHAT BELONGS HERE, AND WHAT DOES NOT. This file is the SUBSTRATE: properties of
 # the machine that every consumer needs and no consumer should have to know about.
-# A dependency of one repository's suite -- uv, Chromium's shared libraries, a Rust
-# toolchain, metric-compatible fonts for visual regression -- belongs in that
-# repository's own runner-deps check, which declares what IS its own. The test for
+# A dependency of one repository's suite -- uv, a Rust toolchain, metric-compatible fonts for visual
+# regression -- belongs in that repository's own runner-deps check, which declares what IS its own. The test for
 # the boundary: if a second repository would be surprised to need it, it is not
 # substrate.
 set -uo pipefail
@@ -202,6 +201,16 @@ BUILD_PKGS=(build-essential pkg-config)
 
 # The runner itself and the scripts every consumer's CI calls directly.
 BASE_PKGS=(git curl ca-certificates jq)
+
+# THE BROWSER-TIER LIBRARIES, IN THE SUBSTRATE BECAUSE THE TWO BUILDS MUST NOT DRIFT.
+# The Proxmox template had these installed by hand while the spill AMI, built from
+# this script alone, did not: an EC2-spilled deckdumpster gate died in its
+# runner-deps check ("need root to install: libatk1.0-0t64 ... libgl1") while the
+# same gate passed locally. This file is the one list both builds read -- the
+# template is built by running it, and ami-build.sh ships it to the AMI builder --
+# so a package added here reaches both. Names are the pre-t64 names; apt_install and
+# check_pkgs fall back to the ${p}t64 rename on Ubuntu 24.04.
+UI_PKGS=(libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libpangocairo-1.0-0 libgl1)
 
 check_podman() {
     command -v podman >/dev/null 2>&1 || { lack podman "every consumer runs containers"; return 1; }
@@ -384,7 +393,7 @@ run_checks() {
     MISSING=()
     check_podman
     check_netns_backend
-    check_pkgs "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}"
+    check_pkgs "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" "${UI_PKGS[@]}"
     check_subid
     check_linger
     check_userns
@@ -428,7 +437,7 @@ if command -v systemctl >/dev/null 2>&1; then
     done
 fi
 
-apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" || exit 1
+apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" "${UI_PKGS[@]}" || exit 1
 
 if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null \
    || ! grep -q "^${RUNUSER}:" /etc/subgid 2>/dev/null; then

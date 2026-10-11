@@ -249,8 +249,7 @@ now `scripts/template-substrate.sh`; the rationale stays here.
 
 **What the substrate covers, and what it deliberately does not.** It is the set of
 machine properties *every* consumer needs and *no* consumer should have to know
-about. A dependency of one repository's suite — `uv`, Chromium's shared libraries,
-a Rust toolchain, metric-compatible fonts for visual regression — belongs in that
+about. A dependency of one repository's suite — `uv`, a Rust toolchain, metric-compatible fonts for visual regression — belongs in that
 repository's own `runner-deps` check. The test for the boundary: if a second
 repository would be surprised to need it, it is not substrate.
 
@@ -332,33 +331,21 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 itself. Install as the runner user so `~/.local/bin/uv` is on `PATH`.
 Confirm with `uv --version`.
 
-### Playwright / Chromium system libraries — NOT substrate
+### Playwright / Chromium system libraries — installed by the substrate script
 
-Also one consumer's dependency; see the boundary note under "uv". The same applies
-to metric-compatible fonts (`fonts-liberation`): a runner without them renders form
-controls through a fallback face and turns a visual-regression suite red in a way
-that looks like a CSS change. That is real, and it belongs to the repository that
-does visual regression.
+Listed in `UI_PKGS` in `scripts/template-substrate.sh`, together with `libgl1`.
+They were once installed on the Proxmox template by hand while the spill AMI,
+built from the script alone, lacked them, so an EC2-spilled deckdumpster gate
+failed in `deploy/runner-deps.sh` while the same gate passed locally (sp-4tmf61).
+The template build and `ami-build.sh` now read the one list, so they cannot drift.
+Do not install these by hand: add them to `UI_PKGS`.
 
+`uv run shot-scraper install` downloads the Chromium binary but **not** its
+shared-library dependencies; without them the first Playwright launch fails
+mid-suite with `error while loading shared libraries: libnss3.so`.
 
-`deploy/ci.sh` runs:
-```bash
-uv run shot-scraper install
-```
-This downloads the Chromium binary but **not** its shared-library
-dependencies. Those must be present in the OS image. Install them before
-baking the template:
-
-```bash
-sudo apt install -y \
-    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-    libgbm1 libasound2 libpango-1.0-0 libpangocairo-1.0-0
-```
-
-Without these, `shot-scraper install` succeeds but the first Playwright
-launch fails with `error while loading shared libraries: libnss3.so`.
-That failure happens mid-suite, long after everything looks fine.
+Metric-compatible fonts (`fonts-liberation`) remain a visual-regression
+repository's own concern.
 
 ### git, curl, jq — installed by the substrate script
 
