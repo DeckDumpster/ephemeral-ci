@@ -560,11 +560,13 @@ for pkg in libnss3 libatk1.0-0 libgbm1 libgl1 fonts-liberation; do
 done
 
 # Doc lint: TEMPLATE.md must not tell a human to bake a repository's packages.
-_doc="$SCRIPT_DIR/../docs/TEMPLATE.md"
-if grep -qi 'before baking the template' "$_doc" && grep -qE 'apt(-get)? install.*(libnss3|libatk|libgbm|libgl1|fonts-liberation)|^[[:space:]]+libnss3' "$_doc"; then
+# Wrapped lines and backslash continuations are folded first: the phrase and the
+# package list both wrap in the prose that this lint exists to catch.
+_doc="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$SCRIPT_DIR/../docs/TEMPLATE.md" | tr '\n' ' ' | tr -s ' ')"
+if printf '%s' "$_doc" | grep -qi 'before baking the template' && printf '%s' "$_doc" | grep -qE 'apt(-get)? install.*(libnss3|libatk|libgbm|libgl1|fonts-liberation)'; then
     bad "TEMPLATE.md does not instruct baking repo packages" "found 'before baking the template' with an apt install of a repo package"
 else ok "TEMPLATE.md does not instruct baking repo packages"; fi
-if grep -qE 'apt(-get)? install.*(libnss3|libatk1\.0-0|libgbm1|libgl1)' "$_doc"; then
+if printf '%s' "$_doc" | grep -qE 'apt(-get)? install.*(libnss3|libatk1\.0-0|libgbm1|libgl1)'; then
     bad "TEMPLATE.md has no apt install of Chromium libs" "found"
 else ok "TEMPLATE.md has no apt install of Chromium libs"; fi
 
