@@ -62,6 +62,28 @@ cur=$(cat /proc/sys/kernel/threads-max 2>/dev/null || echo 0)
 [ "$cur" -ge "$MIN_THREADS_MAX" ] \
     || fail "kernel.threads-max is $cur, need >= $MIN_THREADS_MAX; refusing to register"
 
+# ROOTLESS PODMAN NEEDS THE RUNNER'S OWN USER SESSION. This script runs as a
+# system unit (User=runner), so nothing hands it XDG_RUNTIME_DIR or a user bus;
+# podman then depends on whatever it can guess, and "podman info fails" names
+# neither. Set them from the real uid, make sure the user manager is up, and
+# prove podman starts BEFORE registering, so a runner that cannot run a
+# container never appears in the pool (law-fixed-when-a-real-test-starts). run.sh
+# inherits these, so jobs see the same session.
+RUNNER_UID=$(id -u)
+export XDG_RUNTIME_DIR="/run/user/${RUNNER_UID}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    sudo -n loginctl enable-linger "$(id -un)" 2>/dev/null
+    sudo -n systemctl start "user@${RUNNER_UID}.service" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -d "$XDG_RUNTIME_DIR" ] && break
+        sleep 1
+    done
+fi
+[ -d "$XDG_RUNTIME_DIR" ] || fail "$XDG_RUNTIME_DIR does not exist (user manager not running); refusing to register"
+podman_err=$(podman info 2>&1 >/dev/null) \
+    || fail "podman info failed as $(id -un) with XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR: $podman_err; refusing to register"
+
 # RUNNER_URL is the ORGANIZATION url, because the token is an org registration
 # token. --runnergroup is what then keeps that runner usable by one repository.
 # Without it the runner joins the Default group, which is visible to every
