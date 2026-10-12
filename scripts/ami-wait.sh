@@ -43,3 +43,13 @@ wait_for_ami() {
         sleep "$AMI_POLL_SECONDS"
     done
 }
+
+# sha256 over every file whose content shapes the AMI: the substrate and the
+# builder that wraps it. Tagged on the AMI as substrate-sha and recomputed by
+# provision.sh, so an AMI built before either changed is refused as stale.
+# (A change to ami-build.sh alone, sp-oauh2n, left the old hash valid and the
+# old image in service.)
+ami_inputs_sha() {
+    local d="$1"
+    cat "$d/template-substrate.sh" "$d/ami-build.sh" | sha256sum | cut -d' ' -f1
+}
