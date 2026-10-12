@@ -81,8 +81,14 @@ if [ ! -d "$XDG_RUNTIME_DIR" ]; then
     done
 fi
 [ -d "$XDG_RUNTIME_DIR" ] || fail "$XDG_RUNTIME_DIR does not exist (user manager not running); refusing to register"
-podman_err=$(podman info 2>&1 >/dev/null) \
-    || fail "podman info failed as $(id -un) with XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR: $podman_err; refusing to register"
+# The template stays general: podman is installed by each job's own runner-deps,
+# so its absence here is not a fault. A podman that IS installed must work.
+if command -v podman >/dev/null 2>&1; then
+    podman_err=$(podman info 2>&1 >/dev/null) \
+        || fail "podman info failed as $(id -un) with XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR: $podman_err; refusing to register"
+else
+    echo "podman not installed on this template; runner-deps provides it, skipping the pre-register check"
+fi
 
 # RUNNER_URL is the ORGANIZATION url, because the token is an org registration
 # token. --runnergroup is what then keeps that runner usable by one repository.
