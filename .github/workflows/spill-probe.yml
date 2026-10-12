@@ -265,6 +265,9 @@ jobs:
       # and not in that repo's first spilled CI job.
       - uses: actions/checkout@v4
         with:
+          path: ephemeral-ci
+      - uses: actions/checkout@v4
+        with:
           repository: ${{ github.repository_owner }}/spira
           token: ${{ secrets.RUNNER_REG_PAT }}
           path: consumers/spira
@@ -279,25 +282,39 @@ jobs:
           token: ${{ secrets.RUNNER_REG_PAT }}
           path: consumers/deckdumpster
 
+      # Each path is the one that repo's own CI runs (its ci.yml / gate.yml
+      # "Host dependencies" step); spira keeps its script under spira/, the others
+      # under deploy/. Every step runs even when an earlier one fails, and the
+      # aggregate step below gives one verdict naming each repo.
       - name: runner-deps (spira)
+        id: deps-spira
+        continue-on-error: true
         working-directory: consumers/spira
-        run: bash deploy/runner-deps.sh
+        run: bash spira/runner-deps.sh
       - name: runner-deps (pokedumpster)
+        id: deps-pokedumpster
+        continue-on-error: true
         working-directory: consumers/pokedumpster
         run: bash deploy/runner-deps.sh
       - name: runner-deps (deckdumpster)
+        id: deps-deckdumpster
+        continue-on-error: true
         working-directory: consumers/deckdumpster
         run: bash deploy/runner-deps.sh
+
+      - name: runner-deps verdict
+        if: always()
+        env:
+          SPIRA: ${{ steps.deps-spira.outcome }}
+          POKEDUMPSTER: ${{ steps.deps-pokedumpster.outcome }}
+          DECKDUMPSTER: ${{ steps.deps-deckdumpster.outcome }}
+        run: bash ephemeral-ci/scripts/spill-probe-verdict.sh spira="$SPIRA" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
 
       # runner-deps proves the packages exist; only a test that starts proves
       # the repo can begin work on this image. Each step runs the repo's own
       # entry point and passes the moment the repo's OWN output says its first
       # test began, then stops it. A bounded timeout per repo; a command that
       # exits or stalls before the marker fails the probe, and promote with it.
-      - uses: actions/checkout@v4
-        with:
-          path: ephemeral-ci
-
       - name: first test starts (spira)
         working-directory: consumers/spira
         env:
@@ -346,6 +363,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - uses: actions/checkout@v4
+
       - name: File the P0
         env:
           GH_TOKEN: ${{ github.token }}
@@ -354,9 +373,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           tail="$(gh run view "${{ github.run_id }}" --log-failed 2>&1 | tail -40 || true)"
-          printf 'Spill AMI %s FAILED its probe and was NOT promoted.\n\nRun: %s\n\nLog tail:\n```\n%s\n```\n' \
-            "$AMI" "$RUN_URL" "$tail" \
-            | gh issue create --title "P0: spill AMI ${AMI} failed its probe" --label P0 --body-file -
+          bash scripts/spill-probe-report.sh "$AMI" "$RUN_URL" "$tail"
 
   # Terminates the EC2 instance regardless of earlier job outcomes.
   # if: always() ensures this runs even when provision, watchdog, guard, or
