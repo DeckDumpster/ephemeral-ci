@@ -11,7 +11,8 @@ name: EC2 spill probe
 # Triggers: the "Build spill AMI" workflow completing successfully, and on
 # demand. DO NOT add push:, pull_request:, or schedule: triggers. A probe that
 # fires on every commit spends money automatically; this one fires once per AMI.
-# Target wall: under 15 minutes from AMI build success to verdict.
+# Target wall: under 15 minutes from AMI build success to verdict when the
+# registry holds the test image; a cold image build is bounded by verify's 30.
 
 on:
   workflow_run:
@@ -202,7 +203,7 @@ jobs:
   verify:
     needs: [resolve, provision, watchdog]
     runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Verify runner is operational
         run: uname -a
@@ -313,26 +314,43 @@ jobs:
       # runner-deps proves the packages exist; only a test that starts proves
       # the repo can begin work on this image. Each step runs the repo's own
       # entry point and passes the moment the repo's OWN output says its first
-      # test began, then stops it. A bounded timeout per repo; a command that
-      # exits or stalls before the marker fails the probe, and promote with it.
+      # test began, then stops it. A command that exits or stalls before the
+      # marker fails that step. Every step runs even when an earlier one fails,
+      # and the verdict step below names each repo, so one repo's failure cannot
+      # hide whether the others started.
+      #
+      # Spira's path is its gate's: published release (carries testenv), test
+      # image, then testenv's own suite-start line. The 900 s is sized to an
+      # image pull, or a cold build when the registry has no image.
       - name: first test starts (spira)
+        id: first-spira
+        continue-on-error: true
         working-directory: consumers/spira
         env:
-          FIRST_TEST_CMD: ${{ vars.SPILL_PROBE_SPIRA_TEST_CMD }}
-          FIRST_TEST_MARKER: ${{ vars.SPILL_PROBE_SPIRA_TEST_MARKER }}
-        run: |
-          test -n "$FIRST_TEST_CMD" || { echo "ERROR: vars.SPILL_PROBE_SPIRA_TEST_CMD is not set (testenv up + first suite)"; exit 1; }
-          bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" spira 240 "$FIRST_TEST_MARKER" -- bash -c "$FIRST_TEST_CMD"
+          GH_TOKEN: ${{ secrets.RUNNER_REG_PAT }}
+        run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" spira 900 'running [0-9]+ suite\(s\)' -- bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-spira.sh" "$PWD"
       - name: first test starts (pokedumpster)
+        id: first-pokedumpster
+        continue-on-error: true
         working-directory: consumers/pokedumpster
         env:
           INSTANCE: ci-spill-probe
         run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" pokedumpster 240 '^==> .*(self-test|_test\.sh|cargo test)' -- bash deploy/ci.sh
       - name: first test starts (deckdumpster)
+        id: first-deckdumpster
+        continue-on-error: true
         working-directory: consumers/deckdumpster
         env:
           INSTANCE: ci-spill-probe
         run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" deckdumpster 240 '^==> Run unit tests' -- bash deploy/ci.sh
+
+      - name: first test verdict
+        if: always()
+        env:
+          SPIRA: ${{ steps.first-spira.outcome }}
+          POKEDUMPSTER: ${{ steps.first-pokedumpster.outcome }}
+          DECKDUMPSTER: ${{ steps.first-deckdumpster.outcome }}
+        run: bash ephemeral-ci/scripts/spill-probe-verdict.sh --what "first test" spira="$SPIRA" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
 
   # Only a passing probe tags the AMI spill:probe=passed, which is what
   # provision.sh requires. Re-sending spill:owner satisfies the AmiBuildRole's
