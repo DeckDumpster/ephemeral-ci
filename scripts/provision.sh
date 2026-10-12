@@ -469,6 +469,17 @@ SPILL_TAILNET="${SPILL_TAILNET:-false}"
 #                       AMI before it is promoted. The substrate-sha check still
 #                       applies.
 SPILL_AMI_ID="${SPILL_AMI_ID:-}"
+#   SPILL_MARKET        on-demand | spot (default on-demand). A spot instance can
+#                       be reclaimed mid-job, and the job then ends as an
+#                       ordinary red with no defect behind it (sp-vh7mju: run
+#                       38285573902, Server.SpotInstanceTermination). A spilled
+#                       job is usually a merge gate, so on-demand is the default;
+#                       spot is for a caller whose work is retryable.
+SPILL_MARKET="${SPILL_MARKET:-on-demand}"
+case "$SPILL_MARKET" in
+    on-demand|spot) ;;
+    *) printf 'provision.sh: SPILL_MARKET=%s must be on-demand or spot\n' "$SPILL_MARKET" >&2; exit 1 ;;
+esac
 SPILL_TAILNET_WAIT_SECONDS="${SPILL_TAILNET_WAIT_SECONDS:-90}"
 
 # Prints "<total_mib> <total_cpus> <alloc_mib> <template_mib> <alloc_cpus> <template_cpus>"
@@ -712,7 +723,8 @@ ec2_find_ami() {
     printf '%s' "$ami"
 }
 
-# Launch a spot instance (on-demand fallback on capacity error).
+# Launch an on-demand instance, or a spot one when SPILL_MARKET=spot
+# (on-demand fallback on capacity error).
 # Receives the AMI id and the per-run vmtoken; tags the instance with the
 # vmtoken so the instance role's IAM condition can bind parameter access.
 #
@@ -729,7 +741,9 @@ ec2_launch() {
     IFS=',' read -ra subnets <<< "$SPILL_SUBNET_IDS"
 
     # Spot pass: try each AZ; advance on capacity shortage, abort on other errors.
+    # Skipped unless the caller opted in (SPILL_MARKET=spot).
     for subnet in "${subnets[@]}"; do
+        [ "$SPILL_MARKET" = "spot" ] || break
         if iid="$(aws ec2 run-instances \
                        --region "$SPILL_REGION" \
                        --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
@@ -761,7 +775,11 @@ ec2_launch() {
     done
 
     # On-demand pass: same per-AZ loop.
-    printf 'provision.sh: spot attempts exhausted; retrying as on-demand\n' >&2
+    if [ "$SPILL_MARKET" = "spot" ]; then
+        printf 'provision.sh: spot attempts exhausted; retrying as on-demand\n' >&2
+    else
+        printf 'provision.sh: launching on-demand (SPILL_MARKET=on-demand; a spot reclaim would fail the job as a red)\n' >&2
+    fi
     for subnet in "${subnets[@]}"; do
         if iid="$(aws ec2 run-instances \
                        --region "$SPILL_REGION" \

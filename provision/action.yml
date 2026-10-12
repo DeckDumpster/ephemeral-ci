@@ -168,6 +168,14 @@ inputs:
       EC2 spill probe sets it, to test a fresh AMI before promoting it.
     required: false
     default: ''
+  spill-market:
+    description: >-
+      "on-demand" (default) or "spot" for a spilled EC2 runner. Spot can be
+      reclaimed mid-job, which fails the job as an ordinary red with no defect
+      behind it, so a merge gate must stay on-demand. Set "spot" only for work
+      that is safe to retry. No effect on the Proxmox path.
+    required: false
+    default: 'on-demand'
   spill-tailnet:
     description: >-
       "true" lets an EC2 spill runner join the tailnet as tag:round-vm for the
@@ -295,6 +303,7 @@ runs:
         SPILL_AFTER_SECONDS: ${{ inputs.spill-after-seconds }}
         SPILL_MAX_INSTANCES: ${{ inputs.spill-max-instances }}
         SPILL_TAILNET: ${{ inputs.spill-tailnet }}
+        SPILL_MARKET: ${{ inputs.spill-market }}
         SPILL_AMI_ID: ${{ inputs.spill-ami-id }}
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
         TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}
@@ -379,7 +388,8 @@ runs:
 
     # Emit a job summary note when an EC2 instance was launched so the cost
     # is visible in the Actions UI. On-demand c7i.2xlarge in us-west-2 is
-    # roughly $0.40/hr; spot is typically half that.  Teardown must terminate
+    # roughly $0.40/hr; spot is typically half that but is opt-in (spill-market),
+    # because a reclaim fails the job as a red.  Teardown must terminate
     # the instance; if teardown is skipped the instance runs until its runner
     # service exits (configured with --ephemeral).
     - name: Note EC2 spill cost
@@ -391,4 +401,5 @@ runs:
         if [ -n "${{ steps.provision.outputs.tailnet }}" ]; then
           echo "Tailnet: \`${{ steps.provision.outputs.tailnet }}\` (tag:round-vm)." >> "$GITHUB_STEP_SUMMARY"
         fi
+        echo "Market: \`${{ inputs.spill-market || 'on-demand' }}\`." >> "$GITHUB_STEP_SUMMARY"
         echo "Instance type: \`${{ inputs.instance-type || 'c7i.2xlarge' }}\` — ensure teardown terminates it to avoid ongoing cost." >> "$GITHUB_STEP_SUMMARY"
