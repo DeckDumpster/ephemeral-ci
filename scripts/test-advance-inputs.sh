@@ -122,6 +122,82 @@ else
     _fail "unchanged action was rejected"
 fi
 
+
+# ── Interface classes beyond new inputs ───────────────────────────────────────
+# Each breaking class is a positive control (must be refused); the safe classes
+# must pass and say so on stdout.
+write_cand() {  # write_cand FILE INPUTS_YAML OUTPUTS_YAML
+    printf 'name: candidate action\ninputs:\n%s\noutputs:\n%s\nruns:\n  using: composite\n  steps: []\n' "$2" "$3" > "$1"
+}
+BASE_IN='  existing-required:
+    required: true
+  existing-optional:
+    required: false
+    default: ""'
+write_cand "$WORK/base.yml" "$BASE_IN" "  vmid:
+    description: id"
+
+expect_refused() {  # expect_refused LABEL FILE PATTERN
+    local err
+    if err=$(bash "$CHECK" "$WORK/base.yml" "$2" 2>&1 >/dev/null); then
+        _fail "$1 was not refused"
+    elif grep -q "$3" <<<"$err"; then
+        _pass "$1 is refused"
+    else
+        _fail "$1 refused without naming it: $err"
+    fi
+}
+expect_passes() {  # expect_passes LABEL FILE PATTERN
+    local out
+    if out=$(bash "$CHECK" "$WORK/base.yml" "$2" 2>/dev/null) && grep -q "$3" <<<"$out"; then
+        _pass "$1 passes with a note"
+    else
+        _fail "$1 did not pass with a note: $out"
+    fi
+}
+
+write_cand "$WORK/c-rm-in.yml" '  existing-required:
+    required: true' "  vmid:
+    description: id"
+expect_refused "removed input" "$WORK/c-rm-in.yml" "breaking removed input: existing-optional"
+
+write_cand "$WORK/c-rm-out.yml" "$BASE_IN" ""
+expect_refused "removed output" "$WORK/c-rm-out.yml" "breaking removed output: vmid"
+
+write_cand "$WORK/c-req.yml" "$BASE_IN
+  fresh:
+    required: true" "  vmid:
+    description: id"
+expect_refused "newly required input" "$WORK/c-req.yml" "breaking new required input without default: fresh"
+
+write_cand "$WORK/c-became-req.yml" '  existing-required:
+    required: true
+  existing-optional:
+    required: true' "  vmid:
+    description: id"
+expect_refused "input turned required" "$WORK/c-became-req.yml" "breaking input became required: existing-optional"
+
+write_cand "$WORK/c-default.yml" '  existing-required:
+    required: true
+  existing-optional:
+    required: false
+    default: "changed"' "  vmid:
+    description: id"
+expect_refused "changed default" "$WORK/c-default.yml" "breaking changed default: existing-optional"
+
+write_cand "$WORK/c-opt-default.yml" "$BASE_IN
+  spill-market:
+    required: false
+    default: on-demand" "  vmid:
+    description: id"
+expect_passes "new optional input with default" "$WORK/c-opt-default.yml" "safe new optional input: spill-market"
+
+write_cand "$WORK/c-new-out.yml" "$BASE_IN" "  vmid:
+    description: id
+  fresh-out:
+    description: new"
+expect_passes "new output" "$WORK/c-new-out.yml" "safe new output: fresh-out"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
