@@ -162,6 +162,12 @@ inputs:
       Required when spill=ec2.
     required: false
     default: ''
+  spill-ami-id:
+    description: >-
+      Launch exactly this AMI instead of the newest probe-passed one. Only the
+      EC2 spill probe sets it, to test a fresh AMI before promoting it.
+    required: false
+    default: ''
   spill-tailnet:
     description: >-
       "true" lets an EC2 spill runner join the tailnet as tag:round-vm for the
@@ -289,6 +295,7 @@ runs:
         SPILL_AFTER_SECONDS: ${{ inputs.spill-after-seconds }}
         SPILL_MAX_INSTANCES: ${{ inputs.spill-max-instances }}
         SPILL_TAILNET: ${{ inputs.spill-tailnet }}
+        SPILL_AMI_ID: ${{ inputs.spill-ami-id }}
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
         TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}
       run: |

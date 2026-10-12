@@ -1,15 +1,27 @@
 name: EC2 spill probe
 
-# Manual probe for the EC2 spill path. Provisions a runner with SPILL=ec2-only
-# (bypassing Proxmox entirely), runs a trivial job on the provisioned runner to
-# confirm it actually works, then tears down.
+# Probes the EC2 spill path on a freshly built AMI and promotes it only on a pass.
+# Provisions a runner with SPILL=ec2-only (bypassing Proxmox entirely) from the
+# newest AMI, asserts the launched instance IS that AMI, runs podman and every
+# consuming repo's runner-deps on it, then tears down. provision.sh launches only
+# AMIs tagged spill:probe=passed, and the promote job is the only thing that sets
+# that tag, so a broken AMI is found here in minutes, not by a real CI job.
 #
-# DO NOT add push:, pull_request:, or schedule: triggers. A probe that fires
-# automatically spends money automatically. This workflow exists to be triggered
-# on demand, not to run on every commit.
+# Triggers: the "Build spill AMI" workflow completing successfully, and on
+# demand. DO NOT add push:, pull_request:, or schedule: triggers. A probe that
+# fires on every commit spends money automatically; this one fires once per AMI.
+# Target wall: under 10 minutes from AMI build success to verdict.
 
 on:
+  workflow_run:
+    workflows: ["Build spill AMI"]
+    types: [completed]
   workflow_dispatch:
+    inputs:
+      ami-id:
+        description: AMI to probe (default is the newest spill AMI)
+        required: false
+        default: ''
 
 # A second dispatch queues rather than cancelling. Cancelling mid-provision
 # would orphan the EC2 instance with no teardown job to reclaim it.
@@ -21,9 +33,41 @@ permissions:
   contents: read
   id-token: write   # OIDC token for assuming the AWS spill role
   actions: read     # runners API for watchdog
+  issues: write     # report files the P0 on a failed probe
 
 jobs:
+  # Names the AMI under test once, so provision, verify and promote agree.
+  resolve:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      ami-id: ${{ steps.ami.outputs.ami-id }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_AMI_BUILD_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Find the AMI under test
+        id: ami
+        env:
+          REQUESTED: ${{ inputs.ami-id }}
+        run: |
+          if [ -n "$REQUESTED" ]; then
+            ami="$REQUESTED"
+          else
+            ami="$(aws ec2 describe-images \
+              --filters 'Name=tag:spill:owner,Values=ephemeral-ci' 'Name=state,Values=available' \
+              --query 'sort_by(Images, &CreationDate)[-1].ImageId' --output text)"
+          fi
+          test -n "$ami" && test "$ami" != None || { echo "::error::no spill AMI to probe"; exit 1; }
+          echo "Probing $ami"
+          echo "ami-id=$ami" >> "$GITHUB_OUTPUT"
+
   provision:
+    needs: [resolve]
     runs-on: ubuntu-latest
     outputs:
       vmid:        ${{ steps.provision.outputs.vmid }}
@@ -52,6 +96,7 @@ jobs:
           spill:               ec2-only
           spill-tailnet:       'true'
           aws-role-to-assume:  ${{ secrets.AWS_SPILL_ROLE_ARN }}
+          spill-ami-id:        ${{ needs.resolve.outputs.ami-id }}
 
   # Confirms the provisioned runner came online before verify is allowed to
   # proceed. Runs on ubuntu-latest so it can never queue: if it times out,
@@ -154,12 +199,28 @@ jobs:
   # already generous. A large timeout defeats the point — the probe must fail
   # fast so teardown runs. Same fix as db-ise2 applied to the repository gate.
   verify:
-    needs: [provision, watchdog]
+    needs: [resolve, provision, watchdog]
     runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
-    timeout-minutes: 5
+    timeout-minutes: 7
     steps:
       - name: Verify runner is operational
         run: uname -a
+
+      # A probe that ran on some other image proves nothing about the AMI it
+      # then promotes.
+      - name: Assert the instance was launched from the AMI under test
+        env:
+          WANT_AMI: ${{ needs.resolve.outputs.ami-id }}
+        run: |
+          token="$(curl -sf -X PUT http://169.254.169.254/latest/api/token \
+            -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')"
+          have="$(curl -sf -H "X-aws-ec2-metadata-token: $token" \
+            http://169.254.169.254/latest/meta-data/ami-id)"
+          echo "instance ImageId: $have, AMI under test: $WANT_AMI"
+          test "$have" = "$WANT_AMI"
+
+      - name: Assert podman info works as the runner user
+        run: podman info >/dev/null
 
       - name: Assert rootless container network backend is present
         run: |
@@ -198,6 +259,76 @@ jobs:
         # "could not find pasta" at RUN time, not at info time.
         run: podman run --rm docker.io/library/busybox:latest true
 
+      # Each consuming repo's own runner-deps step, run for real on the probe
+      # instance (it is thrown away), so a dependency the AMI lacks fails here
+      # and not in that repo's first spilled CI job.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/spira
+          token: ${{ secrets.RUNNER_REG_PAT }}
+          path: consumers/spira
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/pokedumpster
+          token: ${{ secrets.RUNNER_REG_PAT }}
+          path: consumers/pokedumpster
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/deckdumpster
+          token: ${{ secrets.RUNNER_REG_PAT }}
+          path: consumers/deckdumpster
+
+      - name: runner-deps (spira)
+        working-directory: consumers/spira
+        run: bash deploy/runner-deps.sh
+      - name: runner-deps (pokedumpster)
+        working-directory: consumers/pokedumpster
+        run: bash deploy/runner-deps.sh
+      - name: runner-deps (deckdumpster)
+        working-directory: consumers/deckdumpster
+        run: bash deploy/runner-deps.sh
+
+  # Only a passing probe tags the AMI spill:probe=passed, which is what
+  # provision.sh requires. Re-sending spill:owner satisfies the AmiBuildRole's
+  # RequestTag condition on CreateTags.
+  promote:
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_AMI_BUILD_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Promote the AMI
+        env:
+          AMI: ${{ needs.resolve.outputs.ami-id }}
+        run: |
+          aws ec2 create-tags --resources "$AMI" \
+            --tags Key=spill:owner,Value=ephemeral-ci Key=spill:probe,Value=passed
+          echo "Promoted $AMI"
+
+  # A failed probe files a P0 carrying the tail of the failing log.
+  report:
+    needs: [resolve, provision, watchdog, guard, verify]
+    if: always() && (needs.provision.result == 'failure' || needs.watchdog.result == 'failure' || needs.guard.result == 'failure' || needs.verify.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: File the P0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          AMI: ${{ needs.resolve.outputs.ami-id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          tail="$(gh run view "${{ github.run_id }}" --log-failed 2>&1 | tail -40 || true)"
+          printf 'Spill AMI %s FAILED its probe and was NOT promoted.\n\nRun: %s\n\nLog tail:\n```\n%s\n```\n' \
+            "$AMI" "$RUN_URL" "$tail" \
+            | gh issue create --title "P0: spill AMI ${AMI} failed its probe" --label P0 --body-file -
+
   # Terminates the EC2 instance regardless of earlier job outcomes.
   # if: always() ensures this runs even when provision, watchdog, guard, or
   # verify failed. guard failing (unroutable runner) unblocks teardown while
@@ -206,7 +337,7 @@ jobs:
   teardown:
     needs: [provision, watchdog, verify, guard]
     runs-on: ubuntu-latest
-    if: always()
+    if: always() && needs.provision.result != 'skipped'
     steps:
       - uses: actions/checkout@v4
 

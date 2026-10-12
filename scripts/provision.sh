@@ -460,6 +460,11 @@ SPILL_SSM_WAIT_SECONDS="${SPILL_SSM_WAIT_SECONDS:-300}"
 #   SPILL_TAILNET_WAIT_SECONDS how long registration waits for the join; on
 #                       timeout the runner registers anyway (job runs cold).
 SPILL_TAILNET="${SPILL_TAILNET:-false}"
+#   SPILL_AMI_ID        Launch exactly this AMI instead of the newest promoted
+#                       one. Only the spill probe sets it, to run a freshly built
+#                       AMI before it is promoted. The substrate-sha check still
+#                       applies.
+SPILL_AMI_ID="${SPILL_AMI_ID:-}"
 SPILL_TAILNET_WAIT_SECONDS="${SPILL_TAILNET_WAIT_SECONDS:-90}"
 
 # Prints "<total_mib> <total_cpus> <alloc_mib> <template_mib> <alloc_cpus> <template_cpus>"
@@ -666,11 +671,20 @@ ec2_wait_ceiling() {
 # "Install runner dependencies" step.
 ec2_find_ami() {
     local out ami have want
+    local -a sel
+    if [ -n "$SPILL_AMI_ID" ]; then
+        sel=(--image-ids "$SPILL_AMI_ID"
+             --filters 'Name=tag:spill:owner,Values=ephemeral-ci' 'Name=state,Values=available')
+    else
+        # Promotion is the spill:probe=passed tag, set by spill-probe.yml only
+        # after the AMI ran a container and every consumer's runner-deps.
+        sel=(--filters 'Name=tag:spill:owner,Values=ephemeral-ci'
+                       'Name=tag:spill:probe,Values=passed'
+                       'Name=state,Values=available')
+    fi
     out="$(aws ec2 describe-images \
                --region "$SPILL_REGION" \
-               --filters \
-                 'Name=tag:spill:owner,Values=ephemeral-ci' \
-                 'Name=state,Values=available' \
+               "${sel[@]}" \
                --query 'sort_by(Images, &CreationDate)[-1].[ImageId, Tags[?Key==`substrate-sha`]|[0].Value]' \
                --output text 2>&1)" || {
         printf '::error::provision.sh: cannot find spill AMI: aws ec2 describe-images failed: %s\n' "$out" >&2
@@ -679,7 +693,7 @@ ec2_find_ami() {
     ami="$(printf '%s' "$out" | awk '{print $1}')"
     have="$(printf '%s' "$out" | awk '{print $2}')"
     if [ -z "$ami" ] || [ "$ami" = "None" ]; then
-        printf '::error::provision.sh: no available AMI tagged spill:owner=ephemeral-ci in %s; run ami-build.sh first\n' \
+        printf '::error::provision.sh: no available probe-passed AMI (spill:owner=ephemeral-ci, spill:probe=passed) in %s; run the ami-build workflow and let the spill probe promote it\n' \
             "$SPILL_REGION" >&2
         return 1
     fi
