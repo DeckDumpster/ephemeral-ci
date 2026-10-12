@@ -61,6 +61,13 @@ check(max(names.index(f"first test starts ({r})") for r in ("spira", "pokedumpst
       "all three starts are in verify, which promote needs")
 check(jobs["provision"]["steps"][1]["with"].get("spill-ami-id"), "provision launches the AMI under test")
 check("P0" in str(jobs["report"]), "failure files a P0")
+vsteps = {s.get("name"): s for s in jobs["verify"]["steps"]}
+for repo, path in (("spira", "spira/runner-deps.sh"), ("pokedumpster", "deploy/runner-deps.sh"),
+                   ("deckdumpster", "deploy/runner-deps.sh")):
+    st = vsteps.get(f"runner-deps ({repo})", {})
+    check(st.get("run") == "bash " + path, f"runner-deps ({repo}) runs {path}")
+    check(st.get("continue-on-error") is True, f"runner-deps ({repo}) does not stop the others")
+check(vsteps.get("runner-deps verdict", {}).get("if") == "always()", "one aggregated runner-deps verdict")
 sys.exit(1 if bad else 0)
 PY
 
@@ -68,5 +75,39 @@ PY
 grep -q 'spill:probe,Values=passed' "$REPO_DIR/scripts/provision.sh" \
     && echo "ok   provision.sh selects only probe-passed AMIs" \
     || { echo "FAIL provision.sh does not require spill:probe=passed"; FAILS=1; }
+
+# The paths must exist in the consuming repos' own checkouts when present here.
+for pair in "$HOME/pokedumpster:deploy/runner-deps.sh" "$HOME/deckdumpster:deploy/runner-deps.sh"; do
+    [ -d "${pair%%:*}" ] || continue
+    [ -f "${pair%%:*}/${pair#*:}" ] && echo "ok   ${pair#*:} exists in ${pair%%:*}" \
+        || { echo "FAIL ${pair#*:} missing in ${pair%%:*}"; FAILS=1; }
+done
+
+# Verdict: every repo reported, any non-success fails and is named.
+V="$REPO_DIR/scripts/spill-probe-verdict.sh"
+out="$(bash "$V" spira=failure pokedumpster=success deckdumpster=failure 2>&1)"; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'spira (failure)' <<<"$out" && grep -q 'deckdumpster (failure)' <<<"$out" \
+    && ! grep -q 'error.*pokedumpster' <<<"$out"; } \
+    && echo "ok   verdict names each failing repo" || { echo "FAIL verdict: rc=$rc $out"; FAILS=1; }
+bash "$V" spira=success pokedumpster=success >/dev/null 2>&1 \
+    && echo "ok   verdict passes when all pass" || { echo "FAIL verdict on all-pass"; FAILS=1; }
+
+# Report: creates the label, and still files when the label cannot be had.
+T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+cat > "$T/gh" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >> "$GH_LOG"
+[ "$1 $2" = "label create" ] && [ -n "${NOLABEL:-}" ] && exit 1
+[ "$1 $2" = "issue create" ] && [[ "$*" == *--label* ]] && [ -n "${NOLABEL:-}" ] && exit 1
+[ "$1" = issue ] && cat >/dev/null; exit 0
+SH
+chmod +x "$T/gh"
+R="$REPO_DIR/scripts/spill-probe-report.sh"
+GH="$T/gh" GH_LOG="$T/a.log" bash "$R" ami-1 http://run "tail" >/dev/null 2>&1
+{ grep -q '^label create P0' "$T/a.log" && grep -q '^issue create.*--label P0' "$T/a.log"; } \
+    && echo "ok   report creates the P0 label then files with it" || { echo "FAIL report with label"; FAILS=1; }
+NOLABEL=1 GH="$T/gh" GH_LOG="$T/b.log" bash "$R" ami-1 http://run "tail" >/dev/null 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && [ "$(grep -c '^issue create' "$T/b.log")" -ge 1 ] && tail -1 "$T/b.log" | grep -qv -- '--label'; } \
+    && echo "ok   report files without the label when it cannot be created" || { echo "FAIL report without label rc=$rc"; FAILS=1; }
 
 exit "$FAILS"
