@@ -203,6 +203,13 @@ BUILD_PKGS=(build-essential pkg-config)
 # The runner itself and the scripts every consumer's CI calls directly.
 BASE_PKGS=(git curl ca-certificates jq)
 
+# The podman major.minor every runner image must carry -- the Proxmox template
+# and the EC2 spill AMI alike. A job that spills must not meet a different
+# engine than one that does not: 4.9.3 vs 5.7.0 failed pokedumpster's
+# rootless-netns split only on EC2 (sp-2h5q0k). spill-probe.yml asserts the AMI
+# reports this series before promoting it.
+PODMAN_SERIES=5.7
+
 check_podman() {
     command -v podman >/dev/null 2>&1 || { lack podman "every consumer runs containers"; return 1; }
     local v major minor
@@ -220,6 +227,10 @@ check_podman() {
                 return 1
             fi
             ;;
+    esac
+    case "$v" in
+        "$PODMAN_SERIES".*) ;;
+        *) lack "podman $PODMAN_SERIES.x" "found $v; the template and the spill AMI must run the same engine or a spilled job fails tests a template job passes" ; return 1 ;;
     esac
     note "container engine $v"
 }
