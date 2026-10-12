@@ -267,6 +267,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: ephemeral-ci
+
+      # The Proxmox template runs this series; an image on another one makes a
+      # spilled job fail tests a template job passes (sp-2h5q0k). The series is
+      # the one source in template-substrate.sh, so a drifted image is not promoted.
+      - name: Assert container engine version parity with the template
+        run: |
+          want="$(sed -n 's/^PODMAN_SERIES=//p' ephemeral-ci/scripts/template-substrate.sh)"
+          have="$(podman version --format '{{.Client.Version}}')"
+          echo "podman on the AMI: $have, template series: $want"
+          test -n "$want"
+          case "$have" in "$want".*) ;; *) echo "::error::podman $have is not the template's $want.x"; exit 1 ;; esac
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/spira

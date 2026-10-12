@@ -2,7 +2,7 @@
 #
 # scripts/ami-build.sh [--retain N] [--dry-run] [--prune-only]
 #
-# Builds the ephemeral-ci runner AMI from Ubuntu 24.04, applying
+# Builds the ephemeral-ci runner AMI from Ubuntu 26.04, applying
 # template-substrate.sh's guest steps over SSM. Creates an AMI named and
 # tagged with the build date and the current git commit, then deregisters
 # older AMIs (with their backing snapshots) keeping the newest N.
@@ -151,22 +151,25 @@ load_stack_outputs() {
 }
 
 # ---------------------------------------------------------------------------
-# find_base_ami: latest Ubuntu 24.04 LTS (Noble) amd64 AMI from Canonical
+# find_base_ami: latest Ubuntu 26.04 LTS (Resolute) amd64 AMI from Canonical.
+# 26.04, not 24.04: noble ships podman 4.9.3 and the Proxmox template runs 5.7,
+# so a spilled job failed tests (the rootless-netns split) a template job passes
+# (sp-2h5q0k). The series both must run is PODMAN_SERIES in template-substrate.sh.
 # ---------------------------------------------------------------------------
 find_base_ami() {
-    note "finding latest Ubuntu 24.04 LTS AMI"
+    note "finding latest Ubuntu 26.04 LTS AMI"
     local ami_id
     ami_id="$(aws ec2 describe-images \
         --owners 099720109477 \
         --filters \
-            'Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*' \
+            'Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-amd64-server-*' \
             'Name=state,Values=available' \
             'Name=architecture,Values=x86_64' \
         --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
         --output text \
         --region "$REGION" 2>/dev/null)"
     if [ -z "$ami_id" ] || [ "$ami_id" = "None" ]; then
-        printf 'ami-build.sh: no Ubuntu 24.04 AMI found in %s\n' "$REGION" >&2
+        printf 'ami-build.sh: no Ubuntu 26.04 AMI found in %s\n' "$REGION" >&2
         return 1
     fi
     note "base AMI: $ami_id"
