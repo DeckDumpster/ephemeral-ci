@@ -3,14 +3,15 @@ name: EC2 spill probe
 # Probes the EC2 spill path on a freshly built AMI and promotes it only on a pass.
 # Provisions a runner with SPILL=ec2-only (bypassing Proxmox entirely) from the
 # newest AMI, asserts the launched instance IS that AMI, runs podman and every
-# consuming repo's runner-deps on it, then tears down. provision.sh launches only
+# consuming repo's runner-deps on it, starts each repo's first real test
+# (it need not finish), then tears down. provision.sh launches only
 # AMIs tagged spill:probe=passed, and the promote job is the only thing that sets
 # that tag, so a broken AMI is found here in minutes, not by a real CI job.
 #
 # Triggers: the "Build spill AMI" workflow completing successfully, and on
 # demand. DO NOT add push:, pull_request:, or schedule: triggers. A probe that
 # fires on every commit spends money automatically; this one fires once per AMI.
-# Target wall: under 10 minutes from AMI build success to verdict.
+# Target wall: under 15 minutes from AMI build success to verdict.
 
 on:
   workflow_run:
@@ -201,7 +202,7 @@ jobs:
   verify:
     needs: [resolve, provision, watchdog]
     runs-on: [self-hosted, "${{ needs.provision.outputs.label }}"]
-    timeout-minutes: 7
+    timeout-minutes: 15
     steps:
       - name: Verify runner is operational
         run: uname -a
@@ -287,6 +288,34 @@ jobs:
       - name: runner-deps (deckdumpster)
         working-directory: consumers/deckdumpster
         run: bash deploy/runner-deps.sh
+
+      # runner-deps proves the packages exist; only a test that starts proves
+      # the repo can begin work on this image. Each step runs the repo's own
+      # entry point and passes the moment the repo's OWN output says its first
+      # test began, then stops it. A bounded timeout per repo; a command that
+      # exits or stalls before the marker fails the probe, and promote with it.
+      - uses: actions/checkout@v4
+        with:
+          path: ephemeral-ci
+
+      - name: first test starts (spira)
+        working-directory: consumers/spira
+        env:
+          FIRST_TEST_CMD: ${{ vars.SPILL_PROBE_SPIRA_TEST_CMD }}
+          FIRST_TEST_MARKER: ${{ vars.SPILL_PROBE_SPIRA_TEST_MARKER }}
+        run: |
+          test -n "$FIRST_TEST_CMD" || { echo "ERROR: vars.SPILL_PROBE_SPIRA_TEST_CMD is not set (testenv up + first suite)"; exit 1; }
+          bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" spira 240 "$FIRST_TEST_MARKER" -- bash -c "$FIRST_TEST_CMD"
+      - name: first test starts (pokedumpster)
+        working-directory: consumers/pokedumpster
+        env:
+          INSTANCE: ci-spill-probe
+        run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" pokedumpster 240 '^==> .*(self-test|_test\.sh|cargo test)' -- bash deploy/ci.sh
+      - name: first test starts (deckdumpster)
+        working-directory: consumers/deckdumpster
+        env:
+          INSTANCE: ci-spill-probe
+        run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" deckdumpster 240 '^==> Run unit tests' -- bash deploy/ci.sh
 
   # Only a passing probe tags the AMI spill:probe=passed, which is what
   # provision.sh requires. Re-sending spill:owner satisfies the AmiBuildRole's

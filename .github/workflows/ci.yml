@@ -66,6 +66,7 @@ jobs:
               scripts/test-advance-credentials.sh \
               scripts/test-ami-build.sh \
               scripts/test-spill-probe.sh \
+              scripts/test-spill-probe-first-test.sh \
               scripts/test-tailnet.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
           done
@@ -152,6 +153,9 @@ jobs:
 
       - name: spill probe workflow
         run: bash scripts/test-spill-probe.sh
+
+      - name: spill probe first-test helper
+        run: bash scripts/test-spill-probe-first-test.sh
 
       - name: tailnet helpers
         run: bash scripts/test-tailnet.sh
