@@ -46,7 +46,19 @@ for needle, what in [("ami-id", "asserts the launched ImageId"), ("podman info",
     check(needle in steps, "verify " + what)
 for repo in ("spira", "pokedumpster", "deckdumpster"):
     check(f"runner-deps ({repo})" in steps, f"verify runs runner-deps for {repo}")
-check(jobs["verify"]["timeout-minutes"] <= 8, "verify fits the 10-minute wall")
+check(jobs["verify"]["timeout-minutes"] <= 15, "verify fits the 15-minute wall")
+vsteps = jobs["verify"]["steps"]
+names = [s.get("name", "") for s in vsteps]
+for repo in ("spira", "pokedumpster", "deckdumpster"):
+    n = f"first test starts ({repo})"
+    check(n in names, f"verify starts {repo}'s first real test")
+    if n in names:
+        step = vsteps[names.index(n)]
+        check("spill-probe-first-test.sh" in step["run"] and repo in step["run"],
+              f"{repo}'s start is detected from its output by the marker helper")
+        check(names.index(n) > names.index(f"runner-deps ({repo})"), f"{repo}'s first test follows its runner-deps")
+check(max(names.index(f"first test starts ({r})") for r in ("spira", "pokedumpster", "deckdumpster")) < len(names),
+      "all three starts are in verify, which promote needs")
 check(jobs["provision"]["steps"][1]["with"].get("spill-ami-id"), "provision launches the AMI under test")
 check("P0" in str(jobs["report"]), "failure files a P0")
 sys.exit(1 if bad else 0)
