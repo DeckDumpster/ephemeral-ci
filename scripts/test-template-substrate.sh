@@ -647,11 +647,12 @@ done
 _ab="$(grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh")"
 if printf '%s\n' "$_ab" | grep -q 'useradd --system'; then bad "the spill runner is a regular user" "useradd --system gives no user manager"
 else ok "the spill runner is a regular user"; fi
-if printf '%s\n' "$_ab" | grep -q '^Environment=XDG_RUNTIME_DIR=/run/user/%U'; then ok "the spill runner service sets XDG_RUNTIME_DIR"
-else bad "the spill runner service sets XDG_RUNTIME_DIR" "missing"; fi
-if printf '%s\n' "$_ab" | grep -q '^Wants=user@%U.service' && printf '%s\n' "$_ab" | grep -q '^After=.*user@%U.service'; then ok "the spill runner service waits for the user manager"
-else bad "the spill runner service waits for the user manager" "no Wants/After user@%U.service"; fi
-if printf '%s\n' "$_ab" | grep -q 'podman info fails for the runner user'; then ok "the AMI build proves podman info passes for the runner before imaging"
+if printf '%s\n' "$_ab" | grep -q '^Environment=XDG_RUNTIME_DIR=/run/user/%U'; then bad "the spill runner service takes its uid from session.env" "%U in a system unit expands to 0"
+elif printf '%s\n' "$_ab" | grep -q '^EnvironmentFile=/etc/ephemeral-runner/session.env' && printf '%s\n' "$_ab" | grep -q 'XDG_RUNTIME_DIR=/run/user/%s'; then ok "the spill runner service takes its uid from session.env"
+else bad "the spill runner service takes its uid from session.env" "no EnvironmentFile with the real uid"; fi
+if printf '%s\n' "$_ab" | grep -q '^Wants=user@\\\${RUNNER_UID}.service' && printf '%s\n' "$_ab" | grep -q '^After=.*user@\\\${RUNNER_UID}.service'; then ok "the spill runner service waits for the user manager"
+else bad "the spill runner service waits for the user manager" "no Wants/After user@<uid>.service"; fi
+if printf '%s\n' "$_ab" | grep -q 'podman info fails under the runner service'; then ok "the AMI build proves podman info passes for the runner before imaging"
 else bad "the AMI build proves podman info passes for the runner before imaging" "no check"; fi
 
 echo
