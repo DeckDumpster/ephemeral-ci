@@ -27,8 +27,10 @@
 #   spill:owner=ephemeral-ci  (required for the budget filter and the reaper)
 #   build-date=YYYYMMDD
 #   git-commit=SHORT_SHA
-#   substrate-sha=<sha256 of template-substrate.sh>  (provision.sh refuses an
-#     AMI whose tag differs from the substrate at its own ref)
+#   substrate-sha=<sha256 of template-substrate.sh and ami-build.sh, see
+#     ami_inputs_sha in ami-wait.sh>  (provision.sh refuses an AMI whose tag
+#     differs from the inputs at its own ref, so a change to either one is
+#     never served by an AMI built before it)
 #   Name=ephemeral-ci-runner
 #
 # --retain N (default 3): keep the N newest ephemeral-ci-runner AMIs;
@@ -365,7 +367,19 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable ephemeral-runner.path
 
-echo "ami-build: substrate applied, runner unpacked, path unit enabled"
+# ---- prove rootless podman starts for the runner BEFORE the image is cut ----
+# A broken AMI otherwise ships and every suites job fails in runner-deps with
+# "podman info fails" (sp-rgylcb). Same environment the service gives the runner.
+RUNNER_UID="\$(id -u runner)"
+sudo systemctl start "user@\${RUNNER_UID}.service"
+for _ in \$(seq 1 30); do [ -d "/run/user/\${RUNNER_UID}" ] && break; sleep 1; done
+[ -d "/run/user/\${RUNNER_UID}" ] || { echo "ami-build: /run/user/\${RUNNER_UID} never appeared" >&2; exit 1; }
+sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" HOME=/home/runner podman info >/dev/null \
+    || { echo "ami-build: podman info fails for the runner user" >&2; \
+         sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" HOME=/home/runner podman info >&2 || true; exit 1; }
+sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" HOME=/home/runner podman info --format '{{.Store.GraphDriverName}}' >&2
+
+echo "ami-build: substrate applied, runner unpacked, path unit enabled, podman info passes"
 SCRIPT
 )"
 
@@ -460,7 +474,7 @@ wait_command() {
 create_ami() {
     local instance_id="$1" ami_name="$2" build_date="$3" git_commit="$4"
     local substrate_sha
-    substrate_sha="$(sha256sum "${SCRIPT_DIR}/template-substrate.sh" | cut -d' ' -f1)"
+    substrate_sha="$(ami_inputs_sha "$SCRIPT_DIR")"
     note "stopping $instance_id before snapshot"
 
     aws_w ec2 stop-instances --instance-ids "$instance_id" --region "$REGION" >/dev/null

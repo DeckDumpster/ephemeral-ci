@@ -651,6 +651,8 @@ if printf '%s\n' "$_ab" | grep -q '^Environment=XDG_RUNTIME_DIR=/run/user/%U'; t
 else bad "the spill runner service sets XDG_RUNTIME_DIR" "missing"; fi
 if printf '%s\n' "$_ab" | grep -q '^Wants=user@%U.service' && printf '%s\n' "$_ab" | grep -q '^After=.*user@%U.service'; then ok "the spill runner service waits for the user manager"
 else bad "the spill runner service waits for the user manager" "no Wants/After user@%U.service"; fi
+if printf '%s\n' "$_ab" | grep -q 'podman info fails for the runner user'; then ok "the AMI build proves podman info passes for the runner before imaging"
+else bad "the AMI build proves podman info passes for the runner before imaging" "no check"; fi
 
 echo
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
