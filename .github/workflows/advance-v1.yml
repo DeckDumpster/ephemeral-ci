@@ -8,9 +8,10 @@ name: Advance v1
 #   1. Probe: provision and teardown a real VM at the candidate SHA. A
 #      candidate whose provision.sh refuses the template, or whose teardown
 #      fails, cannot be v1 — consumers would break immediately.
-#   2. Input diff: any new required input without a default in provision or
-#      teardown breaks every consumer that has not yet added it. The check
-#      names the input and the way through.
+#   2. Interface diff: a removed input/output, a newly required input or a
+#      changed default in provision or teardown breaks consumers and refuses
+#      without consumers-updated. A new optional input with a default, or a new
+#      output, cannot break anyone: it passes with a note in the run summary.
 #
 # CI must be running on push to main (ci.yml's push trigger) for this to
 # find green commits reliably. For commits that predate that trigger,
@@ -240,121 +241,83 @@ jobs:
             echo "$TAG is already at the latest green commit. Nothing to do."
           fi
 
-      - name: Check for new required inputs since the tag
+      # Classifies the provision/teardown interface diff against the tag being
+      # moved (scripts/check-advance-inputs.sh). Breaking changes (removed
+      # input/output, newly required input, changed default) refuse unless
+      # consumers-updated names the evidence; additive ones (a new optional
+      # input with a default, a new output) cannot break a consumer, so they
+      # pass with a note in the run summary and need no hand dispatch.
+      - name: Classify action interface changes since the tag
         env:
           CONSUMERS_UPDATED: ${{ inputs.consumers-updated }}
-        run: |
-          target="${{ needs.find-green.outputs.target }}"
-          if ! git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "No $TAG tag yet — skipping input-diff check."
-            exit 0
-          fi
-          WORK=$(mktemp -d)
-          trap 'rm -rf "$WORK"' EXIT
-          for action in provision teardown; do
-            mkdir -p "$WORK/v1" "$WORK/candidate"
-            git show "refs/tags/${TAG}:${action}/action.yml" > "$WORK/v1/${action}.yml"
-            git show "${target}:${action}/action.yml"    > "$WORK/candidate/${action}.yml"
-          done
-
-          blocking_inputs=""
-          for action in provision teardown; do
-            echo "--- ${action}/action.yml ---"
-            err_file=$(mktemp)
-            if ! bash scripts/check-advance-inputs.sh \
-                   "$WORK/v1/${action}.yml" \
-                   "$WORK/candidate/${action}.yml" 2>"$err_file"; then
-              cat "$err_file" >&2
-              while IFS= read -r line; do
-                [[ "$line" == *"new required input without default: "* ]] || continue
-                name="${line##*new required input without default: }"
-                blocking_inputs="${blocking_inputs}${name} "
-              done < "$err_file"
-            fi
-            rm -f "$err_file"
-          done
-
-          blocking_inputs="${blocking_inputs% }"
-
-          if [ -n "$blocking_inputs" ]; then
-            if [ -n "$CONSUMERS_UPDATED" ]; then
-              echo "::warning::New required inputs without defaults: ${blocking_inputs}; proceeding on consumers-updated evidence."
-              {
-                echo "### Required inputs added; proceeding on consumers-updated evidence"
-                echo
-                echo "New required inputs (no default): \`${blocking_inputs}\`"
-                echo
-                echo "Consumers reported updated:"
-                echo
-                echo "${CONSUMERS_UPDATED}"
-              } >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::error::Advance blocked: new required inputs without defaults: ${blocking_inputs}"
-              echo "::error::Add a default value to each listed input, or supply consumers-updated naming the PRs that updated every consumer."
-              {
-                echo "### Advance blocked: new required inputs"
-                echo
-                echo "New required inputs (no default): \`${blocking_inputs}\`"
-                echo
-                echo "Way through: add \`default: ''\` to each input, or supply \`consumers-updated\` naming the PRs that updated every consumer and re-run."
-              } >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
-          else
-            echo "No new required inputs without defaults."
-          fi
-
-      - name: Check for action interface changes since the tag
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           target="${{ needs.find-green.outputs.target }}"
           if ! git rev-parse --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "No $TAG tag yet — skipping interface check."
             exit 0
           fi
-          # Detect additions or removals in the inputs: or outputs: sections of
-          # either action file. A line changed under those sections means the
-          # public contract shifted and consumers must update before this advance
-          # is safe. Cut a new major version (v2) instead.
-          #
-          # Pattern: any added/removed line that is either the inputs:/outputs:
-          # top-level key itself, or a 2-space-indented first-level YAML entry
-          # (the input/output names and their direct properties).
-          if git diff "refs/tags/${TAG}" "$target" -- \
-               provision/action.yml teardown/action.yml \
-             | grep -E '^[+-][^+-]' \
-             | grep -qE '^[+-](inputs:|outputs:|  [a-z][a-z0-9-]*:)'; then
-            # A FENCE IS A REFUSAL, NOT A WALL, AND THIS ONE HAD NO DOOR.
-            #
-            # The check is right: advancing v1 across an interface change
-            # breaks every consumer that has not been updated. But it can only
-            # see THIS repository, so once the consumers genuinely have been
-            # updated it goes on refusing, and the only ways past it are
-            # cutting a v2 nobody wants or moving the tag by hand — which
-            # disarms the check silently and leaves no record that anyone
-            # thought about it (law-never-disarm-a-check-to-proceed).
-            #
-            # consumers-updated is the door. It does not weaken the check: the
-            # refusal still fires by default, and passing it requires naming
-            # the evidence, which lands in the log and the job summary where
-            # the next person can audit the claim.
-            if [ -z "${{ inputs.consumers-updated }}" ]; then
-              echo "::error::This commit changes action inputs or outputs in provision/action.yml or teardown/action.yml relative to $TAG."
-              echo "::error::Advancing $TAG will silently break consumers that have not updated their workflows to pass or receive the changed fields."
-              echo "::error::Either cut a new major version (v2) and coordinate the consumer updates, or re-run with consumers-updated naming the PRs that updated every consumer."
-              exit 1
-            fi
-            echo "::warning::Interface changed since $TAG; proceeding on the operator's evidence."
+          WORK=$(mktemp -d)
+          trap 'rm -rf "$WORK"' EXIT
+          breaking=""
+          safe=""
+          for action in provision teardown; do
+            echo "--- ${action}/action.yml ---"
+            git show "refs/tags/${TAG}:${action}/action.yml" > "$WORK/base.yml"
+            git show "${target}:${action}/action.yml"        > "$WORK/cand.yml"
+            rc=0
+            bash scripts/check-advance-inputs.sh "$WORK/base.yml" "$WORK/cand.yml" \
+              >"$WORK/out" 2>"$WORK/err" || rc=$?
+            cat "$WORK/out"
+            cat "$WORK/err" >&2
+            [ "$rc" -le 1 ] || { echo "::error::check-advance-inputs.sh failed (exit $rc) on ${action}"; exit 1; }
+            while IFS= read -r line; do
+              safe="${safe}${action}: ${line#safe }"$'\n'
+            done < <(grep '^safe ' "$WORK/out" || true)
+            while IFS= read -r line; do
+              breaking="${breaking}${action}: ${line#breaking }"$'\n'
+            done < <(grep '^breaking ' "$WORK/err" || true)
+          done
+
+          if [ -n "$safe" ]; then
             {
-              echo "### $TAG advanced across an action interface change"
+              echo "### Additive interface changes since $TAG (cannot break consumers)"
               echo
-              echo 'Consumers reported updated:'
-              echo
-              echo '${{ inputs.consumers-updated }}'
+              printf '%s' "$safe" | sed 's/^/- `/; s/$/`/'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "No action interface changes since $TAG."
+
+          if [ -z "$breaking" ]; then
+            echo "No breaking interface changes since $TAG."
+            exit 0
+          fi
+
+          # A FENCE IS A REFUSAL, NOT A WALL: consumers-updated is the door. It
+          # does not weaken the check; passing it requires naming the evidence,
+          # which lands in the log and the job summary for audit
+          # (law-never-disarm-a-check-to-proceed).
+          if [ -z "$CONSUMERS_UPDATED" ]; then
+            echo "::error::Breaking action interface changes since $TAG:"
+            printf '%s' "$breaking" | while IFS= read -r l; do echo "::error::  $l"; done
+            echo "::error::Either cut a new major version and coordinate consumer updates, or re-run with consumers-updated naming the PRs that updated every consumer."
+            {
+              echo "### Advance blocked: breaking interface changes"
+              echo
+              printf '%s' "$breaking" | sed 's/^/- `/; s/$/`/'
+              echo
+              echo "Way through: supply \`consumers-updated\` naming the PRs that updated every consumer and re-run."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "::warning::Breaking interface changes since $TAG; proceeding on consumers-updated evidence."
+          {
+            echo "### $TAG advanced across breaking interface changes"
+            echo
+            printf '%s' "$breaking" | sed 's/^/- `/; s/$/`/'
+            echo
+            echo "Consumers reported updated:"
+            echo
+            echo "${CONSUMERS_UPDATED}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dry-run summary
         if: inputs.dry-run == true
@@ -366,7 +329,7 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Probe (provision + teardown) | passed |"
-            echo "| New required inputs | none |"
+            echo "| Breaking interface changes | none |"
             echo "| Target | \`${target}\` |"
             echo
             echo "Re-run with **dry-run: false** to advance the tag."
