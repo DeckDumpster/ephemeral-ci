@@ -221,6 +221,16 @@ jobs:
           echo "instance ImageId: $have, AMI under test: $WANT_AMI"
           test "$have" = "$WANT_AMI"
 
+      # The Proxmox runner runs the consumers' parallel gates to completion; a
+      # smaller disk stops them at the floor (sp-6rzyjn). 60G is SPILL_MIN_FREE_GIB in
+      # scripts/provision.sh; keep the two together.
+      - name: Assert free disk matches the Proxmox runner's
+        run: |
+          df -h /
+          have="$(df -BG --output=avail / | tail -1 | tr -dc 0-9)"
+          echo "free on /: ${have}G, required: 60G"
+          test "$have" -ge 60
+
       - name: Assert podman info works as the runner user
         run: podman info >/dev/null
 

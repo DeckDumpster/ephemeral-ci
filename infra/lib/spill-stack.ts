@@ -190,8 +190,9 @@ export class SpillStack extends cdk.Stack {
             // Must match the AMI's root device (/dev/sda1 set in scripts/ami-build.sh).
             // Using any other name declares an ADDITIONAL blank volume rather than
             // overriding the root, which is what caused the MissingParameter error.
-            // volumeSize must match ROOT_DISK_GIB=32 in scripts/ami-build.sh; a
-            // mismatch silently produces the wrong root size.
+            // volumeSize must match ROOT_DISK_GIB=32 in scripts/ami-build.sh (the
+            // build size). provision.sh overrides it per launch with
+            // SPILL_ROOT_GIB so spilled runners match the Proxmox runner's disk.
             deviceName: '/dev/sda1',
             ebs: {
               volumeSize: 32,
