@@ -322,13 +322,10 @@ jobs:
       # Spira's path is its gate's: published release (carries testenv), test
       # image, then testenv's own suite-start line. The 900 s is sized to an
       # image pull, or a cold build when the registry has no image.
-      - name: first test starts (spira)
-        id: first-spira
-        continue-on-error: true
-        working-directory: consumers/spira
-        env:
-          GH_TOKEN: ${{ secrets.RUNNER_REG_PAT }}
-        run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-first-test.sh" spira 900 'running [0-9]+ suite\(s\)' -- bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-spira.sh" "$PWD"
+      # Spira's first-test step was removed 2026-10-12 (per Ryan: a real repo's test has started on
+      # the spill runner -- pokedumpster and deckdumpster, run 38199675249 -- so a probe step that
+      # fails for its own reasons (gh not installed for the release fetch) must not block AMI
+      # promotion). Spira's runner-deps still runs above; its real test path is proven by its own CI.
       - name: first test starts (pokedumpster)
         id: first-pokedumpster
         continue-on-error: true
@@ -347,10 +344,9 @@ jobs:
       - name: first test verdict
         if: always()
         env:
-          SPIRA: ${{ steps.first-spira.outcome }}
           POKEDUMPSTER: ${{ steps.first-pokedumpster.outcome }}
           DECKDUMPSTER: ${{ steps.first-deckdumpster.outcome }}
-        run: bash ephemeral-ci/scripts/spill-probe-verdict.sh --what "first test" spira="$SPIRA" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
+        run: bash ephemeral-ci/scripts/spill-probe-verdict.sh --what "first test" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
 
   # Only a passing probe tags the AMI spill:probe=passed, which is what
   # provision.sh requires. Re-sending spill:owner satisfies the AmiBuildRole's
