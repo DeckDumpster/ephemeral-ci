@@ -163,9 +163,15 @@ jobs:
 
       - name: Assert rootless container network backend is present
         run: |
-          backend=$(podman info --format '{{.Host.NetworkBackend}}' 2>&1)
-          test -n "$backend" || { echo "ERROR: podman info returned no network backend"; exit 1; }
-          echo "Network backend: $backend"
+          # bash -e would abort on the substitution before podman's error was shown.
+          set +e
+          out=$(podman info --format '{{.Host.NetworkBackend}}' 2>&1)
+          rc=$?
+          set -e
+          echo "podman info exit=$rc XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset} uid=$(id -u)"
+          echo "$out"
+          test "$rc" -eq 0 || exit "$rc"
+          test -n "$out" || { echo "ERROR: podman info returned no network backend"; exit 1; }
 
       # The instance must be in the tailnet as tag:round-vm and reach the cache
       # port. vars.SPILL_PROBE_CACHE_ADDR is the Spira host's sccache-dav

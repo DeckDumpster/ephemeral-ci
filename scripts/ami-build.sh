@@ -348,16 +348,29 @@ PathExists=/run/gh-runner-init
 WantedBy=multi-user.target
 UNIT
 
-sudo tee /etc/systemd/system/ephemeral-runner.service >/dev/null <<'UNIT'
+# The unit is a SYSTEM unit, so %U expands to 0 (the manager's uid), not the User=
+# uid: XDG_RUNTIME_DIR=/run/user/%U pointed at /run/user/0 and podman failed inside
+# every job while the build-time check (which hardcoded the right uid) passed
+# (sp-nyeqqi). The real uid is written into a session env file instead, and both
+# the service and the build-time check read that one file.
+RUNNER_UID="\$(id -u runner)"
+sudo mkdir -p /etc/ephemeral-runner
+printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\nHOME=/home/runner\n' \
+    "\$RUNNER_UID" "\$RUNNER_UID" | sudo tee /etc/ephemeral-runner/session.env >/dev/null
+# linger: the user manager (and /run/user/<uid>) exists from boot, not only
+# while a login session does.
+sudo loginctl enable-linger runner
+
+sudo tee /etc/systemd/system/ephemeral-runner.service >/dev/null <<UNIT
 [Unit]
 Description=GitHub Actions ephemeral runner (EC2 spill)
-After=network-online.target user@%U.service
+After=network-online.target user@\${RUNNER_UID}.service
 Requires=network-online.target
-Wants=user@%U.service
+Wants=user@\${RUNNER_UID}.service
 
 [Service]
 User=runner
-Environment=XDG_RUNTIME_DIR=/run/user/%U
+EnvironmentFile=/etc/ephemeral-runner/session.env
 ExecStart=/home/runner/start-runner.sh
 Restart=no
 StandardOutput=journal
@@ -369,15 +382,19 @@ sudo systemctl enable ephemeral-runner.path
 
 # ---- prove rootless podman starts for the runner BEFORE the image is cut ----
 # A broken AMI otherwise ships and every suites job fails in runner-deps with
-# "podman info fails" (sp-rgylcb). Same environment the service gives the runner.
-RUNNER_UID="\$(id -u runner)"
+# "podman info fails" (sp-rgylcb). The check runs as a transient service with the
+# unit's own User= and EnvironmentFile=, not an sudo-env approximation of them.
 sudo systemctl start "user@\${RUNNER_UID}.service"
 for _ in \$(seq 1 30); do [ -d "/run/user/\${RUNNER_UID}" ] && break; sleep 1; done
 [ -d "/run/user/\${RUNNER_UID}" ] || { echo "ami-build: /run/user/\${RUNNER_UID} never appeared" >&2; exit 1; }
-sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" HOME=/home/runner podman info >/dev/null \
-    || { echo "ami-build: podman info fails for the runner user" >&2; \
-         sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" HOME=/home/runner podman info >&2 || true; exit 1; }
-sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" HOME=/home/runner podman info --format '{{.Store.GraphDriverName}}' >&2
+as_service() {
+    sudo systemd-run --wait --pipe --collect -p User=runner \
+        -p EnvironmentFile=/etc/ephemeral-runner/session.env "\$@"
+}
+as_service podman info >/dev/null \
+    || { echo "ami-build: podman info fails under the runner service's environment" >&2; \
+         as_service podman info >&2 || true; exit 1; }
+as_service podman info --format '{{.Store.GraphDriverName}}' >&2
 
 echo "ami-build: substrate applied, runner unpacked, path unit enabled, podman info passes"
 SCRIPT
