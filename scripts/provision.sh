@@ -51,6 +51,9 @@
 #   CLONE_RETRIES  -- attempts before giving up on VMID collision (default: 5)
 #   TASK_TIMEOUT   -- seconds to wait for a UPID task to complete (default: 120)
 #   AGENT_TIMEOUT  -- seconds to wait for the guest agent to become ready (default: 120)
+#   BOOT_ATTEMPTS  -- clone-and-boot attempts when the guest agent never answers (default: 2).
+#                   Each failed attempt destroys the stuck VM; after the last, the job
+#                   spills to EC2 if SPILL=ec2, else fails naming every attempt (sp-g0rbff).
 #   BOOT_LOCK_TIMEOUT -- seconds to wait for the per-template boot lock (default: 600).
 #                   Linked clones from the same template share a base volume; concurrent
 #                   boots contend on it and can stall long enough to miss AGENT_TIMEOUT
@@ -129,6 +132,7 @@ done
 CLONE_RETRIES="${CLONE_RETRIES:-5}"
 TASK_TIMEOUT="${TASK_TIMEOUT:-120}"
 AGENT_TIMEOUT="${AGENT_TIMEOUT:-120}"
+BOOT_ATTEMPTS="${BOOT_ATTEMPTS:-2}"
 BOOT_LOCK_TIMEOUT="${BOOT_LOCK_TIMEOUT:-600}"
 CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
 # Where the Proxmox API lives. These default to loopback because that is right
@@ -1002,14 +1006,16 @@ elif ! wait_for_capacity; then
 fi
 CAPACITY_TIMEOUT="$_cap_timeout_orig"
 
-if [ "$_spill_triggered" -eq 1 ]; then
+# The EC2 spill path. Called when Proxmox has no room, and again when a Proxmox
+# clone never brings its guest agent up on either attempt (sp-g0rbff). Always exits.
+run_ec2_spill() {
     # ── EC2 spill path ────────────────────────────────────────────────────────
     if [ "${SPILL:-off}" = "ec2-only" ]; then
         printf 'provision.sh: SPILL=ec2-only; bypassing Proxmox capacity wait (type=%s)\n' \
             "$SPILL_INSTANCE_TYPE" >&2
     else
-        printf 'provision.sh: Proxmox capacity exhausted; spilling to EC2 (type=%s)\n' \
-            "$SPILL_INSTANCE_TYPE" >&2
+        printf 'provision.sh: %s; spilling to EC2 (type=%s)\n' \
+            "${_spill_reason:-Proxmox capacity exhausted}" "$SPILL_INSTANCE_TYPE" >&2
     fi
 
     ec2_load_stack   || exit 1
@@ -1048,6 +1054,10 @@ if [ "$_spill_triggered" -eq 1 ]; then
     printf 'provision.sh: EC2 runner %s ready; token delivered via SSM\n' \
         "$SPILL_INSTANCE_ID" >&2
     exit 0
+}
+
+if [ "$_spill_triggered" -eq 1 ]; then
+    run_ec2_spill "$@"
 fi
 
 # --- Generate an ownership token ---
@@ -1067,210 +1077,272 @@ VMID="$(pick_vmid)" || exit 1
 # template instead of updating at clone time (db-e1we).
 PROVISION_TIMESTAMP="$(date +%s)"
 
-# --- Clone ---
+# --- Clone, boot, wait for the guest agent: at most BOOT_ATTEMPTS times ---
 #
-# THE DESCRIPTION CARRIES THE RUNNER NAME, AND IT IS LOAD-BEARING.
-#
-# The VM is named gh-runner-<vmid> -- teardown.sh refuses to destroy anything
-# whose name does not match that exactly, which is the guard that stops a
-# mistyped id from destroying an unrelated machine. The RUNNER is registered
-# with GitHub under $LABEL, which is a different string entirely.
-#
-# So nothing on the hypervisor said which runner a VM was, and reap.sh's
-# GitHub busy check -- which looks the VM's name up in the runner list -- could
-# never match. Every VM read as idle and age was the only real guard, while the
-# check still reported a clean result.
-#
-# Recording the label in the VM description fixes the correlation without
-# touching the name, so teardown's guard is unchanged. reap.sh already fetches
-# /qemu/<vmid>/config for ctime and the description arrives in that same
-# payload, so it costs no extra API call.
-#
-# pool=ephemeral-ci is required. A pool-scoped grant cannot allocate outside
-# its pool, so omitting it causes the clone to fail with a permissions error
-# even if the token has VM.Clone on the template.
-# THE CLONE IS THE COLLISION CHECK. Proxmox refuses to clone onto an existing
-# VMID, and that refusal is authoritative and needs no permission the token
-# lacks -- unlike probing the id first, which a pool-scoped token cannot do
-# (see pick_vmid). On refusal, ask nextid again: if the id was taken by a
-# concurrent provision, nextid has moved past it.
-
-clone_upid=""
-for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
-    printf 'provision.sh: cloning template %s -> VMID %s (attempt %s/%s)\n' \
-        "$TEMPLATE_VMID" "$VMID" "$_clone_try" "$CLONE_RETRIES" >&2
-    if clone_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${TEMPLATE_VMID}/clone" \
-        --data-urlencode "newid=${VMID}" \
-        --data-urlencode "name=gh-runner-${VMID}" \
-        --data-urlencode "description=runner=${LABEL} vmtoken=${VM_TOKEN} provision_time=${PROVISION_TIMESTAMP}" \
-        --data-urlencode "full=0" \
-        --data-urlencode "pool=ephemeral-ci")"; then
-        clone_upid="$(printf '%s\n' "$clone_body" | python3 -c \
-            'import json,sys; print(json.load(sys.stdin).get("data",""))')"
-        [ -n "$clone_upid" ] && break
-        printf 'provision.sh: clone POST returned no UPID\n' >&2
-        exit 1
+# A clone whose guest agent never answers is almost always a hypervisor whose
+# disk is saturated, not a bad VM (sp-g0rbff: two CI jobs failed before any
+# test this way). The stuck VM is destroyed and the clone retried once; if the
+# retry also fails the job spills to EC2 when the consumer enabled it, and
+# otherwise fails naming both attempts. The VMID and ownership token are
+# reused: the destroyed id is free again, so the caller's vmid= stays valid.
+destroy_stuck_vm() {
+    local id="$1" upid
+    printf 'provision.sh: destroying stuck VM %s\n' "$id" >&2
+    if upid="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${id}/status/stop" 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",""))' 2>/dev/null)" \
+       && [ -n "$upid" ]; then
+        poll_task "$upid" || printf 'provision.sh: stop of VM %s did not complete cleanly; deleting anyway\n' "$id" >&2
     fi
-    # pvapi already logged HTTP status and raw body above. Parse the body for
-    # "Permission check failed (/vms/<id>, <perm>)" so we name the actual
-    # refused object rather than always blaming the target VMID (db-g8po).
-    _refused_info="$(printf '%s' "$clone_body" | python3 -c \
-        'import json,sys,re
+    if ! upid="$(pvapi DELETE "/nodes/${PVE_NODE}/qemu/${id}?purge=1&destroy-unreferenced-disks=1" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",""))')"; then
+        printf 'provision.sh: could not destroy stuck VM %s; teardown must remove it\n' "$id" >&2
+        return 1
+    fi
+    if [ -n "$upid" ]; then
+        poll_task "$upid" || { printf 'provision.sh: destroy of VM %s failed\n' "$id" >&2; return 1; }
+    fi
+    printf 'provision.sh: stuck VM %s destroyed\n' "$id" >&2
+}
+
+_emitted_vmid=""
+_boot_exhausted=0
+for _boot_attempt in $(seq 1 "$BOOT_ATTEMPTS"); do
+    # --- Clone ---
+    #
+    # THE DESCRIPTION CARRIES THE RUNNER NAME, AND IT IS LOAD-BEARING.
+    #
+    # The VM is named gh-runner-<vmid> -- teardown.sh refuses to destroy anything
+    # whose name does not match that exactly, which is the guard that stops a
+    # mistyped id from destroying an unrelated machine. The RUNNER is registered
+    # with GitHub under $LABEL, which is a different string entirely.
+    #
+    # So nothing on the hypervisor said which runner a VM was, and reap.sh's
+    # GitHub busy check -- which looks the VM's name up in the runner list -- could
+    # never match. Every VM read as idle and age was the only real guard, while the
+    # check still reported a clean result.
+    #
+    # Recording the label in the VM description fixes the correlation without
+    # touching the name, so teardown's guard is unchanged. reap.sh already fetches
+    # /qemu/<vmid>/config for ctime and the description arrives in that same
+    # payload, so it costs no extra API call.
+    #
+    # pool=ephemeral-ci is required. A pool-scoped grant cannot allocate outside
+    # its pool, so omitting it causes the clone to fail with a permissions error
+    # even if the token has VM.Clone on the template.
+    # THE CLONE IS THE COLLISION CHECK. Proxmox refuses to clone onto an existing
+    # VMID, and that refusal is authoritative and needs no permission the token
+    # lacks -- unlike probing the id first, which a pool-scoped token cannot do
+    # (see pick_vmid). On refusal, ask nextid again: if the id was taken by a
+    # concurrent provision, nextid has moved past it.
+
+    clone_upid=""
+    for _clone_try in $(seq 1 "$CLONE_RETRIES"); do
+        printf 'provision.sh: cloning template %s -> VMID %s (attempt %s/%s)\n' \
+            "$TEMPLATE_VMID" "$VMID" "$_clone_try" "$CLONE_RETRIES" >&2
+        if clone_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${TEMPLATE_VMID}/clone" \
+            --data-urlencode "newid=${VMID}" \
+            --data-urlencode "name=gh-runner-${VMID}" \
+            --data-urlencode "description=runner=${LABEL} vmtoken=${VM_TOKEN} provision_time=${PROVISION_TIMESTAMP}" \
+            --data-urlencode "full=0" \
+            --data-urlencode "pool=ephemeral-ci")"; then
+            clone_upid="$(printf '%s\n' "$clone_body" | python3 -c \
+                'import json,sys; print(json.load(sys.stdin).get("data",""))')"
+            [ -n "$clone_upid" ] && break
+            printf 'provision.sh: clone POST returned no UPID\n' >&2
+            exit 1
+        fi
+        # pvapi already logged HTTP status and raw body above. Parse the body for
+        # "Permission check failed (/vms/<id>, <perm>)" so we name the actual
+        # refused object rather than always blaming the target VMID (db-g8po).
+        _refused_info="$(printf '%s' "$clone_body" | python3 -c \
+            'import json,sys,re
 b=sys.stdin.read()
 try: text=json.dumps(json.loads(b))
 except: text=b
 m=re.search(r"Permission check failed \(/vms/(\d+),\s*([^)]+)\)", text)
 if m: print(m.group(1)+" "+m.group(2).strip())
-' 2>/dev/null)" || true
-    _refused_vmid="${_refused_info%% *}"
-    _refused_perm="${_refused_info#* }"
-    if [ "${_refused_vmid:-}" = "$TEMPLATE_VMID" ]; then
-        printf 'provision.sh: clone refused: %s denied on template %s -- is template %s in the ephemeral-ci pool?\n' \
-            "${_refused_perm:-VM.Clone}" "$TEMPLATE_VMID" "$TEMPLATE_VMID" >&2
-    elif [ -n "${_refused_vmid:-}" ]; then
-        printf 'provision.sh: clone onto VMID %s refused (%s denied on /vms/%s); asking for a new id\n' \
-            "$VMID" "${_refused_perm:-permission}" "$_refused_vmid" >&2
-    else
-        printf 'provision.sh: clone onto VMID %s refused; asking for a new id\n' "$VMID" >&2
+    ' 2>/dev/null)" || true
+        _refused_vmid="${_refused_info%% *}"
+        _refused_perm="${_refused_info#* }"
+        if [ "${_refused_vmid:-}" = "$TEMPLATE_VMID" ]; then
+            printf 'provision.sh: clone refused: %s denied on template %s -- is template %s in the ephemeral-ci pool?\n' \
+                "${_refused_perm:-VM.Clone}" "$TEMPLATE_VMID" "$TEMPLATE_VMID" >&2
+        elif [ -n "${_refused_vmid:-}" ]; then
+            printf 'provision.sh: clone onto VMID %s refused (%s denied on /vms/%s); asking for a new id\n' \
+                "$VMID" "${_refused_perm:-permission}" "$_refused_vmid" >&2
+        else
+            printf 'provision.sh: clone onto VMID %s refused; asking for a new id\n' "$VMID" >&2
+        fi
+        VMID="$(pick_vmid)" || exit 1
+        sleep 1
+    done
+    if [ -z "$clone_upid" ]; then
+        printf 'provision.sh: could not clone after %s attempts\n' "$CLONE_RETRIES" >&2
+        exit 1
     fi
-    VMID="$(pick_vmid)" || exit 1
-    sleep 1
-done
-if [ -z "$clone_upid" ]; then
-    printf 'provision.sh: could not clone after %s attempts\n' "$CLONE_RETRIES" >&2
-    exit 1
-fi
 
-# Emit the VMID and ownership token before polling the async clone task.
-# The clone request is accepted: the VM carries vmtoken in its description,
-# and any post-clone failure still leaves a VM the caller must be able to
-# identify and destroy. Teardown is idempotent against a partially-provisioned
-# VMID. Mirror of the EC2 path above.
-#
-# There is deliberately no ledger write here. A file on this machine's disk
-# cannot be read by teardown.sh, which runs in a different job on a different
-# ephemeral runner. Ownership is established from the hypervisor instead: the
-# VM's name, its pool membership, its template flag, and the token.
-printf 'vmid=%s\n' "$VMID"
-printf 'vmtoken=%s\n' "$VM_TOKEN"
-
-# Poll the clone task. A non-OK exitstatus means the clone failed on the
-# server; do not proceed to start the VM.
-poll_task "$clone_upid" || exit 1
-
-# --- Per-repo tag, set on the CONFIG, never on the clone ---
-#
-# THE CLONE ENDPOINT HAS NO tags PROPERTY. Proxmox 9.2.2 answers a clone POST
-# carrying one with HTTP 400 and refuses the whole request:
-#
-#   {"errors":{"tags":"property is not defined in schema and the schema does
-#    not allow additional properties"}}
-#
-# and since the clone is also the VMID collision check, all CLONE_RETRIES
-# attempts fail identically and provisioning stops dead. That is what happened
-# on 2026-09-23 when v1 moved onto the commit that added the parameter: every
-# consumer pinned to @v1 lost CI until the tag was moved again.
-#
-# tags IS accepted on PUT .../config, and the qemu LIST endpoint returns it —
-# which is the only thing the per-repo cap needs, since it counts from the
-# list (see the repo_count expression above). Verified against the live
-# hypervisor, Proxmox 9.2.2, before this change was written.
-#
-# SET AFTER THE CLONE TASK COMPLETES, not before the VM exists, and treated as
-# NON-FATAL. An untagged runner makes the per-repo cap undercount by one for
-# this VM's lifetime, which costs a little fairness; refusing to provision
-# because a label did not stick would cost the whole job. The failure is
-# logged loudly so an undercount is never silent.
-if [ -n "${REPO_TAG:-}" ]; then
-    if pvapi PUT "/nodes/${PVE_NODE}/qemu/${VMID}/config" \
-        --data-urlencode "tags=${REPO_TAG}" >/dev/null; then
-        printf 'provision.sh: tagged VM %s with %s\n' "$VMID" "$REPO_TAG" >&2
-    else
-        printf 'provision.sh: WARNING could not tag VM %s with %s — the per-repo cap will undercount this runner\n' \
-            "$VMID" "$REPO_TAG" >&2
+    # Emit the VMID and ownership token before polling the async clone task.
+    # The clone request is accepted: the VM carries vmtoken in its description,
+    # and any post-clone failure still leaves a VM the caller must be able to
+    # identify and destroy. Teardown is idempotent against a partially-provisioned
+    # VMID. Mirror of the EC2 path above.
+    #
+    # There is deliberately no ledger write here. A file on this machine's disk
+    # cannot be read by teardown.sh, which runs in a different job on a different
+    # ephemeral runner. Ownership is established from the hypervisor instead: the
+    # VM's name, its pool membership, its template flag, and the token.
+    if [ "$VMID" != "$_emitted_vmid" ]; then
+        printf 'vmid=%s\n' "$VMID"
+        _emitted_vmid="$VMID"
     fi
-fi
+    if [ "$_boot_attempt" -eq 1 ]; then
+        printf 'vmtoken=%s\n' "$VM_TOKEN"
+    fi
 
-# --- Size the clone ---
-#
-# FATAL, unlike the tag: a runner left at the template's size is the OOM this
-# input exists to prevent, so proceeding silently would hide the failure until
-# the consumer's link step is killed.
-if [ -n "$RUNNER_MEMORY_MIB" ] || [ -n "$RUNNER_CORES" ]; then
-    _size_args=()
-    [ -z "$RUNNER_MEMORY_MIB" ] || _size_args+=(--data-urlencode "memory=${RUNNER_MEMORY_MIB}")
-    [ -z "$RUNNER_CORES" ] || _size_args+=(--data-urlencode "cores=${RUNNER_CORES}")
-    if ! pvapi PUT "/nodes/${PVE_NODE}/qemu/${VMID}/config" "${_size_args[@]}" >/dev/null; then
-        printf 'provision.sh: could not size VM %s (memory=%s cores=%s)\n' \
+    # Poll the clone task. A non-OK exitstatus means the clone failed on the
+    # server; do not proceed to start the VM.
+    poll_task "$clone_upid" || exit 1
+
+    # --- Per-repo tag, set on the CONFIG, never on the clone ---
+    #
+    # THE CLONE ENDPOINT HAS NO tags PROPERTY. Proxmox 9.2.2 answers a clone POST
+    # carrying one with HTTP 400 and refuses the whole request:
+    #
+    #   {"errors":{"tags":"property is not defined in schema and the schema does
+    #    not allow additional properties"}}
+    #
+    # and since the clone is also the VMID collision check, all CLONE_RETRIES
+    # attempts fail identically and provisioning stops dead. That is what happened
+    # on 2026-09-23 when v1 moved onto the commit that added the parameter: every
+    # consumer pinned to @v1 lost CI until the tag was moved again.
+    #
+    # tags IS accepted on PUT .../config, and the qemu LIST endpoint returns it —
+    # which is the only thing the per-repo cap needs, since it counts from the
+    # list (see the repo_count expression above). Verified against the live
+    # hypervisor, Proxmox 9.2.2, before this change was written.
+    #
+    # SET AFTER THE CLONE TASK COMPLETES, not before the VM exists, and treated as
+    # NON-FATAL. An untagged runner makes the per-repo cap undercount by one for
+    # this VM's lifetime, which costs a little fairness; refusing to provision
+    # because a label did not stick would cost the whole job. The failure is
+    # logged loudly so an undercount is never silent.
+    if [ -n "${REPO_TAG:-}" ]; then
+        if pvapi PUT "/nodes/${PVE_NODE}/qemu/${VMID}/config" \
+            --data-urlencode "tags=${REPO_TAG}" >/dev/null; then
+            printf 'provision.sh: tagged VM %s with %s\n' "$VMID" "$REPO_TAG" >&2
+        else
+            printf 'provision.sh: WARNING could not tag VM %s with %s — the per-repo cap will undercount this runner\n' \
+                "$VMID" "$REPO_TAG" >&2
+        fi
+    fi
+
+    # --- Size the clone ---
+    #
+    # FATAL, unlike the tag: a runner left at the template's size is the OOM this
+    # input exists to prevent, so proceeding silently would hide the failure until
+    # the consumer's link step is killed.
+    if [ -n "$RUNNER_MEMORY_MIB" ] || [ -n "$RUNNER_CORES" ]; then
+        _size_args=()
+        [ -z "$RUNNER_MEMORY_MIB" ] || _size_args+=(--data-urlencode "memory=${RUNNER_MEMORY_MIB}")
+        [ -z "$RUNNER_CORES" ] || _size_args+=(--data-urlencode "cores=${RUNNER_CORES}")
+        if ! pvapi PUT "/nodes/${PVE_NODE}/qemu/${VMID}/config" "${_size_args[@]}" >/dev/null; then
+            printf 'provision.sh: could not size VM %s (memory=%s cores=%s)\n' \
+                "$VMID" "${RUNNER_MEMORY_MIB:-template}" "${RUNNER_CORES:-template}" >&2
+            exit 1
+        fi
+        printf 'provision.sh: sized VM %s: memory=%s MiB cores=%s\n' \
             "$VMID" "${RUNNER_MEMORY_MIB:-template}" "${RUNNER_CORES:-template}" >&2
+    fi
+
+    # --- Serialize boot by template ---
+    #
+    # Linked clones from template N all share base-N's volume. Two clones booting
+    # at once both fault in blocks from that volume; the second can stall long
+    # enough to miss AGENT_TIMEOUT (sp-bmim8). Hold a per-template lock from VM
+    # start through agent-ready so at most one clone per template is booting at
+    # any moment. The lock is released before credential delivery, which does not
+    # touch the disk path that causes contention.
+    _BOOT_LOCK_FILE="/var/lock/pve-clone-${TEMPLATE_VMID}.lock"
+    exec {_boot_lock_fd}>>"$_BOOT_LOCK_FILE" || {
+        printf 'provision.sh: cannot open boot lock file %s\n' "$_BOOT_LOCK_FILE" >&2
+        exit 1
+    }
+    if ! flock -w "$BOOT_LOCK_TIMEOUT" "$_boot_lock_fd"; then
+        printf 'provision.sh: timed out waiting for boot lock for template %s (%ss)\n' \
+            "$TEMPLATE_VMID" "$BOOT_LOCK_TIMEOUT" >&2
         exit 1
     fi
-    printf 'provision.sh: sized VM %s: memory=%s MiB cores=%s\n' \
-        "$VMID" "${RUNNER_MEMORY_MIB:-template}" "${RUNNER_CORES:-template}" >&2
-fi
+    printf 'provision.sh: acquired boot lock for template %s\n' "$TEMPLATE_VMID" >&2
 
-# --- Serialize boot by template ---
-#
-# Linked clones from template N all share base-N's volume. Two clones booting
-# at once both fault in blocks from that volume; the second can stall long
-# enough to miss AGENT_TIMEOUT (sp-bmim8). Hold a per-template lock from VM
-# start through agent-ready so at most one clone per template is booting at
-# any moment. The lock is released before credential delivery, which does not
-# touch the disk path that causes contention.
-_BOOT_LOCK_FILE="/var/lock/pve-clone-${TEMPLATE_VMID}.lock"
-exec {_boot_lock_fd}>>"$_BOOT_LOCK_FILE" || {
-    printf 'provision.sh: cannot open boot lock file %s\n' "$_BOOT_LOCK_FILE" >&2
-    exit 1
-}
-if ! flock -w "$BOOT_LOCK_TIMEOUT" "$_boot_lock_fd"; then
-    printf 'provision.sh: timed out waiting for boot lock for template %s (%ss)\n' \
-        "$TEMPLATE_VMID" "$BOOT_LOCK_TIMEOUT" >&2
-    exit 1
-fi
-printf 'provision.sh: acquired boot lock for template %s\n' "$TEMPLATE_VMID" >&2
-
-# --- Start ---
-printf 'provision.sh: starting VM %s\n' "$VMID" >&2
-start_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/status/start")" || exit 1
-start_upid="$(printf '%s\n' "$start_body" | python3 -c \
-    'import json,sys; print(json.load(sys.stdin).get("data",""))')"
-if [ -z "$start_upid" ]; then
-    printf 'provision.sh: start POST returned no UPID\n' >&2
-    exit 1
-fi
-poll_task "$start_upid" || exit 1
-
-# --- Wait for guest agent ---
-#
-# The guest agent needs time to start after the VM boots. Poll /agent/ping
-# until it responds before attempting file-write, which would fail immediately
-# if the agent is not yet running.
-printf 'provision.sh: waiting for guest agent on VM %s (timeout %ss)\n' "$VMID" "$AGENT_TIMEOUT" >&2
-agent_deadline=$(( $(date +%s) + AGENT_TIMEOUT ))
-while true; do
-    # The inline pvapi() returns non-0 on non-2xx. If pvapi.sh is ever
-    # sourced here instead, pvapi() returns 0 even on 500 but sets
-    # PVAPI_STATUS. The PVAPI_STATUS:-200 default makes both work: the
-    # inline version leaves PVAPI_STATUS unset, so it defaults to 200 on
-    # any successful return (which the inline version only does on 2xx).
-    _ping_ok=0
-    if pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/agent/ping" >/dev/null 2>&1; then
-        case "${PVAPI_STATUS:-200}" in 2??) _ping_ok=1 ;; esac
-    fi
-    [ "$_ping_ok" -eq 1 ] && break
-    if [ "$(date +%s)" -ge "$agent_deadline" ]; then
-        printf 'provision.sh: timed out waiting for guest agent on VM %s (%ss)\n' \
-            "$VMID" "$AGENT_TIMEOUT" >&2
+    # --- Start ---
+    printf 'provision.sh: starting VM %s\n' "$VMID" >&2
+    start_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/status/start")" || exit 1
+    start_upid="$(printf '%s\n' "$start_body" | python3 -c \
+        'import json,sys; print(json.load(sys.stdin).get("data",""))')"
+    if [ -z "$start_upid" ]; then
+        printf 'provision.sh: start POST returned no UPID\n' >&2
         exit 1
     fi
-    sleep 2
+    poll_task "$start_upid" || exit 1
+
+    # --- Wait for guest agent ---
+    #
+    # The guest agent needs time to start after the VM boots. Poll /agent/ping
+    # until it responds before attempting file-write, which would fail immediately
+    # if the agent is not yet running.
+    printf 'provision.sh: waiting for guest agent on VM %s (timeout %ss)\n' "$VMID" "$AGENT_TIMEOUT" >&2
+    _agent_failed=0
+    agent_deadline=$(( $(date +%s) + AGENT_TIMEOUT ))
+    while true; do
+        # The inline pvapi() returns non-0 on non-2xx. If pvapi.sh is ever
+        # sourced here instead, pvapi() returns 0 even on 500 but sets
+        # PVAPI_STATUS. The PVAPI_STATUS:-200 default makes both work: the
+        # inline version leaves PVAPI_STATUS unset, so it defaults to 200 on
+        # any successful return (which the inline version only does on 2xx).
+        _ping_ok=0
+        if pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/agent/ping" >/dev/null 2>&1; then
+            case "${PVAPI_STATUS:-200}" in 2??) _ping_ok=1 ;; esac
+        fi
+        [ "$_ping_ok" -eq 1 ] && break
+        if [ "$(date +%s)" -ge "$agent_deadline" ]; then
+            printf 'provision.sh: timed out waiting for guest agent on VM %s (%ss) (boot attempt %s/%s)\n' \
+                "$VMID" "$AGENT_TIMEOUT" "$_boot_attempt" "$BOOT_ATTEMPTS" >&2
+            _agent_failed=1
+            break
+        fi
+        sleep 2
+    done
+
+    if [ "$_agent_failed" -eq 1 ]; then
+        destroy_stuck_vm "$VMID" || exit 1
+        exec {_boot_lock_fd}>&-
+        printf 'provision.sh: released boot lock for template %s\n' "$TEMPLATE_VMID" >&2
+        if [ "$_boot_attempt" -lt "$BOOT_ATTEMPTS" ]; then
+            printf 'provision.sh: destroyed stuck VM %s; retrying the clone (attempt %s/%s)\n' \
+                "$VMID" "$((_boot_attempt + 1))" "$BOOT_ATTEMPTS" >&2
+            continue
+        fi
+        _boot_exhausted=1
+        break
+    fi
+
+    # Release the boot lock. The bulk of the base-volume I/O is done once the
+    # agent answers; subsequent steps (apt masking, credential delivery) touch
+    # only the clone's own volume.
+    exec {_boot_lock_fd}>&-
+    printf 'provision.sh: released boot lock for template %s\n' "$TEMPLATE_VMID" >&2
+    break
 done
 
-# Release the boot lock. The bulk of the base-volume I/O is done once the
-# agent answers; subsequent steps (apt masking, credential delivery) touch
-# only the clone's own volume.
-exec {_boot_lock_fd}>&-
-printf 'provision.sh: released boot lock for template %s\n' "$TEMPLATE_VMID" >&2
+if [ "$_boot_exhausted" -eq 1 ]; then
+    if [ "${SPILL:-off}" = "ec2" ]; then
+        _spill_reason="Proxmox guest agent never answered on $BOOT_ATTEMPTS clone attempts"
+        run_ec2_spill "$@"
+    fi
+    printf 'provision.sh: guest agent never answered on VM %s after %s clone attempts (%ss each); spill is not enabled, failing\n' \
+        "$VMID" "$BOOT_ATTEMPTS" "$AGENT_TIMEOUT" >&2
+    exit 1
+fi
 
 # --- Mask apt automation ---
 #

@@ -158,6 +158,12 @@ case "$path" in
         # Catch-all for task polls (covers start and config tasks).
         body="{\"data\":{\"status\":\"stopped\",\"exitstatus\":\"${CURL_START_EXITSTATUS:-OK}\"}}"
         ;;
+    /nodes/*/qemu/*/status/stop)
+        body='{"data":"UPID:pve:00003:00003:00000066:qmstop:200:root@pam:"}'
+        ;;
+    /nodes/*/qemu/*[?]purge=1*)
+        body='{"data":"UPID:pve:00004:00004:00000066:qmdestroy:200:root@pam:"}'
+        ;;
     /nodes/*/qemu/*/status/start)
         body='{"data":"UPID:pve:00002:00002:00000066:qmstart:200:root@pam:"}'
         ;;
@@ -178,7 +184,11 @@ case "$path" in
         fi
         ;;
     /nodes/*/qemu/*/agent/ping)
-        if [ "${CURL_AGENT_PING_FAIL:-0}" = "1" ]; then
+        # CURL_AGENT_PING_FAIL_CLONES=N: the agent never answers on the first N
+        # clones (counted from the argv log) and answers on the next.
+        _ping_clones=$(grep -c '/clone$' "$CURL_ARGV_FILE" 2>/dev/null || true)
+        if [ "${CURL_AGENT_PING_FAIL:-0}" = "1" ] \
+           || { [ -n "${CURL_AGENT_PING_FAIL_CLONES:-}" ] && [ "${_ping_clones:-0}" -le "${CURL_AGENT_PING_FAIL_CLONES}" ]; }; then
             http_code=500
             body='{"errors":{"exc":"qemu guest agent is not running"}}'
         else
@@ -1498,7 +1508,7 @@ fi
 if ! grep -q "clone onto VMID 200" "$_err26a"; then
     ok "test-26a: error does not blame the target VMID for a template permission failure"
 else
-    ko "test-26a: error blames the target VMID instead of the template"
+    ko "test-26a: error blames the target VMID instead of the template: $(cat "$_err26a")"
 fi
 
 # Restore TEMPLATE_VMID for subsequent tests.
@@ -2232,6 +2242,51 @@ RUNNER_MEMORY_MIB=lots bash "$PROVISION" valid-label test-token https://github.c
 SPILL_INSTANCE_TYPE=m5.large bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
     >/dev/null 2>&1 && ko "test-44: disallowed instance family accepted" || ok "test-44: disallowed instance family refused"
 unset CURL_NODE_TOTAL_MIB CURL_TEMPLATE_MIB CAPACITY_POLL CAPACITY_TIMEOUT
+
+# ---------------------------------------------------------------------------
+# Test 45 -- a clone whose guest agent never answers is destroyed and retried
+# once; a second failure spills to EC2 when enabled, else fails naming both
+# attempts (sp-g0rbff)
+# ---------------------------------------------------------------------------
+export AGENT_TIMEOUT=2
+
+# (a) first clone's agent never answers, second does: retry succeeds on Proxmox.
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+CURL_AGENT_PING_FAIL_CLONES=1 bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out45a" 2>"$SCRATCH/err45a" && _rc45a=0 || _rc45a=$?
+[ "$_rc45a" -eq 0 ] && ok "test-45a: retry after a dead agent succeeds" \
+    || ko "test-45a: retry failed (rc=$_rc45a; err: $(tail -5 "$SCRATCH/err45a"))"
+[ "$(grep -c '/clone$' "$CURL_ARGV_FILE")" -eq 2 ] && ok "test-45a: cloned exactly twice" \
+    || ko "test-45a: expected 2 clones, got $(grep -c '/clone$' "$CURL_ARGV_FILE")"
+grep -q 'purge=1' "$CURL_ARGV_FILE" && ok "test-45a: stuck VM destroyed" || ko "test-45a: stuck VM not destroyed"
+grep -q '^backend=proxmox$' "$SCRATCH/out45a" && ok "test-45a: stays on proxmox" || ko "test-45a: backend not proxmox"
+[ "$(grep -c '^vmid=' "$SCRATCH/out45a")" -eq 1 ] && ok "test-45a: vmid emitted once" || ko "test-45a: vmid emitted $(grep -c '^vmid=' "$SCRATCH/out45a") times"
+grep -q 'timed out waiting for guest agent' "$SCRATCH/err45a" && ok "test-45a: timeout logged" || ko "test-45a: timeout not logged"
+
+# (b) both fail, spill enabled: EC2 path. Test 41 swapped in an expired-credentials
+# aws stub; put the working one back.
+cp "$_aws_real" "$AWS_BIN"
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+CURL_AGENT_PING_FAIL=1 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out45b" 2>"$SCRATCH/err45b" && _rc45b=0 || _rc45b=$?
+[ "$_rc45b" -eq 0 ] && ok "test-45b: second failure with spill succeeds" \
+    || ko "test-45b: failed (rc=$_rc45b; err: $(tail -5 "$SCRATCH/err45b"))"
+[ "$(grep -c '/clone$' "$CURL_ARGV_FILE")" -eq 2 ] && ok "test-45b: cloned exactly twice before spilling" \
+    || ko "test-45b: expected 2 clones"
+grep -q '^backend=ec2$' "$SCRATCH/out45b" && ok "test-45b: backend=ec2" || ko "test-45b: backend not ec2"
+grep -q 'run-instances' "$AWS_ARGV_FILE" 2>/dev/null && ok "test-45b: EC2 instance launched" || ko "test-45b: no run-instances"
+
+# (c) both fail, spill off: fails naming both attempts, no EC2.
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+CURL_AGENT_PING_FAIL=1 bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out45c" 2>"$SCRATCH/err45c" && _rc45c=0 || _rc45c=$?
+[ "$_rc45c" -ne 0 ] && ok "test-45c: both attempts failing without spill exits non-zero" || ko "test-45c: exited zero"
+grep -q 'boot attempt 1/2' "$SCRATCH/err45c" && grep -q 'boot attempt 2/2' "$SCRATCH/err45c" \
+    && grep -q 'after 2 clone attempts' "$SCRATCH/err45c" \
+    && ok "test-45c: failure names both attempts" || ko "test-45c: attempts not named: $(tail -5 "$SCRATCH/err45c")"
+! grep -q 'run-instances' "$AWS_ARGV_FILE" 2>/dev/null && ok "test-45c: no EC2 launch" || ko "test-45c: EC2 launched with spill off"
+export AGENT_TIMEOUT=5
 
 # ---------------------------------------------------------------------------
 # Summary
