@@ -46,7 +46,7 @@ for needle, what in [("ami-id", "asserts the launched ImageId"), ("podman info",
     check(needle in steps, "verify " + what)
 for repo in ("spira", "pokedumpster", "deckdumpster"):
     check(f"runner-deps ({repo})" in steps, f"verify runs runner-deps for {repo}")
-check(jobs["verify"]["timeout-minutes"] <= 15, "verify fits the 15-minute wall")
+check(jobs["verify"]["timeout-minutes"] <= 30, "verify fits the 30-minute wall (a cold test-image build)")
 vsteps = jobs["verify"]["steps"]
 names = [s.get("name", "") for s in vsteps]
 for repo in ("spira", "pokedumpster", "deckdumpster"):
@@ -57,6 +57,16 @@ for repo in ("spira", "pokedumpster", "deckdumpster"):
         check("spill-probe-first-test.sh" in step["run"] and repo in step["run"],
               f"{repo}'s start is detected from its output by the marker helper")
         check(names.index(n) > names.index(f"runner-deps ({repo})"), f"{repo}'s first test follows its runner-deps")
+vs = {s.get("name"): s for s in vsteps}
+for repo in ("spira", "pokedumpster", "deckdumpster"):
+    check(vs[f"first test starts ({repo})"].get("continue-on-error") is True,
+          f"{repo}'s first test does not stop the others")
+check(vs.get("first test verdict", {}).get("if") == "always()", "one aggregated first-test verdict")
+sp = vs["first test starts (spira)"]["run"]
+check("spill-probe-spira.sh" in sp and "SPILL_PROBE_SPIRA" not in str(vs["first test starts (spira)"]),
+      "spira's first test is its real release+testenv path, not a repo variable")
+check("running [0-9]+ suite" in sp, "spira's marker is testenv's own suite-start line")
+check(int(sp.split("spira ", 1)[1].split()[0]) >= 600, "spira's timeout is sized to an image pull")
 check(max(names.index(f"first test starts ({r})") for r in ("spira", "pokedumpster", "deckdumpster")) < len(names),
       "all three starts are in verify, which promote needs")
 check(jobs["provision"]["steps"][1]["with"].get("spill-ami-id"), "provision launches the AMI under test")
