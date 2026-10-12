@@ -1508,7 +1508,7 @@ fi
 if ! grep -q "clone onto VMID 200" "$_err26a"; then
     ok "test-26a: error does not blame the target VMID for a template permission failure"
 else
-    ko "test-26a: error blames the target VMID instead of the template"
+    ko "test-26a: error blames the target VMID instead of the template: $(cat "$_err26a")"
 fi
 
 # Restore TEMPLATE_VMID for subsequent tests.
@@ -2263,7 +2263,9 @@ grep -q '^backend=proxmox$' "$SCRATCH/out45a" && ok "test-45a: stays on proxmox"
 [ "$(grep -c '^vmid=' "$SCRATCH/out45a")" -eq 1 ] && ok "test-45a: vmid emitted once" || ko "test-45a: vmid emitted $(grep -c '^vmid=' "$SCRATCH/out45a") times"
 grep -q 'timed out waiting for guest agent' "$SCRATCH/err45a" && ok "test-45a: timeout logged" || ko "test-45a: timeout not logged"
 
-# (b) both fail, spill enabled: EC2 path.
+# (b) both fail, spill enabled: EC2 path. Test 41 swapped in an expired-credentials
+# aws stub; put the working one back.
+cp "$_aws_real" "$AWS_BIN"
 rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
 CURL_AGENT_PING_FAIL=1 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
     bash "$PROVISION" valid-label test-token https://github.com/owner/repo \

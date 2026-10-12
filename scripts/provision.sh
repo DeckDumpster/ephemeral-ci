@@ -1057,7 +1057,7 @@ run_ec2_spill() {
 }
 
 if [ "$_spill_triggered" -eq 1 ]; then
-    run_ec2_spill
+    run_ec2_spill "$@"
 fi
 
 # --- Generate an ownership token ---
@@ -1156,11 +1156,11 @@ for _boot_attempt in $(seq 1 "$BOOT_ATTEMPTS"); do
         # refused object rather than always blaming the target VMID (db-g8po).
         _refused_info="$(printf '%s' "$clone_body" | python3 -c \
             'import json,sys,re
-    b=sys.stdin.read()
-    try: text=json.dumps(json.loads(b))
-    except: text=b
-    m=re.search(r"Permission check failed \(/vms/(\d+),\s*([^)]+)\)", text)
-    if m: print(m.group(1)+" "+m.group(2).strip())
+b=sys.stdin.read()
+try: text=json.dumps(json.loads(b))
+except: text=b
+m=re.search(r"Permission check failed \(/vms/(\d+),\s*([^)]+)\)", text)
+if m: print(m.group(1)+" "+m.group(2).strip())
     ' 2>/dev/null)" || true
         _refused_vmid="${_refused_info%% *}"
         _refused_perm="${_refused_info#* }"
@@ -1337,7 +1337,7 @@ done
 if [ "$_boot_exhausted" -eq 1 ]; then
     if [ "${SPILL:-off}" = "ec2" ]; then
         _spill_reason="Proxmox guest agent never answered on $BOOT_ATTEMPTS clone attempts"
-        run_ec2_spill
+        run_ec2_spill "$@"
     fi
     printf 'provision.sh: guest agent never answered on VM %s after %s clone attempts (%ss each); spill is not enabled, failing\n' \
         "$VMID" "$BOOT_ATTEMPTS" "$AGENT_TIMEOUT" >&2
