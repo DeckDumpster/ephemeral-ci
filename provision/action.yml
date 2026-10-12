@@ -176,6 +176,13 @@ inputs:
       that is safe to retry. No effect on the Proxmox path.
     required: false
     default: 'on-demand'
+  spill-root-gib:
+    description: >-
+      Root volume size in GiB of a spilled EC2 runner. The default matches the
+      Proxmox runner's disk so a job that fits there fits on a spill. No effect
+      on the Proxmox path.
+    required: false
+    default: '80'
   spill-tailnet:
     description: >-
       "true" lets an EC2 spill runner join the tailnet as tag:round-vm for the
@@ -304,6 +311,7 @@ runs:
         SPILL_MAX_INSTANCES: ${{ inputs.spill-max-instances }}
         SPILL_TAILNET: ${{ inputs.spill-tailnet }}
         SPILL_MARKET: ${{ inputs.spill-market }}
+        SPILL_ROOT_GIB: ${{ inputs.spill-root-gib }}
         SPILL_AMI_ID: ${{ inputs.spill-ami-id }}
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
         TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}

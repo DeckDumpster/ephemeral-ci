@@ -480,6 +480,18 @@ case "$SPILL_MARKET" in
     on-demand|spot) ;;
     *) printf 'provision.sh: SPILL_MARKET=%s must be on-demand or spot\n' "$SPILL_MARKET" >&2; exit 1 ;;
 esac
+#   SPILL_ROOT_GIB      Root volume size of the spilled instance, in GiB. The
+#                       default matches the Proxmox runner (template 107, a 79G
+#                       root filesystem), because the same job must fit on either:
+#                       at 32 GiB pokedumpster's parallel gates hit the disk floor
+#                       and 7 never started (sp-6rzyjn, run 38286350182). The spill
+#                       probe asserts the free space this buys (SPILL_MIN_FREE_GIB
+#                       in spill-probe.yml repeats it: keep the two together).
+SPILL_ROOT_GIB="${SPILL_ROOT_GIB:-80}"
+SPILL_MIN_FREE_GIB=60
+case "$SPILL_ROOT_GIB" in
+    ''|*[!0-9]*) printf 'provision.sh: SPILL_ROOT_GIB=%s must be a whole number of GiB\n' "$SPILL_ROOT_GIB" >&2; exit 1 ;;
+esac
 SPILL_TAILNET_WAIT_SECONDS="${SPILL_TAILNET_WAIT_SECONDS:-90}"
 
 # Prints "<total_mib> <total_cpus> <alloc_mib> <template_mib> <alloc_cpus> <template_cpus>"
@@ -749,6 +761,7 @@ ec2_launch() {
                        --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
                        --instance-type "$SPILL_INSTANCE_TYPE" \
                        --image-id "$ami" \
+                       --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${SPILL_ROOT_GIB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true,\"Encrypted\":true}}]" \
                        --subnet-id "$subnet" \
                        --security-group-ids "$SPILL_SG_ID" \
                        "${SPILL_USERDATA_ARGS[@]}" \
@@ -786,6 +799,7 @@ ec2_launch() {
                        --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
                        --instance-type "$SPILL_INSTANCE_TYPE" \
                        --image-id "$ami" \
+                       --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${SPILL_ROOT_GIB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true,\"Encrypted\":true}}]" \
                        --subnet-id "$subnet" \
                        --security-group-ids "$SPILL_SG_ID" \
                        "${SPILL_USERDATA_ARGS[@]}" \
