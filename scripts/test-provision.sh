@@ -1797,6 +1797,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 29b (sp-vh7mju): the default market is on-demand; spot only on opt-in.
+# ---------------------------------------------------------------------------
+rm -f "$AWS_ARGV_FILE"
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>&1 || true
+if grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--instance-market-options"; then
+    ko "test-29b: default spill launched spot"
+else
+    ok "test-29b: default spill launches on-demand"
+fi
+rm -f "$AWS_ARGV_FILE"
+SPILL_MARKET=spot CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>&1 || true
+if grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--instance-market-options"; then
+    ok "test-29b: SPILL_MARKET=spot launches spot"
+else
+    ko "test-29b: SPILL_MARKET=spot did not launch spot"
+fi
+
+# ---------------------------------------------------------------------------
 # Test 30: SPILL=ec2-only → EC2 path without any Proxmox capacity check
 #   - Exits zero even though node is at capacity
 #   - backend=ec2 on stdout
