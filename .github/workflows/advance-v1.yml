@@ -26,7 +26,19 @@ name: Advance v1
 #                registration only; coupling both capabilities to one
 #                credential widens the blast radius of a leak.
 
+# Runs unattended: after every green CI on main (workflow_run) and daily
+# (schedule), advancing v2 with the same probe and input-diff gates as a hand
+# dispatch. A merged fix used to reach no consumer until someone remembered to
+# dispatch this by hand; v2 sat 33 commits behind main. When an automatic
+# advance fails, the failed check is recorded in one open issue (see the
+# report-failure job) so the block is visible instead of silent.
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '17 5 * * *'
   workflow_dispatch:
     inputs:
       dry-run:
@@ -58,9 +70,21 @@ on:
 permissions:
   contents: write
   actions: read
+  issues: write
+
+# One advance at a time; a newer trigger waits rather than racing the tag push.
+concurrency:
+  group: advance-tag
+  cancel-in-progress: false
+
+env:
+  # Non-dispatch triggers carry no inputs: they advance v2.
+  TAG: ${{ inputs.tag || 'v2' }}
 
 jobs:
   find-green:
+    # A workflow_run fires for every CI conclusion; only a success advances.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       target: ${{ steps.find-green.outputs.target }}
@@ -77,15 +101,19 @@ jobs:
           git fetch origin main
           found=""
           while IFS= read -r sha; do
-            conclusion=$(gh run list \
+            # A gh failure must surface verbatim, never read as "no green run".
+            if ! out=$(gh run list \
               --repo "${{ github.repository }}" \
               --commit "$sha" \
               --workflow ci.yml \
               --status completed \
               --limit 1 \
               --json conclusion \
-              -q '.[0].conclusion // empty' 2>/dev/null || true)
-            if [ "$conclusion" = "success" ]; then
+              -q '.[0].conclusion // empty' 2>&1); then
+              echo "::error::gh run list failed for $sha: $out"
+              exit 1
+            fi
+            if [ "$out" = "success" ]; then
               found="$sha"
               break
             fi
@@ -191,8 +219,6 @@ jobs:
   advance:
     needs: [find-green, probe-provision, probe-teardown]
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ inputs.tag }}
     steps:
       # persist-credentials: false is load-bearing. Checkout otherwise writes
       # GITHUB_TOKEN into http.https://github.com/.extraheader, which git sends
@@ -348,7 +374,7 @@ jobs:
           echo "Dry run complete. Target: $target"
 
       - name: Advance tag
-        if: inputs.dry-run == false
+        if: inputs.dry-run != true
         env:
           GH_TOKEN_WORKFLOW: ${{ secrets.V1_TAG_PAT }}
         run: |
@@ -363,3 +389,31 @@ jobs:
           git tag -f "$TAG" "$target"
           git push origin "$TAG" --force
           echo "::notice::$TAG advanced to $target"
+
+  # An automatic advance has no one watching its run. When it fails, open (or
+  # comment on) the single "v2 advance blocked" issue naming the failed jobs
+  # and steps, so the blocking check is visible without reading run logs.
+  report-failure:
+    needs: [find-green, check-probe-inputs, probe-provision, probe-teardown, advance]
+    if: failure() && github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update the advance-blocked issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          blocking=$(gh api "repos/$REPO/actions/runs/${{ github.run_id }}/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | "- job `\(.name)`, step(s): \([.steps[] | select(.conclusion == "failure") | .name] | join(", "))"')
+          [ -n "$blocking" ] || blocking="- (no failed job found; see the run)"
+          title="$TAG advance blocked"
+          body=$(printf 'The automatic advance of `%s` failed. Blocking check(s):\n\n%s\n\nRun: %s\n' "$TAG" "$blocking" "$RUN_URL")
+          existing=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" \
+            --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "$body"
+          fi
