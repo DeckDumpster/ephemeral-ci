@@ -696,5 +696,14 @@ _pol_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_PO
 if printf '%s' "$_pol_out" | grep -q "MISSING $STUBS/policy.json"; then bad "--check accepts a present policy.json" "still reported"
 else ok "--check accepts a present policy.json"; fi
 
+# sp-80jm1s: a failed smoke run carries podman's own error, not "run it by hand".
+_pm="$(mktemp -d)"
+printf '#!/bin/sh\ncase "$1" in run) echo "Error: newuidmap: command not found" >&2; exit 125;; *) exit 1;; esac\n' > "$_pm/podman"
+chmod +x "$_pm/podman"
+_pr_out="$(PATH="$_pm:$STUBS:$PATH" SUBSTRATE_SMOKE_IMAGE=example/img SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/policy.json" bash "$SUBSTRATE" --check 2>&1)"
+rm -rf "$_pm"
+if printf '%s' "$_pr_out" | grep -q 'newuidmap: command not found'; then ok "a failed smoke run prints podman's own error"
+else bad "a failed smoke run prints podman's own error" "output lacked podman's stderr"; fi
+
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
