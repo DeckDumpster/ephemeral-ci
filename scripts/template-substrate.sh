@@ -264,8 +264,10 @@ check_podman_run() {
         # shellcheck disable=SC2206
         cmd=($SUDO -u "$RUNUSER" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "${cmd[@]}")
     fi
-    "${cmd[@]}" >/dev/null 2>&1 && return 0
-    lack "podman run $SMOKE_IMAGE as ${RUNUSER}" "a container does not start under the runner's identity; run it by hand for the error"
+    local err
+    err="$("${cmd[@]}" 2>&1 >/dev/null)" && return 0
+    lack "podman run $SMOKE_IMAGE as ${RUNUSER}" "a container does not start under the runner's identity; podman said:"
+    printf '%s\n' "$err" | tail -n 20 | sed 's/^/substrate:   | /' >&2
     return 1
 }
 
