@@ -115,6 +115,15 @@ A repository that builds its round-VM AMI with the spill role (spira's
 | `ROUND_AMI_BASE_PARAM` | output `RoundAmiBaseParam` |
 | `ROUND_AMI_STAGING_BUCKET` | output `RoundAmiStagingBucket` (objects expire after one day) |
 
+#### Round VMs hold the hypervisor (`ROUND_VM_TAG`)
+
+Two full-suite runs must not share the Proxmox host. `provision` reads the
+Proxmox tag `round-vm` (env `ROUND_VM_TAG`) on **running** VMs from the same
+`/qemu` list the capacity gate uses; Spira's round-VM provisioning must set it.
+While any VM carries it, `spill: ec2` goes straight to EC2 without a Proxmox
+clone and logs `spilled: round VM <id> active`; with spill off, provision waits
+(up to `capacity-timeout-seconds`). `spill: ec2-only` is unaffected.
+
 #### Joining the tailnet (`spill-tailnet`)
 
 By default a spill runner sits in a public subnet with internet egress and no
