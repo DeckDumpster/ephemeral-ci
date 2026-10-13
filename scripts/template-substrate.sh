@@ -192,7 +192,14 @@ apt_install() {
 #                 that provides the pasta binary. Installing both costs a few
 #                 hundred kilobytes and makes the image independent of which
 #                 podman major the release ships.
-PODMAN_PKGS=(podman uidmap fuse-overlayfs slirp4netns passt catatonit)
+#
+# SINCE sp-s40pil the engine and its helpers (podman, crun, conmon, netavark,
+# aardvark-dns, slirp4netns, passt, fuse-overlayfs, catatonit, git) come from the pinned
+# runner-env in nix/flake.nix, built by runner-env.sh, not from apt: apt gave 4.9.3 on one image
+# and 5.7.0 on the other. What stays with the distro is what cannot live in /nix/store:
+# uidmap (newuidmap/newgidmap must be setuid root) and fuse3 (fusermount3, setuid, which the
+# store's fuse-overlayfs calls).
+PODMAN_PKGS=(uidmap fuse3)
 
 # A C COMPILER IS A MACHINE PROPERTY, NOT A LANGUAGE DEPENDENCY. Rust shells out to
 # `cc` to link and fails with "linker `cc` not found", which reads as a broken Rust
@@ -201,7 +208,7 @@ PODMAN_PKGS=(podman uidmap fuse-overlayfs slirp4netns passt catatonit)
 BUILD_PKGS=(build-essential pkg-config)
 
 # The runner itself and the scripts every consumer's CI calls directly.
-BASE_PKGS=(git curl ca-certificates jq)
+BASE_PKGS=(curl ca-certificates jq)
 
 # The podman major.minor every runner image must carry -- the Proxmox template
 # and the EC2 spill AMI alike. A job that spills must not meet a different
@@ -209,6 +216,18 @@ BASE_PKGS=(git curl ca-certificates jq)
 # rootless-netns split only on EC2 (sp-2h5q0k). spill-probe.yml asserts the AMI
 # reports this series before promoting it.
 PODMAN_SERIES=5.7
+
+RUNNER_ENV_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runner-env.sh"
+RUNNER_ENV_LINK="${RUNNER_ENV_LINK:-/opt/ephemeral-ci/runner-env}"
+# The pinned env comes first, for this script's own checks as for the runner.
+[ -x "$RUNNER_ENV_LINK/bin/podman" ] && PATH="$RUNNER_ENV_LINK/bin:$PATH"
+
+check_runner_env() {
+    [ -L "$RUNNER_ENV_LINK" ] || { lack "runner-env at $RUNNER_ENV_LINK" "podman and git must come from the pinned nix/flake.nix, built by scripts/runner-env.sh"; return 1; }
+    [ "$(command -v podman)" = "$RUNNER_ENV_LINK/bin/podman" ] \
+        || { lack "runner-env podman first on PATH" "podman resolves to $(command -v podman), not the pinned one"; return 1; }
+    note "runner env $(readlink -f "$RUNNER_ENV_LINK")"
+}
 
 check_podman() {
     command -v podman >/dev/null 2>&1 || { lack podman "every consumer runs containers"; return 1; }
@@ -464,6 +483,7 @@ check_tmp_backing() {
 
 run_checks() {
     MISSING=()
+    check_runner_env
     check_podman
     check_netns_backend
     check_pkgs "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}"
@@ -530,6 +550,11 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" || exit 1
+
+# The pinned runner env: needs curl (BASE_PKGS) to fetch the Nix installer, so after apt.
+[ -f "$RUNNER_ENV_SH" ] || { note "runner-env.sh missing beside this script; cannot build the pinned env"; exit 1; }
+bash "$RUNNER_ENV_SH" install || { note "runner-env install failed"; exit 1; }
+PATH="$RUNNER_ENV_LINK/bin:$PATH"
 
 if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null \
    || ! grep -q "^${RUNUSER}:" /etc/subgid 2>/dev/null; then

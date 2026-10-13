@@ -278,16 +278,20 @@ jobs:
         with:
           path: ephemeral-ci
 
-      # The Proxmox template runs this series; an image on another one makes a
-      # spilled job fail tests a template job passes (sp-2h5q0k). The series is
-      # the one source in template-substrate.sh, so a drifted image is not promoted.
-      - name: Assert container engine version parity with the template
+      # Both images build the runner env from nix/flake.nix (sp-s40pil), so parity is the
+      # STORE PATH, which covers podman and every helper at once. The expected path is what
+      # this checkout's flake evaluates to; an AMI built from any other revision of the
+      # flake (or whose PATH puts a distro podman first) is not promoted.
+      - name: Assert the runner env store path equals the lock's
         run: |
-          want="$(sed -n 's/^PODMAN_SERIES=//p' ephemeral-ci/scripts/template-substrate.sh)"
+          bash ephemeral-ci/scripts/runner-env.sh check
+          want="$(bash ephemeral-ci/scripts/runner-env.sh expected-path)"
+          echo "runner env on the AMI: $(bash ephemeral-ci/scripts/runner-env.sh built-path), lock: $want"
           have="$(podman version --format '{{.Client.Version}}')"
-          echo "podman on the AMI: $have, template series: $want"
-          test -n "$want"
-          case "$have" in "$want".*) ;; *) echo "::error::podman $have is not the template's $want.x"; exit 1 ;; esac
+          echo "podman on the AMI: $have"
+          test "$(command -v podman)" = /opt/ephemeral-ci/runner-env/bin/podman \
+            || { echo "::error::podman resolves to $(command -v podman), not the pinned runner env"; exit 1; }
+          case "$have" in "$(sed -n 's/^PODMAN_SERIES=//p' ephemeral-ci/scripts/template-substrate.sh)".*) ;; *) echo "::error::podman $have is not the series PODMAN_SERIES names"; exit 1 ;; esac
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/spira
