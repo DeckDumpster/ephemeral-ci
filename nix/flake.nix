@@ -27,7 +27,9 @@
       packages.${system} = {
         runner-env = pkgs.buildEnv {
           name = "runner-env";
-          paths = [ podmanPkgs.podman ] ++ (with pkgs; [
+          paths = [
+            podmanPkgs.podman
+          ] ++ (with pkgs; [
             crun
             conmon
             netavark
