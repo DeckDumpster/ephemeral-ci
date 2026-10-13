@@ -253,9 +253,11 @@ check_containers_policy() {
 # A REAL CONTAINER, UNDER THE RUNNER'S OWN IDENTITY. Asserting the files exist is
 # how the policy gap went unseen; only running one proves policy, registries and
 # storage together. Skipped when podman is absent (check_podman already reported it).
-SMOKE_IMAGE="${SUBSTRATE_SMOKE_IMAGE:-docker.io/library/busybox:latest}"
+# Set SUBSTRATE_SMOKE_IMAGE empty to skip (the unit tests do: they must not pull from a registry).
+SMOKE_IMAGE="${SUBSTRATE_SMOKE_IMAGE-docker.io/library/busybox:latest}"
 check_podman_run() {
     command -v podman >/dev/null 2>&1 || return 0
+    [ -n "$SMOKE_IMAGE" ] || return 0
     local uid cmd=(podman run --rm "$SMOKE_IMAGE" true)
     uid="$(id -u "$RUNUSER" 2>/dev/null)" || return 0
     if [ "$(id -u)" != "$uid" ]; then

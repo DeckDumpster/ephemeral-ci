@@ -222,6 +222,8 @@ echo "--check is safe and says what it found:"
 
 # THE WHOLE POINT OF --check IS THAT IT TOUCHES NOTHING. Verified by running it
 # with a PATH where every mutating tool is a stub that fails loudly if called.
+# No test may pull an image: the smoke run is skipped here and asserted structurally below.
+export SUBSTRATE_SMOKE_IMAGE=
 STUBS="$(mktemp -d)"
 trap 'rm -rf "$STUBS"' EXIT
 CALLS="$STUBS/calls"
