@@ -27,7 +27,7 @@ jobs:
       label:    ${{ steps.vm.outputs.label }}
       vm-token: ${{ steps.vm.outputs.vm-token }}
     steps:
-      - uses: DeckDumpster/ephemeral-ci/provision@v1
+      - uses: DeckDumpster/ephemeral-ci/provision@v2
         id: vm
         with:
           ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -58,7 +58,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: DeckDumpster/ephemeral-ci/teardown@v1
+      - uses: DeckDumpster/ephemeral-ci/teardown@v2
         with:
           vmid:     ${{ needs.provision.outputs.vmid }}
           label:    ${{ needs.provision.outputs.label }}
@@ -372,9 +372,9 @@ cost is small.
 
 ## Versioning
 
-Consumers pin `@v1` or `@v2`. `v2` adds the tailnet join on spill runners and
-`kernel.threads-max` before registration; `@v1` consumers spill without either.
-Tags move only through the Advance v1 workflow (`tag` input), never by hand.
+Consumers pin `@v2`. `v2` adds the tailnet join on spill runners and
+`kernel.threads-max` before registration. `v1` is retired: no consumer pinned it.
+The tag moves only through the Advance workflow (`advance-v1.yml`), never by hand.
 The tag moves; breaking changes get a new major. Because a
 consumer's `test` job name is part of its branch policy, nothing here will ever
 change a job name in a consuming repository — that is why this ships as

@@ -1,8 +1,8 @@
 name: Advance v1
 
-# Moves a major tag (v1 by default; the `tag` input selects v2) to the most
-# recent commit on main whose CI concluded "success". Consumers pin @v1 or @v2; this is the documented path for landing
-# a batch of changes onto them.
+# Moves the v2 major tag to the most recent commit on main whose CI concluded
+# "success". Consumers pin @v2 (v1 is retired: no consumer pinned it); this is
+# the documented path for landing a batch of changes onto them.
 #
 # Before moving the tag, three checks must pass:
 #   1. Probe: provision and teardown a real VM at the candidate SHA. A
@@ -50,14 +50,10 @@ on:
         default: false
       tag:
         description: >-
-          Which major tag to move. v2 is the first cut of a new major: it does
-          not exist yet, so the input-diff and interface checks (which compare
-          against the tag being moved) are skipped on that first cut and the
-          tag lands at the latest green commit on main. Later advances of v2
-          are checked against v2.
+          Which major tag to move. Only v2 is maintained; v1 is retired.
         type: choice
-        options: [v1, v2]
-        default: v1
+        options: [v2]
+        default: v2
       consumers-updated:
         description: >-
           Evidence that every consumer already passes the changed action
