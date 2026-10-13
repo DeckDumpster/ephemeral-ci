@@ -64,6 +64,7 @@ jobs:
               scripts/test-template-substrate.sh \
               scripts/test-advance-inputs.sh \
               scripts/test-advance-credentials.sh \
+              scripts/test-check-ami-for-ref.sh \
               scripts/test-ami-build.sh \
               scripts/test-spill-probe.sh \
               scripts/test-spill-probe-first-test.sh \
@@ -143,6 +144,10 @@ jobs:
       # push authenticates as the GitHub App instead of V1_TAG_PAT (sp-ku3ugt).
       - name: advance-v1 credentials
         run: bash scripts/test-advance-credentials.sh
+
+      # Advance refuses a ref whose AMI-input hash has no probe-passed AMI.
+      - name: advance-v1 AMI gate
+        run: bash scripts/test-check-ami-for-ref.sh
 
       # ami-build offline section: stubs describe-stacks to verify that
       # ami-build.sh reads the EphemeralCiSpill stack outputs correctly and

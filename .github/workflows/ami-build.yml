@@ -16,6 +16,8 @@ on:
       - scripts/template-substrate.sh
       - scripts/ami-build.sh
       - scripts/ami-wait.sh
+      - scripts/runner-env.sh
+      - nix/flake.nix
       - scripts/guest/start-runner.sh
       - .github/workflows/ami-build.yml
   schedule:
