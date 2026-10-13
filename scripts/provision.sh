@@ -762,7 +762,7 @@ ec2_find_ami() {
     fi
     # Same inputs as ami_inputs_sha in ami-wait.sh (kept inline: provision.sh is
     # also shipped without its siblings); test-ami-build.sh asserts they agree.
-    want="$(cat "${SCRIPT_DIR}/template-substrate.sh" "${SCRIPT_DIR}/ami-build.sh" | sha256sum | cut -d' ' -f1)"
+    want="$(cat "${SCRIPT_DIR}/template-substrate.sh" "${SCRIPT_DIR}/ami-build.sh" "${SCRIPT_DIR}/runner-env.sh" "${SCRIPT_DIR}/../nix/flake.nix" | sha256sum | cut -d' ' -f1)"
     if [ "$have" != "$want" ]; then
         printf '::error::provision.sh: spill AMI %s is stale: substrate-sha=%s, template-substrate.sh + ami-build.sh at this ref is %s; rebuild with the ami-build workflow\n' \
             "$ami" "${have:-none}" "$want" >&2
