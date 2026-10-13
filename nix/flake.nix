@@ -11,16 +11,23 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0";
 
-  outputs = { self, nixpkgs }:
+  # podman alone comes from an older revision: the Proxmox template runs podman 5.7.x
+  # (PODMAN_SERIES in template-substrate.sh) and the shared revision above carries 5.8.8, which
+  # the substrate check refuses ("MISSING podman 5.7.x -- found 5.8.8", sp-b6w7uo). This revision
+  # is nixpkgs' "podman: 5.7.0 -> 5.7.1" (#469715). Move podman to 5.8.x only together with
+  # PODMAN_SERIES and a rebuilt template.
+  inputs.nixpkgs-podman.url = "github:NixOS/nixpkgs/326648e7d0fad79d0a6c6ff8e0d62450eb372cf2";
+
+  outputs = { self, nixpkgs, nixpkgs-podman }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      podmanPkgs = import nixpkgs-podman { inherit system; };
     in {
       packages.${system} = {
         runner-env = pkgs.buildEnv {
           name = "runner-env";
-          paths = with pkgs; [
-            podman
+          paths = [ podmanPkgs.podman ] ++ (with pkgs; [
             crun
             conmon
             netavark
@@ -30,7 +37,7 @@
             fuse-overlayfs
             catatonit
             git
-          ];
+          ]);
         };
         default = self.packages.${system}.runner-env;
       };
