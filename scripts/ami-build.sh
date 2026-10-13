@@ -303,8 +303,10 @@ apply_substrate() {
     note "runner version: $runner_version"
 
     # Encode scripts as base64 (single line, no wrapping).
-    local substrate_b64 start_runner_b64
+    local substrate_b64 start_runner_b64 runner_env_b64 flake_b64
     substrate_b64="$(base64 -w0 "${SCRIPT_DIR}/template-substrate.sh")"
+    runner_env_b64="$(base64 -w0 "${SCRIPT_DIR}/runner-env.sh")"
+    flake_b64="$(base64 -w0 "${SCRIPT_DIR}/../nix/flake.nix")"
     start_runner_b64="$(base64 -w0 "${SCRIPT_DIR}/guest/start-runner.sh")"
 
     # Build the single shell script that runs on the instance. jq handles
@@ -321,9 +323,15 @@ set -euo pipefail
 id runner 2>/dev/null || sudo useradd --create-home --shell /bin/bash runner
 
 # ---- substrate ----
-printf '%s' "${substrate_b64}" | base64 -d > /tmp/template-substrate.sh
-sudo env SUBSTRATE_MEM_DECLARED=0 SUBSTRATE_USER=runner SUBSTRATE_APT_PROXY='${APT_PROXY_URL:-}' bash /tmp/template-substrate.sh
-rm -f /tmp/template-substrate.sh
+# The substrate builds the pinned runner env (nix/flake.nix) via runner-env.sh, which it
+# finds beside itself and which finds the flake at ../nix, so the tree is recreated here.
+CI_SRC=/tmp/ci-src
+mkdir -p \$CI_SRC/scripts \$CI_SRC/nix
+printf '%s' "${substrate_b64}" | base64 -d > \$CI_SRC/scripts/template-substrate.sh
+printf '%s' "${runner_env_b64}" | base64 -d > \$CI_SRC/scripts/runner-env.sh
+printf '%s' "${flake_b64}" | base64 -d > \$CI_SRC/nix/flake.nix
+sudo env SUBSTRATE_MEM_DECLARED=0 SUBSTRATE_USER=runner SUBSTRATE_APT_PROXY='${APT_PROXY_URL:-}' bash \$CI_SRC/scripts/template-substrate.sh
+rm -rf \$CI_SRC
 
 # ---- GitHub Actions runner tarball ----
 RUNNER_DIR=/home/runner/actions-runner
@@ -358,7 +366,7 @@ UNIT
 # the service and the build-time check read that one file.
 RUNNER_UID="\$(id -u runner)"
 sudo mkdir -p /etc/ephemeral-runner
-printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\nHOME=/home/runner\n' \
+printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\nHOME=/home/runner\nPATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
     "\$RUNNER_UID" "\$RUNNER_UID" | sudo tee /etc/ephemeral-runner/session.env >/dev/null
 # linger: the user manager (and /run/user/<uid>) exists from boot, not only
 # while a login session does.
