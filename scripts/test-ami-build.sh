@@ -470,6 +470,31 @@ else
 fi
 rm -f "$_term_e"
 
+# 0f. retention counts probe-passed and unproven AMIs separately: 1 passed (oldest)
+# + 3 newer unproven, --retain 1 must keep the passed one (sp-g681nm)
+_sd="$(mktemp -d)"
+_calls="$(mktemp)"
+cat > "${_sd}/aws" << 'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+    "sts get-caller-identity") printf '189923011121' ;;
+    "ec2 describe-images")
+        printf '%s' '[{"id":"ami-passed","passed":true,"snaps":["snap-passed"]},{"id":"ami-u1","passed":false,"snaps":["snap-u1"]},{"id":"ami-u2","passed":false,"snaps":["snap-u2"]},{"id":"ami-u3","passed":false,"snaps":["snap-u3"]}]' ;;
+    "ec2 deregister-image"|"ec2 delete-snapshot") printf '%s\n' "$*" >> "$STUB_CALLS" ;;
+esac
+exit 0
+STUB
+chmod +x "${_sd}/aws"
+_out="$(STUB_CALLS="$_calls" PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --prune-only --retain 1 2>&1)" || true
+if ! grep -q 'passed' "$_calls" \
+    && grep -q -- '--image-id ami-u1' "$_calls" && grep -q -- '--image-id ami-u2' "$_calls" \
+    && ! grep -q 'ami-u3' "$_calls"; then
+    ok "retention: probe-passed AMI kept under 3 newer unproven builds; older unproven pruned"
+else
+    ko "retention: wrong prune set (calls: $(tr '\n' ';' < "$_calls"); output: $_out)"
+fi
+rm -rf "$_sd" "$_calls"
+
 # ---------------------------------------------------------------------------
 # Online tests (sections 1-6): skip when not authenticated to account 189923011121
 # ---------------------------------------------------------------------------
