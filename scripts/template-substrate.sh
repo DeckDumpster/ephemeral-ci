@@ -259,6 +259,7 @@ check_podman_run() {
     local uid cmd=(podman run --rm "$SMOKE_IMAGE" true)
     uid="$(id -u "$RUNUSER" 2>/dev/null)" || return 0
     if [ "$(id -u)" != "$uid" ]; then
+        # shellcheck disable=SC2206
         cmd=($SUDO -u "$RUNUSER" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "${cmd[@]}")
     fi
     "${cmd[@]}" >/dev/null 2>&1 && return 0
