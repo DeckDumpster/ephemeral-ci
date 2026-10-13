@@ -1,5 +1,5 @@
 {
-  # runner-env -- the container engine and git the CI runner images carry, pinned through the
+  # runner-env -- the container engine, git and node/npm the CI runner images carry, pinned through the
   # SAME nixpkgs revision as spira's spira-env (spira/flake.nix), so the Proxmox template (107)
   # and the EC2 spill AMI resolve identical versions and an identical store path.
   # Design: brain wiki/projects/spira/designs/locked-system-deps-v3-2026-10-12.md (items 5-6).
@@ -39,6 +39,8 @@
             fuse-overlayfs
             catatonit
             git
+            nodejs           # node + npm: a consumer's runner-deps finds them and never apt-installs
+                             # nodejs, whose apt transaction drags Ubuntu's podman (sp-18gvv1)
           ]);
         };
         default = self.packages.${system}.runner-env;
