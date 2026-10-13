@@ -222,6 +222,8 @@ echo "--check is safe and says what it found:"
 
 # THE WHOLE POINT OF --check IS THAT IT TOUCHES NOTHING. Verified by running it
 # with a PATH where every mutating tool is a stub that fails loudly if called.
+# No test may pull an image: the smoke run is skipped here and asserted structurally below.
+export SUBSTRATE_SMOKE_IMAGE=
 STUBS="$(mktemp -d)"
 trap 'rm -rf "$STUBS"' EXIT
 CALLS="$STUBS/calls"
@@ -670,5 +672,29 @@ if printf '%s\n' "$_ab" | grep -q 'podman info fails under the runner service'; 
 else bad "the AMI build proves podman info passes for the runner before imaging" "no check"; fi
 
 echo
+echo
+echo "the container policy the nix podman needs (sp-8vists):"
+
+if has '^[[:space:]]*check_containers_policy$'; then ok "--check verifies the containers policy"
+else bad "--check verifies the containers policy" "check_containers_policy not in run_checks"; fi
+if has '^[[:space:]]*check_podman_run$'; then ok "--check runs a container under the runner's identity"
+else bad "--check runs a container under the runner's identity" "check_podman_run not in run_checks"; fi
+if has 'policy_content \| \$SUDO tee "\$POLICY_FILE"'; then ok "install writes the policy"
+else bad "install writes the policy" "no policy_content | tee step"; fi
+
+_pc_fn="$(sed -n '/^policy_content()/,/^}/p' "$SUBSTRATE")"
+_pc_got="$(bash -c "$_pc_fn; policy_content")"
+if printf '%s' "$_pc_got" | python3 -I -c 'import json,sys;d=json.load(sys.stdin);assert d["default"]==[{"type":"insecureAcceptAnything"}]'; then ok "the policy is valid JSON defaulting to insecureAcceptAnything"
+else bad "the policy is valid JSON defaulting to insecureAcceptAnything" "got: $_pc_got"; fi
+
+# On a host with no policy file, --check must name it.
+_pol_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/no-such-policy.json" bash "$SUBSTRATE" --check 2>&1)"
+if printf '%s' "$_pol_out" | grep -q "MISSING $STUBS/no-such-policy.json"; then ok "--check fails when policy.json is absent"
+else bad "--check fails when policy.json is absent" "not reported"; fi
+printf '{}\n' > "$STUBS/policy.json"
+_pol_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/policy.json" bash "$SUBSTRATE" --check 2>&1)"
+if printf '%s' "$_pol_out" | grep -q "MISSING $STUBS/policy.json"; then bad "--check accepts a present policy.json" "still reported"
+else ok "--check accepts a present policy.json"; fi
+
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

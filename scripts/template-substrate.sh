@@ -229,6 +229,46 @@ check_runner_env() {
     note "runner env $(readlink -f "$RUNNER_ENV_LINK")"
 }
 
+# THE CONTAINER POLICY THE NIX PODMAN NEEDS. The Ubuntu podman package installed
+# /etc/containers/policy.json; the pinned runner-env podman lives in /nix/store and
+# installs nothing under /etc, so on the spill AMI every `podman run` died with
+#
+#   Error: no policy.json file found at any of the following: ...
+#
+# (sp-8vists: the EC2 spill probe failed on it and the v-tag could not advance).
+# The content is Ubuntu's: accept any image, as a single-job CI runner has no
+# signature policy to enforce. registries.conf and storage.conf are NOT written;
+# podman falls back to built-in defaults for both, and the smoke run below proves it.
+POLICY_FILE="${SUBSTRATE_POLICY_FILE:-/etc/containers/policy.json}"
+policy_content() {
+    printf '{\n    "default": [\n        {\n            "type": "insecureAcceptAnything"\n        }\n    ],\n    "transports": {\n        "docker-daemon": {\n            "": [{"type": "insecureAcceptAnything"}]\n        }\n    }\n}\n'
+}
+
+check_containers_policy() {
+    [ -s "$POLICY_FILE" ] && return 0
+    lack "$POLICY_FILE" "the nix podman ships no policy and every podman run fails with 'no policy.json file found'"
+    return 1
+}
+
+# A REAL CONTAINER, UNDER THE RUNNER'S OWN IDENTITY. Asserting the files exist is
+# how the policy gap went unseen; only running one proves policy, registries and
+# storage together. Skipped when podman is absent (check_podman already reported it).
+# Set SUBSTRATE_SMOKE_IMAGE empty to skip (the unit tests do: they must not pull from a registry).
+SMOKE_IMAGE="${SUBSTRATE_SMOKE_IMAGE-docker.io/library/busybox:latest}"
+check_podman_run() {
+    command -v podman >/dev/null 2>&1 || return 0
+    [ -n "$SMOKE_IMAGE" ] || return 0
+    local uid cmd=(podman run --rm "$SMOKE_IMAGE" true)
+    uid="$(id -u "$RUNUSER" 2>/dev/null)" || return 0
+    if [ "$(id -u)" != "$uid" ]; then
+        # shellcheck disable=SC2206
+        cmd=($SUDO -u "$RUNUSER" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "${cmd[@]}")
+    fi
+    "${cmd[@]}" >/dev/null 2>&1 && return 0
+    lack "podman run $SMOKE_IMAGE as ${RUNUSER}" "a container does not start under the runner's identity; run it by hand for the error"
+    return 1
+}
+
 check_podman() {
     command -v podman >/dev/null 2>&1 || { lack podman "every consumer runs containers"; return 1; }
     local v major minor
@@ -485,6 +525,7 @@ run_checks() {
     MISSING=()
     check_runner_env
     check_podman
+    check_containers_policy
     check_netns_backend
     check_pkgs "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}"
     check_subid
@@ -492,6 +533,7 @@ run_checks() {
     check_userns
     check_unattended
     check_sudoers
+    check_podman_run
     check_apt_proxy
     check_tmp_backing
     check_mem_size
@@ -589,6 +631,13 @@ if ! check_sudoers 2>/dev/null; then
         note "refusing to install an invalid sudoers drop-in"
     fi
     rm -f "$_sudoers_tmp"
+fi
+
+if ! check_containers_policy 2>/dev/null; then
+    note "writing ${POLICY_FILE}"
+    $SUDO mkdir -p "$(dirname "$POLICY_FILE")" \
+        && policy_content | $SUDO tee "$POLICY_FILE" >/dev/null \
+        || note "could not write ${POLICY_FILE}"
 fi
 
 # Re-check and report. A partial apply is a failure here rather than a surprise
