@@ -261,8 +261,11 @@ check_podman_run() {
     local uid cmd=(podman run --rm "$SMOKE_IMAGE" true)
     uid="$(id -u "$RUNUSER" 2>/dev/null)" || return 0
     if [ "$(id -u)" != "$uid" ]; then
-        # shellcheck disable=SC2206
-        cmd=($SUDO -u "$RUNUSER" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "${cmd[@]}")
+        # $SUDO is EMPTY when the substrate is root (sp-6odr3t): expanding it unquoted
+        # made "-u" argv[0] and podman never ran. Root drops to the runner with runuser.
+        local asrunner=(sudo -n -u "$RUNUSER")
+        [ "$(id -u)" -eq 0 ] && asrunner=(runuser -u "$RUNUSER" --)
+        cmd=("${asrunner[@]}" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "${cmd[@]}")
     fi
     local err
     err="$("${cmd[@]}" 2>&1 >/dev/null)" && return 0
