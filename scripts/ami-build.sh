@@ -316,6 +316,23 @@ apply_substrate() {
 #!/bin/bash
 set -euo pipefail
 
+# SSM keeps only the first 24 KB of stdout, and the Nix installer fills that before the
+# failing line, so the failure is invisible (sp-6jft56). Everything goes to a log; on exit
+# the tail of the log reaches the controller on stderr with the exit code, and on success
+# the tail reaches stdout.
+BUILD_LOG=/var/log/ami-build.log
+exec 3>&1 4>&2
+exec >"\$BUILD_LOG" 2>&1
+finish() {
+    local rc=\$?
+    if [ "\$rc" -ne 0 ]; then
+        { echo "ami-build: remote script exited \$rc; last 4000 bytes of \$BUILD_LOG:"; tail -c 4000 "\$BUILD_LOG"; } >&4
+    else
+        tail -c 4000 "\$BUILD_LOG" >&3
+    fi
+}
+trap finish EXIT
+
 # ---- runner user (Ubuntu cloud images have no 'runner' user by default) ----
 # A REGULAR user, like the Proxmox template's: a --system user (uid < 1000) is not
 # given a logind user manager, so /run/user/<uid> and rootless podman's runroot
@@ -483,12 +500,17 @@ wait_command() {
                 ;;
             Failed|TimedOut|Cancelled|Cancelling|DeliveryTimedOut|ExecutionTimedOut)
                 printf 'ami-build.sh: SSM command %s: %s\n' "$cmd_id" "$status" >&2
-                aws ssm get-command-invocation \
-                    --command-id "$cmd_id" \
-                    --instance-id "$instance_id" \
-                    --query 'StandardErrorContent' \
-                    --output text --region "$REGION" >&2 \
-                    || note "could not retrieve StandardErrorContent for $cmd_id"
+                local field
+                for field in ResponseCode StandardOutputContent StandardErrorContent; do
+                    printf 'ami-build.sh: --- %s (tail) ---\n' "$field" >&2
+                    aws ssm get-command-invocation \
+                        --command-id "$cmd_id" \
+                        --instance-id "$instance_id" \
+                        --query "$field" \
+                        --output text --region "$REGION" 2>&1 | tail -c 4000 >&2 \
+                        || note "could not retrieve $field for $cmd_id"
+                    printf '\n' >&2
+                done
                 return 1
                 ;;
         esac
