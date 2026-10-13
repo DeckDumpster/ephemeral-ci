@@ -235,12 +235,12 @@ STUB
 _sd="$(_make_cf_stub)"
 _out="$(STUB_CF_MODE=absent PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
 rm -rf "$_sd"
-if printf '%s\n' "$_out" | grep -q 'EphemeralCiSpill'; then
+if grep -q 'EphemeralCiSpill' <<<"$_out"; then
     ok "stack-outputs absent: error names the stack"
 else
     ko "stack-outputs absent: error does not name EphemeralCiSpill (got: $_out)"
 fi
-if printf '%s\n' "$_out" | grep -q 'cdk deploy'; then
+if grep -q 'cdk deploy' <<<"$_out"; then
     ok "stack-outputs absent: error names cdk deploy"
 else
     ko "stack-outputs absent: error does not name cdk deploy (got: $_out)"
@@ -250,17 +250,17 @@ fi
 _sd="$(_make_cf_stub)"
 _out="$(STUB_CF_MODE=bad-status PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
 rm -rf "$_sd"
-if printf '%s\n' "$_out" | grep -q 'EphemeralCiSpill'; then
+if grep -q 'EphemeralCiSpill' <<<"$_out"; then
     ok "stack-outputs bad-status: error names the stack"
 else
     ko "stack-outputs bad-status: error does not name EphemeralCiSpill (got: $_out)"
 fi
-if printf '%s\n' "$_out" | grep -q 'CREATE_IN_PROGRESS'; then
+if grep -q 'CREATE_IN_PROGRESS' <<<"$_out"; then
     ok "stack-outputs bad-status: error names the status"
 else
     ko "stack-outputs bad-status: error does not name CREATE_IN_PROGRESS (got: $_out)"
 fi
-if printf '%s\n' "$_out" | grep -q 'cdk deploy'; then
+if grep -q 'cdk deploy' <<<"$_out"; then
     ok "stack-outputs bad-status: error names cdk deploy"
 else
     ko "stack-outputs bad-status: error does not name cdk deploy (got: $_out)"
@@ -270,17 +270,17 @@ fi
 _sd="$(_make_cf_stub)"
 _out="$(STUB_CF_MODE=ok PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
 rm -rf "$_sd"
-if printf '%s\n' "$_out" | grep -q 'subnet=subnet-stub00000001'; then
+if grep -q 'subnet=subnet-stub00000001' <<<"$_out"; then
     ok "stack-outputs ok: SubnetIds loaded from stack"
 else
     ko "stack-outputs ok: SubnetIds not found in output (got: $_out)"
 fi
-if printf '%s\n' "$_out" | grep -q 'sg=sg-stub000000001'; then
+if grep -q 'sg=sg-stub000000001' <<<"$_out"; then
     ok "stack-outputs ok: SecurityGroupId loaded from stack"
 else
     ko "stack-outputs ok: SecurityGroupId not found in output"
 fi
-if printf '%s\n' "$_out" | grep -q 'profile=ephemeral-ci-spill-instance'; then
+if grep -q 'profile=ephemeral-ci-spill-instance' <<<"$_out"; then
     ok "stack-outputs ok: InstanceProfileName loaded from stack"
 else
     ko "stack-outputs ok: InstanceProfileName not found in output"
@@ -297,12 +297,12 @@ if [ "$_rc" -eq 0 ]; then
 else
     ko "dry-run-fast: non-zero exit $_rc (output: $_out)"
 fi
-if printf '%s\n' "$_out" | grep -q 'dry-run: skipping SSM wait'; then
+if grep -q 'dry-run: skipping SSM wait' <<<"$_out"; then
     ok "dry-run-fast: announces skipped SSM wait with budget"
 else
     ko "dry-run-fast: no SSM wait skip announcement in dry-run output (got: $_out)"
 fi
-if printf '%s\n' "$_out" | grep -q 'dry-run: skipping build wait'; then
+if grep -q 'dry-run: skipping build wait' <<<"$_out"; then
     ok "dry-run-fast: announces skipped build wait with budget"
 else
     ko "dry-run-fast: no build wait skip announcement in dry-run output (got: $_out)"
@@ -319,12 +319,12 @@ if [ "$_rc" -ne 0 ]; then
 else
     ko "ssm-api-fail: exited 0 (expected non-zero)"
 fi
-if ! printf '%s\n' "$_out" | grep -qE '^(Pending|InProgress)$'; then
+if ! grep -qE '^(Pending|InProgress)$' <<<"$_out"; then
     ok "ssm-api-fail: API failure not misreported as Pending/InProgress"
 else
     ko "ssm-api-fail: API failure was reported as Pending or InProgress (got: $_out)"
 fi
-if printf '%s\n' "$_out" | grep -q 'AccessDeniedException\|failed.*consecutive'; then
+if grep -q 'AccessDeniedException\|failed.*consecutive' <<<"$_out"; then
     ok "ssm-api-fail: output names the API error or consecutive failure count"
 else
     ko "ssm-api-fail: output does not name the API error (got: $_out)"
@@ -547,13 +547,13 @@ dry_out="$(bash "$BOOTSTRAP" --dry-run 2>&1)" || {
     dry_out=""
 }
 
-if printf '%s\n' "$dry_out" | grep -q 'dry-run'; then
+if grep -q 'dry-run' <<<"$dry_out"; then
     ok "dry-run: dry-run mode announced"
 else
     ko "dry-run: no dry-run announcement on stderr"
 fi
 
-if printf '%s\n' "$dry_out" | grep -qE '^ami-build: done'; then
+if grep -qE '^ami-build: done' <<<"$dry_out"; then
     ko "dry-run: 'done' line appeared (real build ran)"
 else
     ok "dry-run: no real build ran"
