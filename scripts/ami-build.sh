@@ -601,7 +601,7 @@ prune_amis() {
         --filters \
             "Name=tag:${TAG_KEY},Values=${TAG_VALUE}" \
             "Name=name,Values=${AMI_NAME_PREFIX}-*" \
-        --query 'sort_by(Images, &CreationDate)[*].{id:ImageId,passed:(Tags[?Key==`spill:probe`]|[0].Value==`passed`),snaps:BlockDeviceMappings[].Ebs.SnapshotId}' \
+        --query 'sort_by(Images, &CreationDate)[*].{id:ImageId,sha:(Tags[?Key==`substrate-sha`]|[0].Value),passed:(Tags[?Key==`spill:probe`]|[0].Value==`passed`),snaps:BlockDeviceMappings[].Ebs.SnapshotId}' \
         --output json \
         --region "$REGION" 2>/dev/null)"
 
@@ -612,11 +612,20 @@ prune_amis() {
     # Probe-passed and unproven images are counted separately: each keeps its
     # newest RETAIN_COUNT, so a run of newer unproven builds can never push the
     # last probe-passed AMI (the one provision.sh selects) out of retention.
+    # The image matching a published tag's recipe is the one consumers can use
+    # (provision.sh at v1 refuses any other); it is never pruned and does not
+    # take a slot from the newest-N (sp-h8p1u2).
+    local protected_shas protected_json
+    protected_shas="$(published_tag_shas "${AMI_BUILD_REPO:-$SCRIPT_DIR/..}")"
+    protected_json="$(printf '%s\n' "$protected_shas" | jq -R -s 'split("\n") | map(select(length > 0))')"
+    note "protecting AMIs for published-tag recipes: $(printf '%s' "$protected_shas" | tr '\n' ' ')"
+
     local remove_list
     remove_list="$(printf '%s' "$amis_json" \
-        | jq -r --argjson n "$RETAIN_COUNT" '
+        | jq -r --argjson n "$RETAIN_COUNT" --argjson prot "$protected_json" '
             def stale: if length > $n then .[:length - $n] else [] end;
-            ((map(select(.passed == true)) | stale) + (map(select(.passed != true)) | stale))
+            map(select((.sha // "") as $s | ($prot | index($s)) == null)) as $rest
+            | (($rest | map(select(.passed == true)) | stale) + ($rest | map(select(.passed != true)) | stale))
             | .[] | .id, (.snaps // [] | .[] | select(. != null) | "snap:\(.)")')"
 
     if [ -z "$remove_list" ]; then

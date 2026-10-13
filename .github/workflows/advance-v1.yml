@@ -37,7 +37,7 @@ name: Advance v1
 # report-failure job) so the block is visible instead of silent.
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [CI, EC2 spill probe]
     types: [completed]
     branches: [main]
   schedule:
@@ -163,9 +163,17 @@ jobs:
   # probed green: provision.sh hashes the AMI inputs at the consumer's ref and
   # refuses any AMI not tagged with that hash, so every spill fails as stale
   # (#149 and #153, 2026-10-13). Backstop for a change merged before its AMI.
+  #
+  # On an automatic trigger a missing AMI is not a failure: the commit that
+  # changed the AMI inputs goes green before its own image exists, so that
+  # advance would fail by construction (sp-h8p1u2). It skips the rest quietly
+  # and the EC2 spill probe completing re-triggers the advance. A hand dispatch
+  # still fails on a missing AMI.
   check-ami:
     needs: find-green
     runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -178,13 +186,26 @@ jobs:
           aws-region: us-west-2
 
       - name: Require a built, probe-passed spill AMI for the target
-        run: bash scripts/check-ami-for-ref.sh "${{ needs.find-green.outputs.target }}"
+        id: check
+        run: |
+          rc=0
+          bash scripts/check-ami-for-ref.sh "${{ needs.find-green.outputs.target }}" || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [ "$rc" -eq 1 ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No probe-passed spill AMI for the target yet; skipping this advance. The EC2 spill probe passing re-triggers it."
+            echo "### Advance skipped: the target's spill AMI is not built and probed yet" >> "$GITHUB_STEP_SUMMARY"
+          else
+            exit "$rc"
+          fi
 
   # Provisions a real VM using the candidate's own actions. A green CI run
   # proves the scripts pass unit tests; this proves they work end-to-end
   # against the real template and node.
   probe-provision:
-    needs: [find-green, check-probe-inputs]
+    needs: [find-green, check-probe-inputs, check-ami]
+    if: needs.check-ami.outputs.ready == 'true'
     runs-on: ubuntu-latest
     outputs:
       vmid:     ${{ steps.provision.outputs.vmid }}
@@ -214,9 +235,9 @@ jobs:
   # runner so the Tailscale setup does not collide with probe-provision's.
   # if: always() ensures cleanup runs even when provision failed mid-way.
   probe-teardown:
-    needs: [find-green, probe-provision]
+    needs: [find-green, check-ami, probe-provision]
     runs-on: ubuntu-latest
-    if: always()
+    if: always() && needs.check-ami.outputs.ready == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -243,6 +264,7 @@ jobs:
 
   advance:
     needs: [find-green, check-ami, probe-provision, probe-teardown]
+    if: success() && needs.check-ami.outputs.ready == 'true'
     runs-on: ubuntu-latest
     steps:
       # persist-credentials: false is load-bearing. Checkout otherwise writes

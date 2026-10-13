@@ -40,6 +40,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # retention protects the published v-tags' AMIs
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

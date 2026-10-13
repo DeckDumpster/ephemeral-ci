@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # published v-tags must resolve
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:

@@ -511,6 +511,55 @@ else
 fi
 rm -rf "$_sd"
 
+# 0h. retention keeps the AMI matching the published v-tag's recipe even when it
+# is older than N newer probe-passed main AMIs (sp-h8p1u2). The fixture is a git
+# repo whose v1 tag holds recipe A; ami-v1 carries A's hash, the rest carry others.
+_repo="$(mktemp -d)"
+git -C "$_repo" init -q
+mkdir -p "$_repo/scripts" "$_repo/nix"
+for f in scripts/template-substrate.sh scripts/ami-build.sh scripts/runner-env.sh nix/flake.nix; do
+    echo "recipe-v1 $f" > "$_repo/$f"
+done
+git -C "$_repo" add -A
+git -C "$_repo" -c user.email=t@t -c user.name=t commit -q -m v1
+git -C "$_repo" tag v1
+. "${SCRIPT_DIR}/ami-wait.sh"
+_v1sha="$(ami_inputs_sha_at_ref refs/tags/v1 "$_repo")"
+_sd="$(mktemp -d)"
+_calls="$(mktemp)"
+cat > "${_sd}/aws" << STUB
+#!/usr/bin/env bash
+case "\$1 \$2" in
+    "sts get-caller-identity") printf '189923011121' ;;
+    "ec2 describe-images")
+        printf '%s' '[{"id":"ami-v1","sha":"${_v1sha}","passed":true,"snaps":["snap-v1"]},{"id":"ami-m1","sha":"m1","passed":true,"snaps":["snap-m1"]},{"id":"ami-m2","sha":"m2","passed":true,"snaps":["snap-m2"]},{"id":"ami-m3","sha":"m3","passed":true,"snaps":["snap-m3"]}]' ;;
+    "ec2 deregister-image"|"ec2 delete-snapshot") printf '%s\n' "\$*" >> "\$STUB_CALLS" ;;
+esac
+exit 0
+STUB
+chmod +x "${_sd}/aws"
+_out="$(STUB_CALLS="$_calls" PATH="${_sd}:${PATH}" PUBLISHED_TAGS=v1 AMI_BUILD_REPO="$_repo" bash "$BOOTSTRAP" --prune-only --retain 2 2>&1)" || true
+if ! grep -q 'ami-v1\|snap-v1' "$_calls" && grep -q -- '--image-id ami-m1' "$_calls" \
+    && ! grep -q 'ami-m2\|ami-m3' "$_calls"; then
+    ok "retention: published v1 recipe's AMI kept under newer probe-passed main AMIs"
+else
+    ko "retention: v1 AMI not protected (calls: $(tr '\n' ';' < "$_calls"); output: $_out)"
+fi
+
+# 0i. health: red when probe-passed AMIs exist but none matches the v1 recipe
+printf '#!/usr/bin/env bash\ncase "$*" in *substrate-sha*) printf "%%s" "$STUB_TAGGED" ;; *) printf 1 ;; esac\n' > "${_sd}/aws"
+if STUB_TAGGED=0 PATH="${_sd}:${PATH}" PUBLISHED_TAGS=v1 REPO_DIR="$_repo" bash "${SCRIPT_DIR}/check-probe-passed-ami.sh" >/dev/null 2>&1; then
+    ko "health: no AMI for the v1 recipe did not fail"
+else
+    ok "health: no probe-passed AMI for the v1 recipe fails"
+fi
+if STUB_TAGGED=1 PATH="${_sd}:${PATH}" PUBLISHED_TAGS=v1 REPO_DIR="$_repo" bash "${SCRIPT_DIR}/check-probe-passed-ami.sh" >/dev/null 2>&1; then
+    ok "health: probe-passed AMI for the v1 recipe passes"
+else
+    ko "health: AMI for the v1 recipe failed"
+fi
+rm -rf "$_sd" "$_calls" "$_repo"
+
 # ---------------------------------------------------------------------------
 # Online tests (sections 1-6): skip when not authenticated to account 189923011121
 # ---------------------------------------------------------------------------
