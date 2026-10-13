@@ -495,6 +495,22 @@ else
 fi
 rm -rf "$_sd" "$_calls"
 
+# 0g. health check: zero probe-passed AMIs is red, one is green (sp-g681nm)
+_sd="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nprintf "%%s" "$STUB_N"\n' > "${_sd}/aws"
+chmod +x "${_sd}/aws"
+if STUB_N=0 PATH="${_sd}:${PATH}" bash "${SCRIPT_DIR}/check-probe-passed-ami.sh" >/dev/null 2>&1; then
+    ko "health: zero probe-passed AMIs did not fail"
+else
+    ok "health: zero probe-passed AMIs fails"
+fi
+if STUB_N=1 PATH="${_sd}:${PATH}" bash "${SCRIPT_DIR}/check-probe-passed-ami.sh" >/dev/null 2>&1; then
+    ok "health: one probe-passed AMI passes"
+else
+    ko "health: one probe-passed AMI failed"
+fi
+rm -rf "$_sd"
+
 # ---------------------------------------------------------------------------
 # Online tests (sections 1-6): skip when not authenticated to account 189923011121
 # ---------------------------------------------------------------------------
