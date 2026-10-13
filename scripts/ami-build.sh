@@ -385,6 +385,11 @@ RUNNER_UID="\$(id -u runner)"
 sudo mkdir -p /etc/ephemeral-runner
 printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\nHOME=/home/runner\nPATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
     "\$RUNNER_UID" "\$RUNNER_UID" | sudo tee /etc/ephemeral-runner/session.env >/dev/null
+# The user manager (podman's systemd user units) does not read session.env: give it the
+# runner env's bin directory too (sp-2lzkvo).
+sudo mkdir -p /etc/environment.d
+printf 'PATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
+    | sudo tee /etc/environment.d/50-runner-env.conf >/dev/null
 # linger: the user manager (and /run/user/<uid>) exists from boot, not only
 # while a login session does.
 sudo loginctl enable-linger runner
@@ -411,13 +416,15 @@ sudo systemctl enable ephemeral-runner.path
 # ---- prove rootless podman starts for the runner BEFORE the image is cut ----
 # A broken AMI otherwise ships and every suites job fails in runner-deps with
 # "podman info fails" (sp-rgylcb). The check runs as a transient service with the
-# unit's own User= and EnvironmentFile=, not an sudo-env approximation of them.
+# unit's own User= and EnvironmentFile=, not an sudo-env approximation of them. The command
+# goes through /usr/bin/env so podman is found on the UNIT's PATH: systemd-run itself
+# resolves a bare name on sudo's PATH and fails "Failed to find executable podman" (sp-2lzkvo).
 sudo systemctl start "user@\${RUNNER_UID}.service"
 for _ in \$(seq 1 30); do [ -d "/run/user/\${RUNNER_UID}" ] && break; sleep 1; done
 [ -d "/run/user/\${RUNNER_UID}" ] || { echo "ami-build: /run/user/\${RUNNER_UID} never appeared" >&2; exit 1; }
 as_service() {
     sudo systemd-run --wait --pipe --collect -p User=runner \
-        -p EnvironmentFile=/etc/ephemeral-runner/session.env "\$@"
+        -p EnvironmentFile=/etc/ephemeral-runner/session.env /usr/bin/env "\$@"
 }
 as_service podman info >/dev/null \
     || { echo "ami-build: podman info fails under the runner service's environment" >&2; \
