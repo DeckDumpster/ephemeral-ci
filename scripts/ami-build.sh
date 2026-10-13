@@ -586,7 +586,8 @@ create_ami() {
 }
 
 # ---------------------------------------------------------------------------
-# prune_amis: keep newest RETAIN_COUNT; deregister older ones + their snapshots
+# prune_amis: keep newest RETAIN_COUNT probe-passed and newest RETAIN_COUNT
+# unproven AMIs; deregister older ones + their snapshots
 #
 # Only touches AMIs tagged spill:owner=ephemeral-ci and named
 # ephemeral-ci-runner-*. AMIs lacking that tag are never touched.
@@ -600,7 +601,7 @@ prune_amis() {
         --filters \
             "Name=tag:${TAG_KEY},Values=${TAG_VALUE}" \
             "Name=name,Values=${AMI_NAME_PREFIX}-*" \
-        --query 'sort_by(Images, &CreationDate)[*].{id:ImageId,snaps:BlockDeviceMappings[].Ebs.SnapshotId}' \
+        --query 'sort_by(Images, &CreationDate)[*].{id:ImageId,passed:(Tags[?Key==`spill:probe`]|[0].Value==`passed`),snaps:BlockDeviceMappings[].Ebs.SnapshotId}' \
         --output json \
         --region "$REGION" 2>/dev/null)"
 
@@ -608,20 +609,20 @@ prune_amis() {
     total="$(printf '%s' "$amis_json" | jq 'length')"
     note "found $total tagged AMI(s)"
 
-    if [ "$total" -le "$RETAIN_COUNT" ]; then
-        note "no pruning needed ($total <= retain $RETAIN_COUNT)"
-        return 0
-    fi
-
-    local to_remove=$(( total - RETAIN_COUNT ))
-    note "deregistering $to_remove stale AMI(s)"
-
-    # Extract AMI IDs and snapshot IDs to remove, oldest first.
-    # Filter out null snapshot IDs (block devices that are not EBS).
+    # Probe-passed and unproven images are counted separately: each keeps its
+    # newest RETAIN_COUNT, so a run of newer unproven builds can never push the
+    # last probe-passed AMI (the one provision.sh selects) out of retention.
     local remove_list
     remove_list="$(printf '%s' "$amis_json" \
-        | jq -r --argjson n "$to_remove" \
-            '.[:$n] | .[] | .id, (.snaps // [] | .[] | select(. != null) | "snap:\(.)")')"
+        | jq -r --argjson n "$RETAIN_COUNT" '
+            def stale: if length > $n then .[:length - $n] else [] end;
+            ((map(select(.passed == true)) | stale) + (map(select(.passed != true)) | stale))
+            | .[] | .id, (.snaps // [] | .[] | select(. != null) | "snap:\(.)")')"
+
+    if [ -z "$remove_list" ]; then
+        note "no pruning needed (within retain $RETAIN_COUNT per probe status)"
+        return 0
+    fi
 
     while IFS= read -r line; do
         [ -z "$line" ] && continue

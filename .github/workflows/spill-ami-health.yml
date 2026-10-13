@@ -1,0 +1,26 @@
+name: Spill AMI health
+
+# EC2 spill needs at least one spill:probe=passed AMI; with none, provision.sh
+# fails for every repo (sp-g681nm). A red run here means exactly that.
+
+on:
+  schedule:
+    - cron: '41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  probe-passed-ami:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: At least one probe-passed AMI exists
+        run: bash scripts/check-probe-passed-ami.sh
