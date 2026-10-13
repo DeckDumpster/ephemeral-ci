@@ -727,13 +727,14 @@ ec2_wait_ceiling() {
     done
 }
 
-# Print the AMI id of the newest AMI tagged spill:owner=ephemeral-ci, but only
-# if its substrate-sha tag equals the sha256 of template-substrate.sh at this
-# provision ref. A stale AMI (built before the substrate changed) fails the
-# job here, naming both hashes, rather than failing later in a consumer's
+# Print the AMI id of the newest probe-passed AMI tagged spill:owner=ephemeral-ci
+# whose substrate-sha tag equals the sha256 of the AMI inputs at this provision
+# ref. Selecting by recipe (not "newest, then compare") keeps a newer main
+# image from shadowing the one this ref's recipe built. When none matches, the
+# job fails here naming the hash looked for, rather than later in a consumer's
 # "Install runner dependencies" step.
 ec2_find_ami() {
-    local out ami have want
+    local out want ami newest
     local -a sel
     if [ -n "$SPILL_AMI_ID" ]; then
         sel=(--image-ids "$SPILL_AMI_ID"
@@ -748,14 +749,12 @@ ec2_find_ami() {
     out="$(aws ec2 describe-images \
                --region "$SPILL_REGION" \
                "${sel[@]}" \
-               --query 'sort_by(Images, &CreationDate)[-1].[ImageId, Tags[?Key==`substrate-sha`]|[0].Value]' \
+               --query 'Images[].[ImageId, Tags[?Key==`substrate-sha`]|[0].Value, CreationDate]' \
                --output text 2>&1)" || {
         printf '::error::provision.sh: cannot find spill AMI: aws ec2 describe-images failed: %s\n' "$out" >&2
         return 1
     }
-    ami="$(printf '%s' "$out" | awk '{print $1}')"
-    have="$(printf '%s' "$out" | awk '{print $2}')"
-    if [ -z "$ami" ] || [ "$ami" = "None" ]; then
+    if [ -z "$out" ]; then
         printf '::error::provision.sh: no available probe-passed AMI (spill:owner=ephemeral-ci, spill:probe=passed) in %s; run the ami-build workflow and let the spill probe promote it\n' \
             "$SPILL_REGION" >&2
         return 1
@@ -763,9 +762,11 @@ ec2_find_ami() {
     # Same inputs as ami_inputs_sha in ami-wait.sh (kept inline: provision.sh is
     # also shipped without its siblings); test-ami-build.sh asserts they agree.
     want="$(cat "${SCRIPT_DIR}/template-substrate.sh" "${SCRIPT_DIR}/ami-build.sh" "${SCRIPT_DIR}/runner-env.sh" "${SCRIPT_DIR}/../nix/flake.nix" | sha256sum | cut -d' ' -f1)"
-    if [ "$have" != "$want" ]; then
-        printf '::error::provision.sh: spill AMI %s is stale: substrate-sha=%s, template-substrate.sh + ami-build.sh at this ref is %s; rebuild with the ami-build workflow\n' \
-            "$ami" "${have:-none}" "$want" >&2
+    ami="$(printf '%s\n' "$out" | awk -F'\t' -v w="$want" '$2 == w' | sort -t"$(printf '\t')" -k3,3 | tail -n 1 | cut -f1)"
+    if [ -z "$ami" ]; then
+        newest="$(printf '%s\n' "$out" | sort -t"$(printf '\t')" -k3,3 | tail -n 1 | cut -f1,2 | tr '\t' ' ')"
+        printf '::error::provision.sh: no probe-passed spill AMI has substrate-sha=%s (template-substrate.sh + ami-build.sh + runner-env.sh + flake.nix at this ref); newest probe-passed is %s; rebuild with the ami-build workflow\n' \
+            "$want" "${newest:-none}" >&2
         return 1
     fi
     printf '%s' "$ami"
