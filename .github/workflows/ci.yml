@@ -146,6 +146,10 @@ jobs:
       - name: advance-v1 credentials
         run: bash scripts/test-advance-credentials.sh
 
+      # A hand dispatch offers only v2 and defaults to it (sp-burbrw).
+      - name: advance-v1 tag input
+        run: bash scripts/test-advance-tag-input.sh
+
       # Advance refuses a ref whose AMI-input hash has no probe-passed AMI.
       - name: advance-v1 AMI gate
         run: bash scripts/test-check-ami-for-ref.sh
