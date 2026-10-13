@@ -705,5 +705,17 @@ rm -rf "$_pm"
 if printf '%s' "$_pr_out" | grep -q 'newuidmap: command not found'; then ok "a failed smoke run prints podman's own error"
 else bad "a failed smoke run prints podman's own error" "output lacked podman's stderr"; fi
 
+# sp-6odr3t: as root ($SUDO empty) the smoke run drops to the runner with runuser,
+# never running "-u" as a command.
+_pm="$(mktemp -d)"
+printf '#!/bin/sh\nif [ "$1" = -u ] && [ $# -eq 1 ]; then echo 0; elif [ "$1" = -u ]; then echo 4242; else exec /usr/bin/id "$@"; fi\n' > "$_pm/id"
+printf '#!/bin/sh\n[ "$1" = -u ] && [ "$3" = -- ] || { echo "runuser: bad argv: $*" >&2; exit 2; }\nshift 3\nexec "$@"\n' > "$_pm/runuser"
+printf '#!/bin/sh\ncase "$1" in run) echo "Error: ran as runner" >&2; exit 125;; *) exit 1;; esac\n' > "$_pm/podman"
+chmod +x "$_pm/id" "$_pm/runuser" "$_pm/podman"
+_pr_out="$(PATH="$_pm:$STUBS:$PATH" SUBSTRATE_SMOKE_IMAGE=example/img SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/policy.json" bash "$SUBSTRATE" --check 2>&1)"
+rm -rf "$_pm"
+if printf '%s' "$_pr_out" | grep -q 'Error: ran as runner' && ! printf '%s' "$_pr_out" | grep -q -- '-u: command not found'; then ok "as root the smoke run reaches podman via runuser"
+else bad "as root the smoke run reaches podman via runuser" "$_pr_out"; fi
+
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
