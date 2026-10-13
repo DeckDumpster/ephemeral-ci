@@ -24,8 +24,8 @@ trap 'rm -rf "$tmp"' EXIT
 
 # Lay the ref's input files out as scripts/ + nix/ so ami_inputs_sha sees them
 # exactly as provision.sh does at that ref; files absent at the ref stay absent.
-mkdir -p "$tmp/scripts"
-for f in scripts/template-substrate.sh scripts/ami-build.sh; do
+mkdir -p "$tmp/scripts" "$tmp/nix"
+for f in scripts/template-substrate.sh scripts/ami-build.sh scripts/runner-env.sh nix/flake.nix; do
     if git -C "$REPO" cat-file -e "${REF}:${f}" 2>/dev/null; then
         git -C "$REPO" show "${REF}:${f}" > "$tmp/$f"
     fi

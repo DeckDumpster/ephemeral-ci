@@ -12,11 +12,12 @@ _pass() { PASS=$((PASS+1)); echo "  PASS: $1"; }
 _fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
-R="$W/repo"; mkdir -p "$R/scripts" "$W/bin"
+R="$W/repo"; mkdir -p "$R/scripts" "$R/nix" "$W/bin"
 echo sub > "$R/scripts/template-substrate.sh"; echo amib > "$R/scripts/ami-build.sh"
+echo renv > "$R/scripts/runner-env.sh"; echo flake > "$R/nix/flake.nix"
 git -C "$R" init -q; git -C "$R" add -A
 git -C "$R" -c user.name=t -c user.email=t@t commit -qm fixture
-H="$(cat "$R/scripts/template-substrate.sh" "$R/scripts/ami-build.sh" | sha256sum | cut -d' ' -f1)"
+H="$(cat "$R/scripts/template-substrate.sh" "$R/scripts/ami-build.sh" "$R/scripts/runner-env.sh" "$R/nix/flake.nix" | sha256sum | cut -d' ' -f1)"
 
 cat > "$W/bin/aws" <<'STUB'
 #!/usr/bin/env bash
