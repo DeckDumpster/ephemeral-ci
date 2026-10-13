@@ -130,12 +130,13 @@ export class SpillStack extends cdk.Stack {
     //
     // The spill role grants are listed for all repositories that may exhaust Proxmox
     // capacity and need EC2 spill: ephemeral-ci (infra self-tests), deckdumpster,
-    // pokedumpster, household, and spira. All five run runner-consuming CI workloads.
+    // pokedumpster, household, spira and dumpstar. All six run runner-consuming CI workloads.
     const SPILL_OIDC_SUB_PREFIXES: string[] = [
       'repo:DeckDumpster@262905033/ephemeral-ci@1371818598:*',  // immutable
       'repo:DeckDumpster@262905033/pokedumpster@1247247276:*',  // immutable
       'repo:DeckDumpster@262905033/household@1202178120:*',     // immutable
       'repo:DeckDumpster@262905033/spira@1358347130:*',         // immutable
+      'repo:DeckDumpster@262905033/dumpstar@1416352351:*',      // immutable (read from the API 2026-10-13)
       'repo:DeckDumpster/deckdumpster:*',                       // name-based (immutable subjects not enabled)
     ];
 
