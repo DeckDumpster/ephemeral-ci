@@ -659,6 +659,11 @@ else ok "the spill runner is a regular user"; fi
 if printf '%s\n' "$_ab" | grep -q '^Environment=XDG_RUNTIME_DIR=/run/user/%U'; then bad "the spill runner service takes its uid from session.env" "%U in a system unit expands to 0"
 elif printf '%s\n' "$_ab" | grep -q '^EnvironmentFile=/etc/ephemeral-runner/session.env' && printf '%s\n' "$_ab" | grep -q 'XDG_RUNTIME_DIR=/run/user/%s'; then ok "the spill runner service takes its uid from session.env"
 else bad "the spill runner service takes its uid from session.env" "no EnvironmentFile with the real uid"; fi
+# sp-2lzkvo: podman must be found on the unit's own PATH, and on the user manager's.
+if printf '%s\n' "$_ab" | grep -q -- 'EnvironmentFile=/etc/ephemeral-runner/session.env /usr/bin/env '; then ok "the build-time podman check resolves podman on the runner unit's PATH"
+else bad "the build-time podman check resolves podman on the runner unit's PATH" "systemd-run resolves a bare podman on sudo's PATH"; fi
+if printf '%s\n' "$_ab" | grep -q '^PATH=.*50-runner-env.conf\|environment.d/50-runner-env.conf' && printf '%s\n' "$_ab" | grep -q 'runner-env/bin'; then ok "the user manager's environment carries the runner-env bin"
+else bad "the user manager's environment carries the runner-env bin" "no environment.d entry"; fi
 if printf '%s\n' "$_ab" | grep -q '^Wants=user@\\\${RUNNER_UID}.service' && printf '%s\n' "$_ab" | grep -q '^After=.*user@\\\${RUNNER_UID}.service'; then ok "the spill runner service waits for the user manager"
 else bad "the spill runner service waits for the user manager" "no Wants/After user@<uid>.service"; fi
 if printf '%s\n' "$_ab" | grep -q 'podman info fails under the runner service'; then ok "the AMI build proves podman info passes for the runner before imaging"
