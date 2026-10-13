@@ -309,6 +309,7 @@ const SPILL_SUB_PREFIXES = [
   'repo:DeckDumpster@262905033/pokedumpster@1247247276:*',
   'repo:DeckDumpster@262905033/household@1202178120:*',
   'repo:DeckDumpster@262905033/spira@1358347130:*',
+  'repo:DeckDumpster@262905033/dumpstar@1416352351:*',
   'repo:DeckDumpster/deckdumpster:*',
 ];
 
