@@ -4,11 +4,13 @@ name: Advance v1
 # recent commit on main whose CI concluded "success". Consumers pin @v1 or @v2; this is the documented path for landing
 # a batch of changes onto them.
 #
-# Before moving the tag, two checks must pass:
+# Before moving the tag, three checks must pass:
 #   1. Probe: provision and teardown a real VM at the candidate SHA. A
 #      candidate whose provision.sh refuses the template, or whose teardown
 #      fails, cannot be v1 — consumers would break immediately.
-#   2. Interface diff: a removed input/output, a newly required input or a
+#   2. Spill AMI: an AMI tagged with the target's AMI-input hash exists and
+#      passed the spill probe (scripts/check-ami-for-ref.sh).
+#   3. Interface diff: a removed input/output, a newly required input or a
 #      changed default in provision or teardown breaks consumers and refuses
 #      without consumers-updated. A new optional input with a default, or a new
 #      output, cannot break anyone: it passes with a note in the run summary.
@@ -72,6 +74,7 @@ permissions:
   contents: write
   actions: read
   issues: write
+  id-token: write   # OIDC for the read-only spill AMI lookup in check-ami
 
 # One advance at a time; a newer trigger waits rather than racing the tag push.
 concurrency:
@@ -156,6 +159,27 @@ jobs:
             exit 1
           fi
 
+  # The tag must not move to a ref whose spill AMI was never built or never
+  # probed green: provision.sh hashes the AMI inputs at the consumer's ref and
+  # refuses any AMI not tagged with that hash, so every spill fails as stale
+  # (#149 and #153, 2026-10-13). Backstop for a change merged before its AMI.
+  check-ami:
+    needs: find-green
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_AMI_BUILD_ROLE_ARN }}
+          aws-region: us-west-2
+
+      - name: Require a built, probe-passed spill AMI for the target
+        run: bash scripts/check-ami-for-ref.sh "${{ needs.find-green.outputs.target }}"
+
   # Provisions a real VM using the candidate's own actions. A green CI run
   # proves the scripts pass unit tests; this proves they work end-to-end
   # against the real template and node.
@@ -218,7 +242,7 @@ jobs:
           consumer-result:    ${{ needs.probe-provision.result }}
 
   advance:
-    needs: [find-green, probe-provision, probe-teardown]
+    needs: [find-green, check-ami, probe-provision, probe-teardown]
     runs-on: ubuntu-latest
     steps:
       # persist-credentials: false is load-bearing. Checkout otherwise writes
@@ -357,7 +381,7 @@ jobs:
   # comment on) the single "v2 advance blocked" issue naming the failed jobs
   # and steps, so the blocking check is visible without reading run logs.
   report-failure:
-    needs: [find-green, check-probe-inputs, probe-provision, probe-teardown, advance]
+    needs: [find-green, check-ami, check-probe-inputs, probe-provision, probe-teardown, advance]
     if: failure() && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
