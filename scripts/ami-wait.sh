@@ -53,3 +53,31 @@ ami_inputs_sha() {
     local d="$1"
     cat "$d/template-substrate.sh" "$d/ami-build.sh" "$d/runner-env.sh" "$d/../nix/flake.nix" | sha256sum | cut -d' ' -f1
 }
+
+# ami_inputs_sha_at_ref <git-ref> <repo-dir>: the ami_inputs_sha provision.sh
+# computes at that ref. Files absent at the ref stay absent. Empty output and
+# status 1 when the ref does not resolve in the repo.
+ami_inputs_sha_at_ref() {
+    local ref="$1" repo="$2" tmp f
+    git -C "$repo" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null 2>&1 || return 1
+    tmp="$(mktemp -d)"
+    mkdir -p "$tmp/scripts" "$tmp/nix"
+    for f in scripts/template-substrate.sh scripts/ami-build.sh scripts/runner-env.sh nix/flake.nix; do
+        if git -C "$repo" cat-file -e "${ref}:${f}" 2>/dev/null; then
+            git -C "$repo" show "${ref}:${f}" > "$tmp/$f"
+        fi
+    done
+    ami_inputs_sha "$tmp/scripts" 2>/dev/null
+    rm -rf "$tmp"
+}
+
+# published_tag_shas <repo-dir>: one AMI-input hash per published major tag
+# (PUBLISHED_TAGS, default "v1 v2") that exists in the repo. Consumers pin these
+# tags and provision.sh at the tag accepts only the AMI matching ITS recipe, so
+# those are the images that must never be pruned or go missing (sp-h8p1u2).
+published_tag_shas() {
+    local repo="$1" t
+    for t in ${PUBLISHED_TAGS:-v1 v2}; do
+        ami_inputs_sha_at_ref "refs/tags/$t" "$repo" || true
+    done
+}

@@ -19,18 +19,10 @@ REGION="${AWS_REGION:-us-west-2}"
 # shellcheck source=ami-wait.sh
 . "$SCRIPT_DIR/ami-wait.sh"
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-# Lay the ref's input files out as scripts/ + nix/ so ami_inputs_sha sees them
-# exactly as provision.sh does at that ref; files absent at the ref stay absent.
-mkdir -p "$tmp/scripts" "$tmp/nix"
-for f in scripts/template-substrate.sh scripts/ami-build.sh scripts/runner-env.sh nix/flake.nix; do
-    if git -C "$REPO" cat-file -e "${REF}:${f}" 2>/dev/null; then
-        git -C "$REPO" show "${REF}:${f}" > "$tmp/$f"
-    fi
-done
-want="$(ami_inputs_sha "$tmp/scripts" 2>/dev/null)"
+want="$(ami_inputs_sha_at_ref "$REF" "$REPO")" || {
+    printf '::error::check-ami-for-ref.sh: %s does not resolve in %s\n' "$REF" "$REPO" >&2
+    exit 2
+}
 
 out="$(aws ec2 describe-images --region "$REGION" \
         --filters 'Name=tag:spill:owner,Values=ephemeral-ci' \
