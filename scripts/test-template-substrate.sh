@@ -75,7 +75,7 @@ done
 
 # The engine is the pinned nix env, not apt: its flake names every helper, the substrate
 # asserts the env is built and first on PATH, and installs it through runner-env.sh.
-for pkg in podman crun conmon netavark aardvark-dns slirp4netns passt fuse-overlayfs catatonit git; do
+for pkg in podman crun conmon netavark aardvark-dns slirp4netns passt fuse-overlayfs catatonit git nodejs; do
     if grep -qE "^[[:space:]]+(podmanPkgs\.)?${pkg}([[:space:]]|$)" "$SCRIPT_DIR/../nix/flake.nix"; then ok "the runner-env flake names $pkg"
     else bad "the runner-env flake names $pkg" "absent from nix/flake.nix"; fi
 done
