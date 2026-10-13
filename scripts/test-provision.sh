@@ -1552,7 +1552,7 @@ fi
 AWS_ARGV_FILE="$SCRATCH/aws-argv"
 AWS_BIN="$SCRATCH/aws"
 _d="$(dirname "${BASH_SOURCE[0]}")"
-AWS_AMI_SUBSTRATE_SHA="$(cat "$_d/template-substrate.sh" "$_d/ami-build.sh" | sha256sum | cut -d' ' -f1)"
+AWS_AMI_SUBSTRATE_SHA="$(cat "$_d/template-substrate.sh" "$_d/ami-build.sh" "$_d/runner-env.sh" "$_d/../nix/flake.nix" | sha256sum | cut -d' ' -f1)"
 export AWS_AMI_SUBSTRATE_SHA
 cat > "$AWS_BIN" << 'AWSSTUB'
 #!/bin/sh

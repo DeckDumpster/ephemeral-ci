@@ -366,7 +366,7 @@ fi
 # The aws stub bakes $term_file into the terminate-instances arm at write time
 # so the stub can record calls without needing environment variables at runtime.
 _make_ssm_fail_stub() {
-    local d term_file="$1"
+    local d term_file="$1" big="${2:-}"
     d="$(mktemp -d)"
     # Unquoted heredoc: $term_file expands now; \$... vars expand in the stub at runtime.
     cat > "${d}/aws" <<STUB
@@ -393,7 +393,8 @@ case "\$_sub" in
     "ssm get-command-invocation")
         case "\$_all" in
             *StandardErrorContent*)  printf 'E: stub-apt-error: universe list fetch failed' ;;
-            *StandardOutputContent*) printf '' ;;
+            *StandardOutputContent*) if [ -n "${big}" ]; then head -c 30000 /dev/zero | tr '\\0' 'x'; printf '\\nstub-stdout-tail'; fi ;;
+            *ResponseCode*)          printf '7' ;;
             *)                       printf 'Failed' ;;
         esac
         ;;
@@ -431,6 +432,20 @@ else
     ko "ssm-fail default: terminate-instances was not called"
 fi
 rm -f "$_term_d"
+
+# 0d2. >24 KB stdout (SSM truncates it before the failing line): the error line, the exit
+# code and a bounded stdout tail still reach the log (sp-6jft56)
+_term_b="$(mktemp)"
+_sd="$(_make_ssm_fail_stub "$_term_b" big)"
+_out_b="$(PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" 2>&1)" || true
+rm -rf "$_sd" "$_term_b"
+if grep -q 'stub-apt-error' <<<"$_out_b" && grep -q 'stub-stdout-tail' <<<"$_out_b" \
+    && grep -A1 'ResponseCode' <<<"$_out_b" | grep -qx '7' \
+    && [ "$(printf '%s' "$_out_b" | wc -c)" -lt 20000 ]; then
+    ok "ssm-fail big-stdout: error line, exit code and stdout tail printed, output bounded"
+else
+    ko "ssm-fail big-stdout: failure not fully surfaced (got: $(printf '%s' "$_out_b" | tail -c 600))"
+fi
 
 # 0e. --keep-on-failure: no termination, prints instance id and start-session command
 _term_e="$(mktemp)"
@@ -592,7 +607,7 @@ else
     ko "ami-build: git-commit tag missing"
 fi
 
-_want_sha="$(cat "${SCRIPT_DIR}/template-substrate.sh" "${SCRIPT_DIR}/ami-build.sh" | sha256sum | cut -d' ' -f1)"
+_want_sha="$(cat "${SCRIPT_DIR}/template-substrate.sh" "${SCRIPT_DIR}/ami-build.sh" "${SCRIPT_DIR}/runner-env.sh" "${SCRIPT_DIR}/../nix/flake.nix" | sha256sum | cut -d' ' -f1)"
 if printf '%s' "$ami_tags" | jq -e --arg v "$_want_sha" '.[] | select(.Key == "substrate-sha" and .Value == $v)' >/dev/null 2>&1; then
     ok "ami-build: substrate-sha tag equals sha256 of template-substrate.sh + ami-build.sh"
 else

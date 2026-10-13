@@ -62,6 +62,11 @@ cur=$(cat /proc/sys/kernel/threads-max 2>/dev/null || echo 0)
 [ "$cur" -ge "$MIN_THREADS_MAX" ] \
     || fail "kernel.threads-max is $cur, need >= $MIN_THREADS_MAX; refusing to register"
 
+# The pinned runner env (nix/flake.nix, installed by template-substrate.sh) goes first on PATH
+# for this script and, through run.sh, for every job: both images then run the same podman.
+# shellcheck disable=SC1091
+[ -r /etc/ephemeral-ci/runner-env.sh ] && . /etc/ephemeral-ci/runner-env.sh
+
 # ROOTLESS PODMAN NEEDS THE RUNNER'S OWN USER SESSION. This script runs as a
 # system unit (User=runner), so nothing hands it XDG_RUNTIME_DIR or a user bus;
 # podman then depends on whatever it can guess, and "podman info fails" names

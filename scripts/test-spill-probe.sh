@@ -43,7 +43,7 @@ for j, d in jobs.items():
 steps = "\n".join(str(s.get("run", "")) + " " + str(s.get("name", "")) for s in jobs["verify"]["steps"])
 for needle, what in [("ami-id", "asserts the launched ImageId"), ("podman info", "podman info"),
                      ("podman run --rm", "podman run"), ("NetworkBackend", "network backend"),
-                     ("PODMAN_SERIES", "asserts podman parity with the template")]:
+                     ("runner-env.sh check", "asserts the runner env store path equals the lock")]:
     check(needle in steps, "verify " + what)
 for repo in ("spira", "pokedumpster", "deckdumpster"):
     check(f"runner-deps ({repo})" in steps, f"verify runs runner-deps for {repo}")
