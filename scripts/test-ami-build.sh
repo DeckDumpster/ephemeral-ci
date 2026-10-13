@@ -592,7 +592,7 @@ else
     ko "ami-build: git-commit tag missing"
 fi
 
-_want_sha="$(cat "${SCRIPT_DIR}/template-substrate.sh" "${SCRIPT_DIR}/ami-build.sh" | sha256sum | cut -d' ' -f1)"
+_want_sha="$(cat "${SCRIPT_DIR}/template-substrate.sh" "${SCRIPT_DIR}/ami-build.sh" "${SCRIPT_DIR}/runner-env.sh" "${SCRIPT_DIR}/../nix/flake.nix" | sha256sum | cut -d' ' -f1)"
 if printf '%s' "$ami_tags" | jq -e --arg v "$_want_sha" '.[] | select(.Key == "substrate-sha" and .Value == $v)' >/dev/null 2>&1; then
     ok "ami-build: substrate-sha tag equals sha256 of template-substrate.sh + ami-build.sh"
 else

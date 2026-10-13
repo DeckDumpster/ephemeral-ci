@@ -65,13 +65,22 @@ echo "the substrate list carries what a runner cannot come up without:"
 # `command -v slirp4netns` in the backend probe still mentioned it -- the name
 # survived in a place that installs nothing.
 PKG_ARRAYS="$(printf '%s' "$JOINED" | grep -E '^[A-Z_]+_PKGS=\(')"
-for pkg in podman uidmap fuse-overlayfs slirp4netns passt catatonit; do
+for pkg in uidmap fuse3; do
     if printf '%s' "$PKG_ARRAYS" | grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))"; then
         ok "the list names $pkg"
     else
         bad "the list names $pkg" "absent from the *_PKGS arrays"
     fi
 done
+
+# The engine is the pinned nix env, not apt: its flake names every helper, the substrate
+# asserts the env is built and first on PATH, and installs it through runner-env.sh.
+for pkg in podman crun conmon netavark aardvark-dns slirp4netns passt fuse-overlayfs catatonit git; do
+    if grep -qE "^[[:space:]]+${pkg}([[:space:]]|$)" "$SCRIPT_DIR/../nix/flake.nix"; then ok "the runner-env flake names $pkg"
+    else bad "the runner-env flake names $pkg" "absent from nix/flake.nix"; fi
+done
+if has '^[[:space:]]*check_runner_env$' && has 'bash "\$RUNNER_ENV_SH" install'; then ok "the substrate builds and checks the pinned runner env"
+else bad "the substrate builds and checks the pinned runner env" "no check_runner_env / runner-env.sh install"; fi
 
 # Rust links through cc, and so do native Python wheels; the failure reads as a
 # broken language toolchain rather than a missing Debian package.
