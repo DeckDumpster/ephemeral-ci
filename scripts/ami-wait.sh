@@ -51,5 +51,5 @@ wait_for_ami() {
 # old image in service.)
 ami_inputs_sha() {
     local d="$1"
-    cat "$d/template-substrate.sh" "$d/ami-build.sh" "$d/runner-env.sh" "$d/../nix/flake.nix" | sha256sum | cut -d' ' -f1
+    cat "$d/template-substrate.sh" "$d/ami-build.sh" | sha256sum | cut -d' ' -f1
 }
