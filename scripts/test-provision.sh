@@ -279,7 +279,9 @@ case "$path" in
                 _repo_runners_json="${_repo_runners_json},{\"vmid\":${_rvm},\"name\":\"gh-runner-${_rvm}\",\"status\":\"running\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8},\"tags\":\"${CURL_NODE_REPO_TAG}\"}"
             done
         fi
-        body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( ${CURL_NODE_ALLOC_MIB:-0} * 1048576 )),\"cpus\":${_eff_alloc_cpus}}${_repo_runners_json},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8}}]}"
+        _round_json=""
+        [ -z "${CURL_ROUND_VM:-}" ] || _round_json=",{\"vmid\":${CURL_ROUND_VM},\"name\":\"round-vm\",\"status\":\"running\",\"maxmem\":1048576,\"cpus\":1,\"tags\":\"round-vm\"}"
+        body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( ${CURL_NODE_ALLOC_MIB:-0} * 1048576 )),\"cpus\":${_eff_alloc_cpus}}${_repo_runners_json}${_round_json},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8}}]}"
         ;;
     *)
         printf 'curl stub: unhandled path: %s\n' "$path" >&2
@@ -2332,6 +2334,36 @@ grep -q 'boot attempt 1/2' "$SCRATCH/err45c" && grep -q 'boot attempt 2/2' "$SCR
     && ok "test-45c: failure names both attempts" || ko "test-45c: attempts not named: $(tail -5 "$SCRATCH/err45c")"
 ! grep -q 'run-instances' "$AWS_ARGV_FILE" 2>/dev/null && ok "test-45c: no EC2 launch" || ko "test-45c: EC2 launched with spill off"
 export AGENT_TIMEOUT=5
+
+# ---------------------------------------------------------------------------
+# Test 46 (sp-ht90zd): a running round VM holds the hypervisor. spill=ec2 goes
+# straight to EC2 without a clone and logs why; with none active it uses
+# Proxmox; spill off waits (and here times out) rather than share.
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+CURL_ROUND_VM=777 CAPACITY_TIMEOUT=600 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out46a" 2>"$SCRATCH/err46a" && _rc46a=0 || _rc46a=$?
+[ "$_rc46a" -eq 0 ] && grep -q '^backend=ec2' "$SCRATCH/out46a" \
+    && ok "test-46a: round VM active + spill=ec2 chooses EC2" || ko "test-46a: not EC2 (rc=$_rc46a): $(tail -5 "$SCRATCH/err46a")"
+grep -q 'spilled: round VM 777 active' "$SCRATCH/err46a" \
+    && ok "test-46a: decision logged" || ko "test-46a: no 'spilled: round VM 777 active' log"
+! grep -q '/clone' "$CURL_ARGV_FILE" 2>/dev/null \
+    && ok "test-46a: Proxmox clone never attempted" || ko "test-46a: Proxmox clone attempted"
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out46b" 2>"$SCRATCH/err46b" && _rc46b=0 || _rc46b=$?
+[ "$_rc46b" -eq 0 ] && ! grep -q '^backend=ec2' "$SCRATCH/out46b" && grep -q '/clone' "$CURL_ARGV_FILE" \
+    && ok "test-46b: no round VM chooses Proxmox" || ko "test-46b: did not use Proxmox (rc=$_rc46b)"
+! grep -q 'run-instances' "$AWS_ARGV_FILE" 2>/dev/null \
+    && ok "test-46b: no EC2 launch" || ko "test-46b: EC2 launched"
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+CURL_ROUND_VM=777 CAPACITY_TIMEOUT=0 SPILL=off \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out46c" 2>"$SCRATCH/err46c" && _rc46c=0 || _rc46c=$?
+[ "$_rc46c" -ne 0 ] && grep -q 'round VM 777' "$SCRATCH/err46c" && ! grep -q '/clone' "$CURL_ARGV_FILE" 2>/dev/null \
+    && ok "test-46c: spill off waits on the round VM, no clone" || ko "test-46c: spill off did not wait (rc=$_rc46c)"
 
 # ---------------------------------------------------------------------------
 # Summary
