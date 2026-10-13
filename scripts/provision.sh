@@ -535,11 +535,47 @@ print(run_mem, tpl_mem, run_cpu, tpl_cpu, repo_count)' 2>/dev/null)" || return 1
     printf '%s %s' "$status_vals" "$rest"
 }
 
+# --- A running Spira round VM holds the hypervisor ---------------------------
+#
+# Spira certifies a landing round by running its full suite in a VM on this
+# node, and two full-suite runs must not share the hypervisor: on 2026-10-13 a
+# CI VM overlapped round r-auto-59, whose suites ran 906s against a 900s cap and
+# lost the VM (sp-ht90zd). The signal is the Proxmox tag ROUND_VM_TAG (default
+# "round-vm") on a RUNNING VM, read from the same /qemu list the capacity gate
+# reads -- no reach into Spira's store. Spira's round-VM provisioning is what
+# sets the tag. Prints the vmids of tagged running VMs (space separated) and
+# returns 0 when there is at least one; returns 1 when none or unreadable.
+ROUND_VM_TAG="${ROUND_VM_TAG:-round-vm}"
+round_vm_active() {
+    local body ids
+    body="$(pvapi GET "/nodes/${PVE_NODE}/qemu" 2>/dev/null)" || return 1
+    ids="$(printf '%s' "$body" | ROUND_VM_TAG="$ROUND_VM_TAG" python3 -c \
+        'import json,os,sys
+t=os.environ["ROUND_VM_TAG"]
+d=json.load(sys.stdin)["data"]
+print(" ".join(str(v.get("vmid")) for v in d if v.get("status")=="running" and t in [x.strip() for x in (v.get("tags","") or "").split(";")]))' 2>/dev/null)" || return 1
+    [ -n "$ids" ] || return 1
+    printf '%s' "$ids"
+}
+
 wait_for_capacity() {
     local total_mib total_cpus alloc_mib want_mib alloc_cpus want_cpus \
           free_mib need_mib free_cpus need_cpus repo_count _repo_at_cap \
-          waited=0 resources
+          waited=0 resources _round_ids
     while :; do
+        # A round VM holds the hypervisor: wait, exactly as for capacity.
+        if _round_ids="$(round_vm_active)"; then
+            if [ "$waited" -ge "$CAPACITY_TIMEOUT" ]; then
+                printf '::error::provision.sh: waited %ss; round VM %s still holds %s\n' \
+                    "$waited" "$_round_ids" "$PVE_NODE" >&2
+                return 1
+            fi
+            printf 'provision.sh: round VM %s active on %s -- waiting (%ss/%ss)\n' \
+                "$_round_ids" "$PVE_NODE" "$waited" "$CAPACITY_TIMEOUT" >&2
+            sleep "$CAPACITY_POLL"
+            waited=$(( waited + CAPACITY_POLL ))
+            continue
+        fi
         if ! resources="$(node_resources)" || [ -z "$resources" ]; then
             # node_resources() already printed the failing call and HTTP status
             # to stderr via pvapi(). Naming the call (not just the required
@@ -1027,6 +1063,9 @@ fi
 
 _spill_triggered=0
 if [ "${SPILL:-off}" = "ec2-only" ]; then
+    _spill_triggered=1
+elif [ "${SPILL:-off}" = "ec2" ] && _round_ids_spill="$(round_vm_active)"; then
+    _spill_reason="spilled: round VM ${_round_ids_spill} active"
     _spill_triggered=1
 elif ! wait_for_capacity; then
     CAPACITY_TIMEOUT="$_cap_timeout_orig"
