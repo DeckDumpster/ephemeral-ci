@@ -1567,7 +1567,11 @@ case "$1 $2" in
         printf '0\n'
         ;;
     "ec2 describe-images")
-        printf 'ami-testdeadbeef\t%s\n' "${AWS_AMI_SUBSTRATE_SHA}"
+        if [ -n "${AWS_IMAGES:-}" ]; then
+            printf '%b\n' "$AWS_IMAGES"
+        else
+            printf 'ami-testdeadbeef\t%s\t2026-01-01T00:00:00.000Z\n' "${AWS_AMI_SUBSTRATE_SHA}"
+        fi
         ;;
     "ec2 run-instances")
         # Keep a copy of any user-data file: provision.sh deletes it on exit.
@@ -2160,25 +2164,39 @@ else
     ko "test-39: successful provision terminated its instance"
 fi
 
-# Stale AMI: its substrate-sha tag differs from template-substrate.sh at this
-# ref. Provision must fail loudly, name the AMI and both hashes, and launch
-# nothing.
+# No probe-passed AMI carries the recipe hash at this ref: provision must fail
+# loudly, name the hash it looked for, and launch nothing.
 rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
 _err40="$SCRATCH/err40"
-AWS_AMI_SUBSTRATE_SHA=staleoldhash CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only \
+AWS_IMAGES='ami-oldrecipe\tstaleoldhash\t2026-01-01T00:00:00.000Z' \
+    CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only \
     SPILL_SSM_WAIT_SECONDS=60 \
     bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
     >/dev/null 2>"$_err40" && _rc40=0 || _rc40=$?
-if [ "$_rc40" -ne 0 ] && grep -q 'ami-testdeadbeef is stale' "$_err40" \
-   && grep -q 'staleoldhash' "$_err40" && grep -q "$AWS_AMI_SUBSTRATE_SHA" "$_err40"; then
-    ok "test-40: a stale AMI is refused, naming the AMI and both hashes"
+if [ "$_rc40" -ne 0 ] && grep -q "substrate-sha=$AWS_AMI_SUBSTRATE_SHA" "$_err40" \
+   && grep -q 'ami-oldrecipe staleoldhash' "$_err40"; then
+    ok "test-40: no AMI matching the recipe is refused, naming the hash looked for"
 else
-    ko "test-40: stale AMI not refused (rc=$_rc40; err: $(cat "$_err40"))"
+    ko "test-40: unmatched recipe not refused (rc=$_rc40; err: $(cat "$_err40"))"
 fi
 if ! grep -q 'run-instances' "$AWS_ARGV_FILE"; then
-    ok "test-40: a stale AMI launches nothing"
+    ok "test-40: an unmatched recipe launches nothing"
 else
-    ko "test-40: stale AMI was launched"
+    ko "test-40: unmatched recipe was launched"
+fi
+
+# Recipe A passed (older), recipe B passed (newer), consumer ref computes A:
+# provision selects A, not the newest.
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+AWS_IMAGES="ami-recipeB\totherrecipe\t2026-03-01T00:00:00.000Z\nami-recipeA\t${AWS_AMI_SUBSTRATE_SHA}\t2026-02-01T00:00:00.000Z" \
+    CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >/dev/null 2>&1 || true
+if grep 'run-instances' "$AWS_ARGV_FILE" | grep -q 'ami-recipeA' \
+   && ! grep 'run-instances' "$AWS_ARGV_FILE" | grep -q 'ami-recipeB'; then
+    ok "test-40: the older AMI matching the ref's recipe is selected over a newer one"
+else
+    ko "test-40: wrong AMI selected (aws calls: $(cat "$AWS_ARGV_FILE"))"
 fi
 
 # Expired credentials: describe-images fails auth. The error must be surfaced,
