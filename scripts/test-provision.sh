@@ -1603,6 +1603,7 @@ case "$1 $2" in
             printf '%s' "$_ri_n" > "$_ri_state"
             if [ "$_ri_n" -le "${AWS_RUN_INSTANCES_FAIL_N}" ]; then
                 printf 'An error occurred (InsufficientInstanceCapacity) when calling the RunInstances operation: insufficient capacity.\n' >&2
+                sleep "${AWS_RUN_INSTANCES_FAIL_SLEEP:-0}"
                 exit 1
             fi
         fi
@@ -2467,6 +2468,55 @@ CURL_ROUND_VM=777 CAPACITY_TIMEOUT=0 SPILL=off \
     >"$SCRATCH/out46c" 2>"$SCRATCH/err46c" && _rc46c=0 || _rc46c=$?
 [ "$_rc46c" -ne 0 ] && grep -q 'round VM 777' "$SCRATCH/err46c" && ! grep -q '/clone' "$CURL_ARGV_FILE" 2>/dev/null \
     && ok "test-46c: spill off waits on the round VM, no clone" || ko "test-46c: spill off did not wait (rc=$_rc46c)"
+
+# ---------------------------------------------------------------------------
+# Test 47: the per-run record (sp-i6qrxk)
+#   47a: one refused launch then a success -> a parseable run-record= line with
+#        the instance type, vCPUs, market, a non-zero capacity wait and the
+#        refusal reason; the stderr log line opens with its own UTC stamp only
+#        on failure, so here it is the stdout record that carries it
+#   47b: a Proxmox run records backend proxmox with no instance type
+#   47c: finish adds the register wait and logs the stamped line
+# ---------------------------------------------------------------------------
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE" "${TMPDIR:-/tmp}/ri-count"
+CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2 SPILL_SSM_WAIT_SECONDS=60 \
+    SPILL_INSTANCE_TYPE=c7i.4xlarge REPO_SLUG=owner/repo GITHUB_RUN_ID=4242 \
+    AWS_RUN_INSTANCES_FAIL_N=1 AWS_RUN_INSTANCES_FAIL_SLEEP=1 \
+    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out47a" 2>"$SCRATCH/err47a" && _rc47a=0 || _rc47a=$?
+rm -f "${TMPDIR:-/tmp}/ri-count"
+_rec47a="$(sed -n 's/^run-record=//p' "$SCRATCH/out47a")"
+[ "$(printf '%s\n' "$_rec47a" | grep -c .)" -eq 1 ] \
+    && ok "test-47a: exactly one run-record= line on stdout" || ko "test-47a: run-record= lines: '$_rec47a' (rc=$_rc47a)"
+_chk47a="$(RR="$_rec47a" python3 -c '
+import json, os
+r = json.loads(os.environ["RR"])
+assert r["event"] == "provision" and r["backend"] == "ec2", r
+assert r["instance_type"] == "c7i.4xlarge" and r["vcpus"] == 16, r
+assert r["market"] == "on-demand" and r["outcome"] == "ok", r
+assert r["repo"] == "owner/repo" and r["run_id"] == "4242" and r["label"] == "valid-label", r
+assert r["capacity_wait_s"] >= 1, r
+assert len(r["refusals"]) == 1 and r["refusals"][0]["reason"] == "InsufficientInstanceCapacity", r
+assert r["instance_id"] == "i-testinstance001", r
+print("ok")' 2>&1)"
+[ "$_chk47a" = "ok" ] && ok "test-47a: record parses with type, vCPUs, capacity wait and refusal reason" \
+    || ko "test-47a: bad record: $_chk47a ($_rec47a)"
+
+rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
+SPILL=off bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+    >"$SCRATCH/out47b" 2>"$SCRATCH/err47b" && _rc47b=0 || _rc47b=$?
+_rec47b="$(sed -n 's/^run-record=//p' "$SCRATCH/out47b")"
+RR="$_rec47b" python3 -c '
+import json, os
+r = json.loads(os.environ["RR"])
+assert r["backend"] == "proxmox" and r["instance_type"] is None and r["refusals"] == [], r
+assert r["outcome"] == "ok" and r["vmid"], r' 2>/dev/null \
+    && ok "test-47b: Proxmox run records backend proxmox" || ko "test-47b: bad Proxmox record: '$_rec47b' (rc=$_rc47b)"
+
+_fin47="$(GITHUB_OUTPUT="$SCRATCH/gho47" bash "$SCRIPT_DIR/run-record.sh" finish "$_rec47a" 37 ok 2>&1 >/dev/null)"
+printf '%s\n' "$_fin47" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z ephemeral-ci-run-record \{' \
+    && grep -q '"register_s":37' "$SCRATCH/gho47" \
+    && ok "test-47c: finish logs a self-stamped line and publishes register_s" || ko "test-47c: finish output: $_fin47"
 
 # ---------------------------------------------------------------------------
 # Summary

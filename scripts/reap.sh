@@ -59,6 +59,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=run-record.sh
+. "$SCRIPT_DIR/run-record.sh"
 # shellcheck source=pvapi.sh
 . "${PVAPI_SH:-${SCRIPT_DIR}/pvapi.sh}"
 
@@ -771,6 +773,7 @@ PYEOF
             --region "$SPILL_REGION" \
             --instance-ids "$EC2_IID" >/dev/null 2>&1; then
         echo "reap.sh: EC2 instance $EC2_IID terminated" >&2
+        REPO_SLUG="" GITHUB_RUN_ID="" rr_log_end reaper "$EC2_RUNNER_LABEL" "$EC2_IID"
         (( ec2_reaped++ )) || true
     else
         echo "reap.sh: EC2 instance $EC2_IID: terminate failed" >&2
