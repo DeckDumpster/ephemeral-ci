@@ -113,7 +113,12 @@ runs:
         role-to-assume: ${{ inputs.aws-role-to-assume }}
         aws-region: us-west-2
 
+    # Only the Proxmox path needs the tailnet to do its work. On the EC2 path it
+    # is used just to log a node out by name, so a failure to join must not skip
+    # the terminate step below: a cancelled run's instance would then wait for
+    # the reaper (sp-e96c8j).
     - name: Connect to Tailscale
+      continue-on-error: ${{ inputs.vmid == '' }}
       uses: tailscale/github-action@v4
       with:
         oauth-client-id: ${{ inputs.ts-oauth-client-id }}

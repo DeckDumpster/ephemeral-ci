@@ -16,9 +16,13 @@ name: Reap orphaned runner VMs
 
 on:
   schedule:
-    # Hourly. MAX_AGE_HOURS defaults to 8, which is the 6h GitHub job ceiling
-    # plus a 2h buffer, so this never races a running job.
-    - cron: '17 * * * *'
+    # Every 10 minutes. The age cutoff (MAX_AGE_HOURS, default 8: the 6h GitHub
+    # job ceiling plus a 2h buffer) is unchanged, so a frequent run never races
+    # a running job. The frequency is for early collection: an instance whose
+    # owning run is finished (cancelled batches are routine) holds vCPU quota
+    # until the next pass, and hourly, finished jobs held half the account's
+    # 64 vCPU (sp-e96c8j).
+    - cron: '7,17,27,37,47,57 * * * *'
   workflow_dispatch:
     inputs:
       dry-run:
