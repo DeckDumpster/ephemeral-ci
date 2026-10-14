@@ -65,7 +65,7 @@ try:
         for line in f:
             p = line.rstrip("\n").split("\t")
             if len(p) >= 2 and p[1].isdigit():
-                ev.append((p[0], int(p[1]), p[2].split(" ") if len(p) > 2 and p[2] else []))
+                ev.append((p[0], int(p[1]), [x for x in p[2:] if x]))
 except OSError:
     pass
 
@@ -77,7 +77,7 @@ def first(kind):
     r = [x for x in ev if x[0] == kind]
     return r[0] if r else None
 
-backend = (last("backend") or (0, 0, [None]))[2][0]
+backend = ((last("backend") or (0, 0, []))[2] or [None])[0]
 attempt0, accepted = first("attempt"), last("accepted")
 refusals = [{"market": x[2][0], "subnet": x[2][1], "reason": x[2][2]}
             for x in ev if x[0] == "refused"]
@@ -97,7 +97,7 @@ rec = {
     "backend": backend,
     "instance_type": (e.get("SPILL_INSTANCE_TYPE") or None) if backend == "ec2" else None,
     "vcpus": int(vcpus) if backend and vcpus.isdigit() else None,
-    "market": (accepted[2][0] if accepted else None) if backend == "ec2" else None,
+    "market": (accepted[2][0] if accepted and accepted[2] else None) if backend == "ec2" else None,
     "instance_id": e.get("SPILL_INSTANCE_ID") or None,
     "vmid": e.get("VMID") or None,
     "proxmox_wait_s": (pw1[1] - pw0[1]) if pw0 and pw1 else None,
