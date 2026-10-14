@@ -558,6 +558,21 @@ print(" ".join(str(v.get("vmid")) for v in d if v.get("status")=="running" and t
     printf '%s' "$ids"
 }
 
+# One line naming every running VM on the node: "vmid name maxmem". A capacity
+# wait that reports only totals leaves the reader unable to tell what holds the
+# memory (dumpstar PRs 29/30 sat 40+ min behind two idle warm round VMs, 48 GiB,
+# invisible from the job log; sp-ucal1j). Diagnostic only: any failure prints
+# nothing and never changes the wait.
+capacity_holders() {
+    local body
+    body="$(pvapi GET "/nodes/${PVE_NODE}/qemu" 2>/dev/null)" || return 0
+    printf '%s' "$body" | python3 -c \
+        'import json,sys
+d=json.load(sys.stdin)["data"]
+r=sorted((v for v in d if v.get("status")=="running"), key=lambda v:-v.get("maxmem",0))
+print("; ".join("%s %s %sMiB" % (v.get("vmid"), v.get("name") or "-", v.get("maxmem",0)//1048576) for v in r) or "none")' 2>/dev/null || true
+}
+
 wait_for_capacity() {
     local total_mib total_cpus alloc_mib want_mib alloc_cpus want_cpus \
           free_mib need_mib free_cpus need_cpus repo_count _repo_at_cap \
@@ -642,6 +657,8 @@ wait_for_capacity() {
             "$PVE_NODE" "$free_mib" "$need_mib" "$free_cpus" "$need_cpus" \
             "${REPO_TAG:-none}" "$repo_count" "${FLEET_SHARE_PER_REPO:-0}" \
             "$waited" "$CAPACITY_TIMEOUT" >&2
+        printf 'provision.sh: %s running VMs holding the node (vmid name maxmem): %s\n' \
+            "$PVE_NODE" "$(capacity_holders)" >&2
         sleep "$CAPACITY_POLL"
         waited=$(( waited + CAPACITY_POLL ))
     done
@@ -712,6 +729,21 @@ proxmox_has_room_now() {
     ( CAPACITY_TIMEOUT=0 CAPACITY_UNCAPPED=0 wait_for_capacity ) >/dev/null 2>&1
 }
 
+# One line naming every pending/running spill instance of this repo:
+# "instance-id runner-label repo". Diagnostic only; a failure prints nothing.
+ec2_holders() {
+    local repo_filter=()
+    [ -z "${REPO_TAG:-}" ] || repo_filter=("Name=tag:ephemeral-ci:repo,Values=${REPO_TAG}")
+    aws ec2 describe-instances \
+        --region "$SPILL_REGION" \
+        --filters \
+          'Name=tag:spill:owner,Values=ephemeral-ci' \
+          'Name=instance-state-name,Values=pending,running' \
+          "${repo_filter[@]}" \
+        --query 'Reservations[].Instances[].[InstanceId,Tags[?Key==`ephemeral-ci:runner`]|[0].Value,Tags[?Key==`ephemeral-ci:repo`]|[0].Value]' \
+        --output text 2>/dev/null | awk 'NF{printf "%s%s %s %s", (n++?"; ":""), $1, ($2==""?"-":$2), ($3==""?"-":$3)}' || true
+}
+
 # Block until there is room under SPILL_MAX_INSTANCES. Returns 2 instead when
 # SPILL_RECHECK_PROXMOX=1 and Proxmox gained room while waiting.
 #
@@ -746,6 +778,8 @@ ec2_wait_ceiling() {
         fi
         printf 'provision.sh: EC2 spill ceiling reached (%s/%s instances running); waiting (%ss/%ss)\n' \
             "$count" "$SPILL_MAX_INSTANCES" "$waited" "$limit" >&2
+        printf 'provision.sh: spill instances holding the ceiling (instance runner repo): %s\n' \
+            "$(ec2_holders)" >&2
         sleep "$CAPACITY_POLL"
         waited=$(( waited + CAPACITY_POLL ))
     done
