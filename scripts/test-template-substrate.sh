@@ -710,6 +710,11 @@ _q_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_SKIP
 if printf '%s' "$_q_out" | grep -q "podman-user-generator"; then bad "--check accepts a registered generator" "still reported"
 else ok "--check accepts a registered generator"; fi
 
+if has 'QUADLET_UNIT_DIRS="\$QUADLET_FIXTURE_DIR" "\$g" --user --dryrun'; then ok "--check proves the generator by --dryrun over a repo fixture, installing no unit"
+else bad "--check proves the generator by --dryrun over a repo fixture, installing no unit" "no dryrun"; fi
+if [ -f "$(dirname "$SUBSTRATE")/fixtures/quadlet/ephemeral-ci-quadlet-probe.container" ]; then ok "the Quadlet fixture ships in the repo"
+else bad "the Quadlet fixture ships in the repo" "missing"; fi
+
 # sp-80jm1s: a failed smoke run carries podman's own error, not "run it by hand".
 _pm="$(mktemp -d)"
 printf '#!/bin/sh\ncase "$1" in run) echo "Error: newuidmap: command not found" >&2; exit 125;; *) exit 1;; esac\n' > "$_pm/podman"
