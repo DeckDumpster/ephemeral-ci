@@ -278,6 +278,11 @@ jobs:
         with:
           path: ephemeral-ci
 
+      - name: Assert a Quadlet unit materialises
+        # sp-mzreip: a .container file must become a service, or every consumer that
+        # starts its app as a Quadlet unit fails ("Unit ... not found").
+        run: bash ephemeral-ci/scripts/template-substrate.sh --check-quadlet
+
       # Both images build the runner env from nix/flake.nix (sp-s40pil), so parity is the
       # STORE PATH, which covers podman and every helper at once. The expected path is what
       # this checkout's flake evaluates to; an AMI built from any other revision of the

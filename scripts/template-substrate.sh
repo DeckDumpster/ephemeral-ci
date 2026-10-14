@@ -6,6 +6,7 @@
 #
 #   bash scripts/template-substrate.sh            install/apply anything missing
 #   bash scripts/template-substrate.sh --check    report what is missing; exit 1 if any
+#   bash scripts/template-substrate.sh --check-quadlet   only prove a Quadlet unit materialises (spill probe)
 #
 # RUN THIS WHEN BUILDING THE TEMPLATE, BEFORE CONVERTING THE VM. It is idempotent,
 # so it is also safe at the head of a job to verify a clone came up correctly --
@@ -32,8 +33,9 @@ set -uo pipefail
 MODE=install
 case "${1:-}" in
     --check) MODE=check ;;
+    --check-quadlet) MODE=quadlet ;;
     "")      MODE=install ;;
-    *)       printf 'usage: template-substrate.sh [--check]\n' >&2; exit 2 ;;
+    *)       printf 'usage: template-substrate.sh [--check|--check-quadlet]\n' >&2; exit 2 ;;
 esac
 
 MISSING=()
@@ -247,6 +249,53 @@ policy_content() {
 check_containers_policy() {
     [ -s "$POLICY_FILE" ] && return 0
     lack "$POLICY_FILE" "the nix podman ships no policy and every podman run fails with 'no policy.json file found'"
+    return 1
+}
+
+# THE QUADLET GENERATOR. Quadlet is podman's systemd user generator; the distro podman
+# registered it under /usr/lib/systemd/user-generators, the Nix one lives in /nix/store and
+# registers nothing, so ~/.config/containers/systemd/*.container never became a service
+# ("Unit mtgc-ci-test.service not found", sp-mzreip). Link the env's generator in, and
+# --check proves a unit really materialises rather than that a link exists.
+GENERATOR_DIR="${SUBSTRATE_GENERATOR_DIR:-/usr/lib/systemd/user-generators}"
+QUADLET_UNIT=ephemeral-ci-quadlet-probe
+quadlet_probe() {
+    local uid home dir run=()
+    uid="$(id -u "$RUNUSER" 2>/dev/null)" || return 0
+    home="$(getent passwd "$RUNUSER" | cut -d: -f6)"
+    dir="$home/.config/containers/systemd"
+    if [ "$(id -u)" -eq "$uid" ]; then run=(env "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}")
+    else run=(runuser -u "$RUNUSER" -- env "XDG_RUNTIME_DIR=/run/user/$uid"); fi
+    "${run[@]}" mkdir -p "$dir" || return 1
+    printf '[Container]\nImage=docker.io/library/busybox:latest\nExec=true\n' | "${run[@]}" tee "$dir/$QUADLET_UNIT.container" >/dev/null || return 1
+    "${run[@]}" systemctl --user daemon-reload >/dev/null 2>&1
+    local rc=0
+    "${run[@]}" systemctl --user cat "$QUADLET_UNIT.service" >/dev/null 2>&1 || rc=1
+    "${run[@]}" rm -f "$dir/$QUADLET_UNIT.container"
+    "${run[@]}" systemctl --user daemon-reload >/dev/null 2>&1
+    return $rc
+}
+# Read-only proof for --check: run the generator in --dryrun over a fixture shipped in the
+# repo, so nothing is installed under the runner's home. The install-and-daemon-reload proof
+# (quadlet_probe) belongs to the apply path and the spill probe.
+QUADLET_FIXTURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/quadlet"
+quadlet_dryrun() {
+    local g="$1" out
+    out="$(QUADLET_UNIT_DIRS="$QUADLET_FIXTURE_DIR" "$g" --user --dryrun 2>&1)" || return 1
+    printf '%s\n' "$out" | grep -q '^\[Service\]'
+}
+check_quadlet() {
+    local g="$GENERATOR_DIR/podman-user-generator"
+    [ -e "$g" ] || { lack "$g" "no podman user generator is registered: Quadlet .container files never become services"; return 1; }
+    [ "${SUBSTRATE_SKIP_QUADLET_PROBE:-}" = 1 ] && return 0
+    if [ "$MODE" = quadlet ]; then
+        command -v systemctl >/dev/null 2>&1 || return 0
+        quadlet_probe && return 0
+        lack "a Quadlet unit materialising for ${RUNUSER}" "a .container file did not become a service under systemctl --user"
+        return 1
+    fi
+    quadlet_dryrun "$g" && return 0
+    lack "the Quadlet generator rendering a [Service]" "$g --user --dryrun printed no [Service] for the fixture"
     return 1
 }
 
@@ -539,10 +588,19 @@ run_checks() {
     check_unattended
     check_sudoers
     check_podman_run
+    check_quadlet
     check_apt_proxy
     check_tmp_backing
     check_mem_size
 }
+
+if [ "$MODE" = quadlet ]; then
+    MISSING=()
+    check_quadlet
+    [ ${#MISSING[@]} -eq 0 ] || exit 1
+    note "Quadlet unit materialises"
+    exit 0
+fi
 
 if [ "$MODE" = check ]; then
     run_checks
@@ -602,6 +660,13 @@ apt_install "${PODMAN_PKGS[@]}" "${BUILD_PKGS[@]}" "${BASE_PKGS[@]}" || exit 1
 [ -f "$RUNNER_ENV_SH" ] || { note "runner-env.sh missing beside this script; cannot build the pinned env"; exit 1; }
 bash "$RUNNER_ENV_SH" install || { note "runner-env install failed"; exit 1; }
 PATH="$RUNNER_ENV_LINK/bin:$PATH"
+
+_gen_src="$RUNNER_ENV_LINK/lib/systemd/user-generators/podman-user-generator"
+[ -e "$_gen_src" ] || { note "the runner env carries no $_gen_src; Quadlet cannot work"; exit 1; }
+$SUDO mkdir -p "$GENERATOR_DIR" && $SUDO ln -sfn "$_gen_src" "$GENERATOR_DIR/podman-user-generator" \
+    || { note "could not link the Quadlet generator into $GENERATOR_DIR"; exit 1; }
+quadlet_dryrun "$GENERATOR_DIR/podman-user-generator" \
+    || { note "the Quadlet generator rendered no [Service] for $QUADLET_FIXTURE_DIR"; exit 1; }
 
 if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null \
    || ! grep -q "^${RUNUSER}:" /etc/subgid 2>/dev/null; then
