@@ -1043,3 +1043,9 @@ test('round ami staging bucket is exported, expires objects, and the build role 
     'arn:aws:ssm:us-west-2::parameter/aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id',
   ]);
 });
+
+test('launch template makes guest-initiated shutdown terminate, not stop', () => {
+  template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
+    LaunchTemplateData: { InstanceInitiatedShutdownBehavior: 'terminate' },
+  });
+});

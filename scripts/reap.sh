@@ -714,8 +714,13 @@ PYEOF
         continue
     fi
 
+    # A stopped spill runner can never be serving a job (there is no warm
+    # pool; the guest powers itself off when its job ends), and its EBS
+    # volumes keep billing. Terminate at any age; no busy or age check.
+    if [ "$EC2_STATE" = "stopped" ]; then
+        echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, ${EC2_AGE_HOURS}h): stopped — terminating regardless of age" >&2
     # Runner instances: busy check + owning-run check + age cutoff.
-    if [ -n "$EC2_RUNNER_LABEL" ]; then
+    elif [ -n "$EC2_RUNNER_LABEL" ]; then
         # A busy runner must not be reaped regardless of age.
         if github_runner_busy "$EC2_RUNNER_LABEL"; then
             echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, runner $EC2_RUNNER_LABEL, ${EC2_AGE_HOURS}h): runner busy — keeping" >&2

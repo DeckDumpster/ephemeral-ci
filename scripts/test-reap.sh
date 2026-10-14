@@ -845,6 +845,35 @@ TSEOF
 ) && _pass "Test 14b: tailnet sweep" || _fail "Test 14b: tailnet sweep"
 
 # ============================================================
+# TEST 14c: a stopped spill instance is terminated at any age (sp-51zmax).
+#   - stopped, young, no runner tag -> terminated
+#   - stopped, young, runner tag    -> terminated (never busy-checked)
+#   - running, young, no runner tag -> kept (age cutoff still applies)
+# ============================================================
+echo "--- Test 14c: reaper terminates stopped spill instances regardless of age"
+(
+    _reap_setup
+    printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
+    TERM_LOG="$RD/terminate.log"; : > "$TERM_LOG"
+    cat > "$BIN/aws" <<'AWSEOF'
+#!/bin/sh
+case "$1 $2" in
+    "sts get-caller-identity") echo '{}' ;;
+    "ec2 describe-instances")
+        echo '[[{"id":"i-stopped-untagged","state":"stopped","launch":"2999-01-01T00:00:00Z","type":"c7i.xlarge","tags":[{"Key":"Name","Value":"ephemeral-ci-spill"}]},{"id":"i-stopped-tagged","state":"stopped","launch":"2999-01-01T00:00:00Z","type":"c7i.xlarge","tags":[{"Key":"Name","Value":"ephemeral-ci-spill"},{"Key":"ephemeral-ci:runner","Value":"lbl"}]},{"id":"i-running","state":"running","launch":"2999-01-01T00:00:00Z","type":"c7i.xlarge","tags":[{"Key":"Name","Value":"ephemeral-ci-spill"}]}]]' ;;
+    "ec2 terminate-instances") echo "$*" >> "$TERM_LOG" ;;
+    "ec2 describe-volumes") echo '[]' ;;
+    *) echo "aws stub: unhandled $*" >&2; exit 1 ;;
+esac
+AWSEOF
+    chmod +x "$BIN/aws"
+    _run_reap TERM_LOG="$TERM_LOG" >/dev/null 2>&1 || true
+    grep -q "i-stopped-untagged" "$TERM_LOG" || { echo "  expected fail: untagged stopped instance not terminated: $(cat "$TERM_LOG")" >&2; exit 1; }
+    grep -q "i-stopped-tagged" "$TERM_LOG" || { echo "  expected fail: tagged stopped instance not terminated: $(cat "$TERM_LOG")" >&2; exit 1; }
+    ! grep -q "i-running" "$TERM_LOG" || { echo "  expected fail: young running instance terminated" >&2; exit 1; }
+) && _pass "Test 14c: stopped spill instances terminated at any age" || _fail "Test 14c: stopped spill instances terminated at any age"
+
+# ============================================================
 # EC2 online tests (Tests 15-18)
 #
 # These tests run against the real AWS account (189923011121, us-west-2).
