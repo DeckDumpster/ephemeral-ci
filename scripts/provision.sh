@@ -804,7 +804,7 @@ ec2_launch() {
                        "${SPILL_USERDATA_ARGS[@]}" \
                        --instance-market-options "$spot_opts" \
                        --tag-specifications \
-                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
+                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}]" \
                        --query 'Instances[0].InstanceId' \
                        --output text 2>&1)"; then
             printf '%s' "$iid"
@@ -841,7 +841,7 @@ ec2_launch() {
                        --security-group-ids "$SPILL_SG_ID" \
                        "${SPILL_USERDATA_ARGS[@]}" \
                        --tag-specifications \
-                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}}]" \
+                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}]" \
                        --query 'Instances[0].InstanceId' \
                        --output text 2>&1)"; then
             printf '%s' "$iid"

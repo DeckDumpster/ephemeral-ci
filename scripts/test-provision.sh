@@ -1745,6 +1745,14 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ko "test-29: run-instances missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep run-instances "$AWS_ARGV_FILE" || true))"
     fi
 
+    # The instance must carry the runner label it registers, so the reaper and
+    # a cancelled run's teardown can find it (sp-v8v0qd).
+    if grep "run-instances" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci:runner,Value=valid-label"; then
+        ok "test-29: run-instances carries ephemeral-ci:runner tag matching the label"
+    else
+        ko "test-29: run-instances missing ephemeral-ci:runner tag"
+    fi
+
     # send-command must be called (positive control for delivery path)
     if grep -q "send-command" "$AWS_ARGV_FILE" 2>/dev/null; then
         ok "test-29: send-command called to deliver token"
