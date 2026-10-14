@@ -801,6 +801,7 @@ ec2_launch() {
                        --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${SPILL_ROOT_GIB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true,\"Encrypted\":true}}]" \
                        --subnet-id "$subnet" \
                        --security-group-ids "$SPILL_SG_ID" \
+                       --instance-initiated-shutdown-behavior terminate \
                        "${SPILL_USERDATA_ARGS[@]}" \
                        --instance-market-options "$spot_opts" \
                        --tag-specifications \
@@ -839,6 +840,7 @@ ec2_launch() {
                        --block-device-mappings "[{\"DeviceName\":\"/dev/sda1\",\"Ebs\":{\"VolumeSize\":${SPILL_ROOT_GIB},\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true,\"Encrypted\":true}}]" \
                        --subnet-id "$subnet" \
                        --security-group-ids "$SPILL_SG_ID" \
+                       --instance-initiated-shutdown-behavior terminate \
                        "${SPILL_USERDATA_ARGS[@]}" \
                        --tag-specifications \
                            "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}]" \

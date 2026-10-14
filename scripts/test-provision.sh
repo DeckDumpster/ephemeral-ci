@@ -1745,6 +1745,14 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ko "test-29: run-instances missing ephemeral-ci:vmtoken tag (vmtoken=${_vmtoken29}; args: $(grep run-instances "$AWS_ARGV_FILE" || true))"
     fi
 
+    # The guest powers itself off when its job ends; 'stop' would leave a
+    # billing instance behind (sp-51zmax).
+    if grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--instance-initiated-shutdown-behavior terminate"; then
+        ok "test-29: run-instances carries shutdown-behavior terminate"
+    else
+        ko "test-29: run-instances missing --instance-initiated-shutdown-behavior terminate"
+    fi
+
     # The instance must carry the runner label it registers, so the reaper and
     # a cancelled run's teardown can find it (sp-v8v0qd).
     if grep "run-instances" "$AWS_ARGV_FILE" | grep -q "ephemeral-ci:runner,Value=valid-label"; then

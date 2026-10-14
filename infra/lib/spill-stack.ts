@@ -180,6 +180,9 @@ export class SpillStack extends cdk.Stack {
       launchTemplateName: 'ephemeral-ci-spill',
       launchTemplateData: {
         iamInstanceProfile: { name: instanceProfile.ref },
+        // The guest powers off when its job ends; 'stop' (the default) leaves
+        // a billing, never-reused instance behind.
+        instanceInitiatedShutdownBehavior: 'terminate',
         metadataOptions: {
           httpTokens: 'required',
           httpPutResponseHopLimit: 2,
