@@ -147,6 +147,8 @@ PVE_API_PORT="${PVE_API_PORT:-8006}"
 # repository in the organisation.
 RUNNER_GROUP="${RUNNER_GROUP:-ephemeral-ci}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=run-record.sh
+. "$SCRIPT_DIR/run-record.sh"
 
 if [ $# -ne 3 ]; then
     printf 'Usage: provision.sh <runner-label> <registration-token> <repo-url>\n' >&2
@@ -851,6 +853,7 @@ ec2_launch() {
     # Skipped unless the caller opted in (SPILL_MARKET=spot).
     for subnet in "${subnets[@]}"; do
         [ "$SPILL_MARKET" = "spot" ] || break
+        rr_mark attempt spot "$subnet"
         if iid="$(aws ec2 run-instances \
                        --region "$SPILL_REGION" \
                        --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
@@ -866,9 +869,11 @@ ec2_launch() {
                            "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}${SPILL_REPO_TAG_SPEC}]" \
                        --query 'Instances[0].InstanceId' \
                        --output text 2>&1)"; then
+            rr_mark accepted spot "$subnet"
             printf '%s' "$iid"
             return 0
         fi
+        rr_mark refused spot "$subnet" "$(rr_refusal_reason "$iid")"
         case "$iid" in
             *InsufficientInstanceCapacity*)
                 printf 'provision.sh: spot launch in subnet %s failed (InsufficientInstanceCapacity); trying next subnet\n' \
@@ -890,6 +895,7 @@ ec2_launch() {
         printf 'provision.sh: launching on-demand (SPILL_MARKET=on-demand; a spot reclaim would fail the job as a red)\n' >&2
     fi
     for subnet in "${subnets[@]}"; do
+        rr_mark attempt on-demand "$subnet"
         if iid="$(aws ec2 run-instances \
                        --region "$SPILL_REGION" \
                        --launch-template "LaunchTemplateId=${SPILL_LT_ID},Version=\$Latest" \
@@ -904,9 +910,11 @@ ec2_launch() {
                            "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}${SPILL_REPO_TAG_SPEC}]" \
                        --query 'Instances[0].InstanceId' \
                        --output text 2>&1)"; then
+            rr_mark accepted on-demand "$subnet"
             printf '%s' "$iid"
             return 0
         fi
+        rr_mark refused on-demand "$subnet" "$(rr_refusal_reason "$iid")"
         case "$iid" in
             *InsufficientInstanceCapacity*)
                 printf 'provision.sh: on-demand launch in subnet %s failed (InsufficientInstanceCapacity); trying next subnet\n' \
@@ -980,6 +988,7 @@ SPILL_LAUNCHED_ID=""
 ec2_exit_cleanup() {
     local rc=$?
     [ -z "$SPILL_USERDATA_FILE" ] || rm -f "$SPILL_USERDATA_FILE"
+    SPILL_INSTANCE_ID="${SPILL_INSTANCE_ID:-}" VMID="${VMID:-}" rr_emit_provision "$rc"
     if [ "$rc" -ne 0 ] && [ -n "$SPILL_LAUNCHED_ID" ]; then
         printf 'provision.sh: provision failed after launch; terminating %s\n' \
             "$SPILL_LAUNCHED_ID" >&2
@@ -987,6 +996,7 @@ ec2_exit_cleanup() {
             --instance-ids "$SPILL_LAUNCHED_ID" >/dev/null 2>&1 || true
     fi
 }
+RR_STATE="$(mktemp)"
 trap ec2_exit_cleanup EXIT
 
 # Wait until the SSM agent on the given instance reports Online.
@@ -1128,7 +1138,8 @@ if [ "${SPILL:-off}" = "ec2-only" ]; then
 elif [ "${SPILL:-off}" = "ec2" ] && _round_ids_spill="$(round_vm_active)"; then
     _spill_reason="spilled: round VM ${_round_ids_spill} active"
     _spill_triggered=1
-elif ! wait_for_capacity; then
+elif rr_mark pve_wait_start; ! wait_for_capacity; then
+    rr_mark pve_wait_end
     CAPACITY_TIMEOUT="$_cap_timeout_orig"
     if [ "${SPILL:-off}" = "ec2" ]; then
         _spill_triggered=1
@@ -1137,6 +1148,7 @@ elif ! wait_for_capacity; then
     fi
 fi
 CAPACITY_TIMEOUT="$_cap_timeout_orig"
+rr_mark pve_wait_end
 
 # The EC2 spill path. Called when Proxmox has no room, and again when a Proxmox
 # clone never brings its guest agent up on either attempt (sp-g0rbff). Always exits.
@@ -1150,6 +1162,7 @@ run_ec2_spill() {
             "${_spill_reason:-Proxmox capacity exhausted}" "$SPILL_INSTANCE_TYPE" >&2
     fi
 
+    rr_mark backend ec2
     ec2_load_stack   || exit 1
     local _wc=0
     ec2_wait_ceiling || _wc=$?
@@ -1184,6 +1197,7 @@ run_ec2_spill() {
     fi
 
     ec2_wait_ssm "$SPILL_INSTANCE_ID"                    || exit 1
+    rr_mark boot_end
     ec2_deliver_token "$SPILL_INSTANCE_ID" || exit 1
 
     printf 'provision.sh: EC2 runner %s ready; token delivered via SSM\n' \
@@ -1211,6 +1225,7 @@ VM_TOKEN=$(python3 -c 'import os,binascii; print(binascii.hexlify(os.urandom(16)
 
 # --- Pick a VMID ---
 VMID="$(pick_vmid)" || exit 1
+rr_mark backend proxmox
 
 # Capture the wall-clock epoch once before the clone loop. provision_time is
 # written into the VM description so reap.sh can use it as the authoritative
@@ -1417,6 +1432,7 @@ if m: print(m.group(1)+" "+m.group(2).strip())
 
     # --- Start ---
     printf 'provision.sh: starting VM %s\n' "$VMID" >&2
+    rr_mark boot_start
     start_body="$(pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/status/start")" || exit 1
     start_upid="$(printf '%s\n' "$start_body" | python3 -c \
         'import json,sys; print(json.load(sys.stdin).get("data",""))')"
@@ -1444,7 +1460,7 @@ if m: print(m.group(1)+" "+m.group(2).strip())
         if pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/agent/ping" >/dev/null 2>&1; then
             case "${PVAPI_STATUS:-200}" in 2??) _ping_ok=1 ;; esac
         fi
-        [ "$_ping_ok" -eq 1 ] && break
+        if [ "$_ping_ok" -eq 1 ]; then rr_mark boot_end; break; fi
         if [ "$(date +%s)" -ge "$agent_deadline" ]; then
             printf 'provision.sh: timed out waiting for guest agent on VM %s (%ss) (boot attempt %s/%s)\n' \
                 "$VMID" "$AGENT_TIMEOUT" "$_boot_attempt" "$BOOT_ATTEMPTS" >&2

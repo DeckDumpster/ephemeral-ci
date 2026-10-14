@@ -225,6 +225,14 @@ outputs:
       "up" or "unavailable" when spill-tailnet was requested and the runner
       landed on EC2; empty otherwise.
     value: ${{ steps.provision.outputs.tailnet }}
+  run-record:
+    description: >-
+      One line of JSON describing this run's runner: backend, instance type,
+      vCPUs, market, capacity wait, each refused launch and its reason, boot
+      and register seconds. The same record is logged as a line opening with
+      its own UTC stamp (`ephemeral-ci-run-record`). Teardown logs the matching
+      `ephemeral-ci-run-end`; join on run_id and label.
+    value: ${{ steps.register.outputs.run-record || steps.provision.outputs.run-record }}
 
 runs:
   using: composite
@@ -336,6 +344,7 @@ runs:
                              echo "$line" >> "$GITHUB_OUTPUT"
                              echo "Launched EC2 instance \`${line#instance-id=}\` (teardown terminates it)." >> "$GITHUB_STEP_SUMMARY" ;;
                 tailnet=?*)  echo "$line" >> "$GITHUB_OUTPUT" ;;
+                run-record=?*) echo "$line" >> "$GITHUB_OUTPUT" ;;
               esac
             done
         RC=${PIPESTATUS[0]}
@@ -348,24 +357,37 @@ runs:
     # runner never appears -- while this action would otherwise report success
     # and the caller's test job would queue against a label that will never
     # exist, which looks exactly like a label mismatch and is not one.
+    #
+    # This step also completes the run record (sp-i6qrxk): its elapsed time is
+    # the register wait, and the record is logged here, registered or not.
     - name: Wait for the runner to register
+      id: register
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.runner-reg-pat }}
         LABEL: ${{ steps.label.outputs.label }}
         TIMEOUT: ${{ inputs.register-timeout-seconds }}
+        RUN_RECORD: ${{ steps.provision.outputs.run-record }}
       run: |
+        finish() {
+          [ -n "$RUN_RECORD" ] || return 0
+          bash "${{ github.action_path }}/../scripts/run-record.sh" finish \
+            "$RUN_RECORD" "$1" "$2" || true
+        }
+        started=$SECONDS
         tries=$(( TIMEOUT / 6 ))
         [ "$tries" -gt 0 ] || tries=1
         for _ in $(seq 1 "$tries"); do
           if gh api "orgs/${{ github.repository_owner }}/actions/runners" \
                --paginate --jq '.runners[].name' | grep -qx "$LABEL"; then
             echo "runner $LABEL registered"
+            finish $(( SECONDS - started )) ok
             exit 0
           fi
           sleep 6
         done
         echo "::error::runner $LABEL never registered within ${TIMEOUT}s"
+        finish - register-timeout
         exit 1
 
     # Runs only when something above failed, and before teardown destroys the

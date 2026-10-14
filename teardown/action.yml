@@ -164,6 +164,8 @@ runs:
         PVE_TOKEN_SECRET: ${{ inputs.pve-token-secret }}
         TEMPLATE_VMID: ${{ inputs.template-vmid }}
         VM_TOKEN: ${{ inputs.vm-token }}
+        RUNNER_LABEL: ${{ inputs.label }}
+        REPO_SLUG: ${{ github.repository }}
         CRED_FILE: /dev/null
       run: bash "${{ github.action_path }}/../scripts/teardown.sh" "${{ inputs.vmid }}"
 
@@ -176,6 +178,8 @@ runs:
         BACKEND: ec2
         INSTANCE_ID: ${{ inputs.instance-id }}
         VM_TOKEN: ${{ inputs.vm-token }}
+        RUNNER_LABEL: ${{ inputs.label }}
+        REPO_SLUG: ${{ github.repository }}
         SPILL_REGION: us-west-2
         # Lets teardown log a tag:round-vm node out of the tailnet by name.
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
@@ -192,6 +196,7 @@ runs:
       env:
         BACKEND: ec2
         RUNNER_LABEL: ${{ inputs.label }}
+        REPO_SLUG: ${{ github.repository }}
         SPILL_REGION: us-west-2
       run: bash "${{ github.action_path }}/../scripts/teardown.sh"
 

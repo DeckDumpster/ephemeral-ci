@@ -103,6 +103,8 @@ if [ -f "$CRED_FILE" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=run-record.sh
+. "$SCRIPT_DIR/run-record.sh"
 
 # ── EC2 path ──────────────────────────────────────────────────────────────────
 if [ "${BACKEND:-}" = "ec2" ]; then
@@ -137,6 +139,7 @@ if [ "${BACKEND:-}" = "ec2" ]; then
             --instance-ids $_by_label_ids >/dev/null
         printf 'teardown.sh: terminated EC2 instance(s) %s found by runner label %s\n' \
             "$(printf '%s' "$_by_label_ids" | tr -s '[:space:]' ' ')" "$RUNNER_LABEL" >&2
+        rr_log_end run "$RUNNER_LABEL" "$(printf '%s' "$_by_label_ids" | tr -s '[:space:]' ' ')"
         exit 0
     fi
 
@@ -251,6 +254,7 @@ print(t)' 2>/dev/null || true)"
     done
 
     _tailnet_logout
+    rr_log_end run "${RUNNER_LABEL:-}" "$INSTANCE_ID"
 
     # Record instance-seconds and estimated cost.
     _now_epoch="$(date +%s)"
@@ -598,3 +602,4 @@ if [ "$PVAPI_STATUS" != "200" ]; then
 fi
 
 echo "teardown.sh: VM $VMID destroyed" >&2
+rr_log_end run "${RUNNER_LABEL:-}" "$VMID"
