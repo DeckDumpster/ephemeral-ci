@@ -2269,14 +2269,19 @@ fi
 
 # sp-3lkson: with the EC2 ceiling full and Proxmox capacity appearing mid-wait,
 # provision places the runner on Proxmox instead of waiting out the ceiling.
-# Proxmox starts full (128 GiB allocated), the allocation drops after ~3s.
+# Proxmox starts full (128 GiB allocated) and is freed only once provision has
+# logged that it is waiting on the ceiling, so the test does not race a timer.
 AWS_COUNT=2
 export AWS_COUNT
 rm -f "$CURL_ARGV_FILE" "$AWS_ARGV_FILE"
 _alloc44="$SCRATCH/alloc44"; printf '131072' > "$_alloc44"
-( sleep 3; printf '0' > "$_alloc44" ) &
+_out44="$SCRATCH/out44"; _err44="$SCRATCH/err44"; : > "$_err44"
+( for _i in $(seq 1 600); do
+      grep -q 'EC2 spill ceiling reached' "$_err44" 2>/dev/null && break
+      sleep 0.1
+  done
+  printf '0' > "$_alloc44" ) &
 _bg44=$!
-_out44="$SCRATCH/out44"; _err44="$SCRATCH/err44"
 CURL_ALLOC_FILE="$_alloc44" REPO_SLUG="owner/repo" SPILL_MAX_INSTANCES=2 CAPACITY_POLL=1 \
     CAPACITY_TIMEOUT=3600 SPILL_AFTER_SECONDS=1 SPILL=ec2 \
     bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
@@ -2288,7 +2293,7 @@ if [ "$_rc44" -eq 0 ] && grep -q '^vmid=[0-9]' "$_out44" && ! grep -q 'backend=e
    && ! grep -q 'run-instances' "$AWS_ARGV_FILE"; then
     ok "test-ceiling-recheck: a full EC2 ceiling does not stop a freed Proxmox from taking the runner"
 else
-    ko "test-ceiling-recheck: runner not placed on Proxmox (rc=$_rc44; out: $(cat "$_out44"); err: $(tail -5 "$_err44"))"
+    ko "test-ceiling-recheck: runner not placed on Proxmox (rc=$_rc44; out: $(cat "$_out44"); err: $(cat "$_err44"))"
 fi
 
 # The ceiling counts only this repo's spill instances: the describe-instances
