@@ -1338,6 +1338,29 @@ fi  # end: EC2_SUBNET/EC2_SG block
 fi  # end: account check block
 
 # ============================================================
+# TEST 19: reap.yml runs often enough to collect a cancelled run's instance
+# within minutes, not at the next hourly pass (sp-e96c8j).
+# ============================================================
+(
+    set -euo pipefail
+    python3 - "$SCRIPT_DIR/../.github/workflows/reap.yml" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+crons = re.findall(r"^\s*-\s*cron:\s*'([^']+)'", text, re.M)
+assert crons, "reap.yml has no schedule"
+minutes = sorted(int(m) for m in crons[0].split()[0].split(','))  if crons[0].split()[0] not in ('*',) and '/' not in crons[0].split()[0] else None
+if minutes is None:
+    step = crons[0].split()[0]
+    gap = 1 if step == '*' else int(step.split('/')[1])
+else:
+    pts = minutes + [minutes[0] + 60]
+    gap = max(b - a for a, b in zip(pts, pts[1:]))
+assert gap <= 10, f"reap.yml cron {crons[0]!r} leaves a {gap}-minute gap; want <= 10"
+PY
+) && _pass "Test 19: reap.yml schedule gap is at most 10 minutes" \
+  || _fail "Test 19: reap.yml schedule gap is at most 10 minutes"
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
