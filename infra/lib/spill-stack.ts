@@ -618,10 +618,10 @@ export class SpillStack extends cdk.Stack {
       lifecycleRules: [{ expiration: cdk.Duration.days(1), abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) }],
     });
     roundAmiStaging.grantReadWrite(amiBuildRole);
-    // Canonical's public parameter for Ubuntu 24.04 amd64 hvm ebs-gp3, the same
+    // Canonical's public parameter for Ubuntu 26.04 amd64 hvm ebs-gp3, the same
     // image family scripts/ami-build.sh resolves by describe-images.
     const ROUND_AMI_BASE_PARAM =
-      '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id';
+      '/aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id';
     amiBuildRole.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:GetParameter'],
       resources: ['arn:aws:ssm:us-west-2::parameter' + ROUND_AMI_BASE_PARAM],
