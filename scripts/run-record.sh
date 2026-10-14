@@ -56,7 +56,11 @@ rr_log_line() {
 
 # rr_build_provision <outcome> -- print the provision record as one JSON line.
 rr_build_provision() {
-    RR_OUTCOME="$1" RR_VCPUS="$(rr_vcpus "${SPILL_INSTANCE_TYPE:-}")" python3 - <<'PY'
+    # Shell variables are not exported; hand python the ones the record reads.
+    RR_OUTCOME="$1" RR_VCPUS="$(rr_vcpus "${SPILL_INSTANCE_TYPE:-}")" \
+        LABEL="${LABEL:-}" SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-}" \
+        SPILL_INSTANCE_ID="${SPILL_INSTANCE_ID:-}" VMID="${VMID:-}" \
+        RUNNER_CORES="${RUNNER_CORES:-}" RR_STATE="${RR_STATE:-}" python3 - <<'PY'
 import json, os, sys
 e = os.environ
 ev = []
