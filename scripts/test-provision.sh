@@ -279,6 +279,11 @@ case "$path" in
                 _repo_runners_json="${_repo_runners_json},{\"vmid\":${_rvm},\"name\":\"gh-runner-${_rvm}\",\"status\":\"running\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8},\"tags\":\"${CURL_NODE_REPO_TAG}\"}"
             done
         fi
+        # CURL_NAMED_VMS="vmid:name:mib,..." -- extra running named VMs.
+        for _nv in $(printf '%s' "${CURL_NAMED_VMS:-}" | tr ',' ' '); do
+            IFS=: read -r _nvid _nname _nmib <<<"$_nv"
+            _repo_runners_json="${_repo_runners_json},{\"vmid\":${_nvid},\"name\":\"${_nname}\",\"status\":\"running\",\"maxmem\":$(( _nmib * 1048576 )),\"cpus\":1}"
+        done
         _round_json=""
         [ -z "${CURL_ROUND_VM:-}" ] || _round_json=",{\"vmid\":${CURL_ROUND_VM},\"name\":\"round-vm\",\"status\":\"running\",\"maxmem\":1048576,\"cpus\":1,\"tags\":\"round-vm\"}"
         body="{\"data\":[{\"vmid\":900,\"status\":\"running\",\"maxmem\":$(( $( [ -n "${CURL_ALLOC_FILE:-}" ] && [ -s "$CURL_ALLOC_FILE" ] && cat "$CURL_ALLOC_FILE" || echo "${CURL_NODE_ALLOC_MIB:-0}" ) * 1048576 )),\"cpus\":${_eff_alloc_cpus}}${_repo_runners_json}${_round_json},{\"vmid\":${TEMPLATE_VMID:-101},\"status\":\"stopped\",\"maxmem\":$(( ${CURL_TEMPLATE_MIB:-8192} * 1048576 )),\"cpus\":${CURL_TEMPLATE_CPUS:-8}}]}"
@@ -765,7 +770,7 @@ fi
 # clones anyway is decoration.
 rm -f "$CURL_ARGV_FILE"
 _cap_err="$SCRATCH/cap-err"
-CURL_NODE_ALLOC_MIB=120000 bash "$PROVISION" valid-label test-token \
+CURL_NAMED_VMS="111:warm-round-a:24576,112:warm-round-b:24576" CURL_NODE_ALLOC_MIB=120000 bash "$PROVISION" valid-label test-token \
     https://github.com/owner/repo >/dev/null 2>"$_cap_err" && _cap_rc=0 || _cap_rc=$?
 if [ "$_cap_rc" -ne 0 ]; then
     ok "test-15: a node with no room fails the provision"
@@ -784,6 +789,16 @@ if grep -q '::error::' "$_cap_err" && grep -q '131072' "$_cap_err" \
     ok "test-15: the timeout names the node total and what is allocated"
 else
     ko "test-15: timeout error does not carry the numbers it decided on"
+fi
+
+# The wait names what holds the node (sp-ucal1j): every running VM by vmid,
+# name and maxmem, not just totals.
+if grep -q 'running VMs holding the node' "$_cap_err" \
+   && grep -q '111 warm-round-a 24576MiB' "$_cap_err" \
+   && grep -q '112 warm-round-b 24576MiB' "$_cap_err"; then
+    ok "test-15: the capacity wait lists the running VMs by vmid, name and maxmem"
+else
+    ko "test-15: capacity wait does not name its holders (err: $(cat "$_cap_err"))"
 fi
 
 # (c) the token cannot read the node -- REFUSE (law-a-control-that-cannot-check-must-refuse).
@@ -1564,7 +1579,10 @@ case "$1 $2" in
         printf '[{"OutputKey":"SubnetIds","OutputValue":"subnet-test-a,subnet-test-b,subnet-test-c"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-test456"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-test789"},{"OutputKey":"DeliverDocumentName","OutputValue":"ssm-doc-from-stack-output"}]\n'
         ;;
     "ec2 describe-instances")
-        printf '0\n'
+        case "$*" in
+            *InstanceId*) printf '%b\n' "${AWS_HOLDERS:-}" ;;
+            *) printf '0\n' ;;
+        esac
         ;;
     "ec2 describe-images")
         if [ -n "${AWS_IMAGES:-}" ]; then
@@ -2223,7 +2241,8 @@ cat > "$AWS_BIN" << 'AWSAUTH'
 printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
 case "$1 $2" in
     "cloudformation describe-stacks") exec AWS_REAL_PATH "$@" ;;
-    "ec2 describe-instances") if [ -n "${AWS_COUNT:-}" ]; then printf '%s\n' "$AWS_COUNT"; exit 0; fi ;;
+    "ec2 describe-instances") case "$*" in *InstanceId*) printf '%b\n' "${AWS_HOLDERS:-}"; exit 0 ;; esac
+        if [ -n "${AWS_COUNT:-}" ]; then printf '%s\n' "$AWS_COUNT"; exit 0; fi ;;
 esac
 printf 'An error occurred (ExpiredToken) when calling the %s operation: The security token included in the request is expired\n' "$2" >&2
 exit 254
@@ -2282,12 +2301,17 @@ _out44="$SCRATCH/out44"; _err44="$SCRATCH/err44"; : > "$_err44"
   done
   printf '0' > "$_alloc44" ) &
 _bg44=$!
-CURL_ALLOC_FILE="$_alloc44" REPO_SLUG="owner/repo" SPILL_MAX_INSTANCES=2 CAPACITY_POLL=1 \
+AWS_HOLDERS='i-abc1\trun-1\towner-repo' CURL_ALLOC_FILE="$_alloc44" REPO_SLUG="owner/repo" SPILL_MAX_INSTANCES=2 CAPACITY_POLL=1 \
     CAPACITY_TIMEOUT=3600 SPILL_AFTER_SECONDS=1 SPILL=ec2 \
     bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
     >"$_out44" 2>"$_err44" && _rc44=0 || _rc44=$?
 wait "$_bg44" 2>/dev/null || true
 unset AWS_COUNT
+if grep -q 'spill instances holding the ceiling.*i-abc1 run-1 owner-repo' "$_err44"; then
+    ok "test-ceiling-holders: the ceiling wait lists the spill instances by id, runner and repo"
+else
+    ko "test-ceiling-holders: ceiling wait does not name its holders (err: $(cat "$_err44"))"
+fi
 if [ "$_rc44" -eq 0 ] && grep -q '^vmid=[0-9]' "$_out44" && ! grep -q 'backend=ec2' "$_out44" \
    && grep -q 'EC2 spill ceiling reached' "$_err44" && grep -q 'Proxmox capacity freed' "$_err44" \
    && ! grep -q 'run-instances' "$AWS_ARGV_FILE"; then
