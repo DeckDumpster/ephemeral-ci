@@ -1027,7 +1027,7 @@ test('round ami staging bucket is exported, expires objects, and the build role 
   const outs = template.toJSON().Outputs;
   expect(outs.RoundAmiStagingBucket.Value).toEqual({ Ref: logicalId });
   expect(outs.RoundAmiBaseParam.Value).toBe(
-    '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id',
+    '/aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id',
   );
   const sts = amiBuildStatements();
   const actions = new Set<string>();
@@ -1038,5 +1038,8 @@ test('round ami staging bucket is exported, expires objects, and the build role 
   }
   expect(actions.has('s3:PutObject')).toBe(true);
   expect(actions.has('s3:GetObject*') || actions.has('s3:GetObject')).toBe(true);
-  expect(sts.some((s: any) => ([] as string[]).concat(s.Action).includes('ssm:GetParameter'))).toBe(true);
+  const ssm = sts.filter((s: any) => ([] as string[]).concat(s.Action).includes('ssm:GetParameter'));
+  expect(ssm.map((s: any) => s.Resource)).toEqual([
+    'arn:aws:ssm:us-west-2::parameter/aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id',
+  ]);
 });
