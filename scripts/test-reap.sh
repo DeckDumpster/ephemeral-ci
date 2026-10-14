@@ -874,6 +874,38 @@ AWSEOF
 ) && _pass "Test 14c: stopped spill instances terminated at any age" || _fail "Test 14c: stopped spill instances terminated at any age"
 
 # ============================================================
+# TEST 14d: an untagged running spill instance is an orphan once past the
+# launch grace (sp-tu8rf8): 20 min old -> reaped, 5 min old -> kept.
+# ============================================================
+echo "--- Test 14d: untagged spill instance reaped after the launch grace"
+(
+    _reap_setup
+    printf '{"data":[]}\n' > "$BIN/.stub-qemu-list"
+    TERM_LOG="$RD/terminate.log"; : > "$TERM_LOG"
+    OLD="$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+    NEW="$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+    cat > "$BIN/aws" <<AWSEOF
+#!/bin/sh
+case "\$1 \$2" in
+    "sts get-caller-identity") echo '{}' ;;
+    "ec2 describe-instances")
+        echo '[[{"id":"i-untagged-old","state":"running","launch":"$OLD","type":"c7i.xlarge","tags":[{"Key":"Name","Value":"ephemeral-ci-spill"}]},{"id":"i-untagged-new","state":"running","launch":"$NEW","type":"c7i.xlarge","tags":[{"Key":"Name","Value":"ephemeral-ci-spill"}]}]]' ;;
+    "ec2 terminate-instances") echo "\$*" >> "$TERM_LOG" ;;
+    "ec2 describe-volumes") echo '[]' ;;
+    *) echo "aws stub: unhandled \$*" >&2; exit 1 ;;
+esac
+AWSEOF
+    chmod +x "$BIN/aws"
+    output=$(_run_reap TERM_LOG="$TERM_LOG" --dry-run 2>&1 || true)
+    printf '%s\n' "$output" | grep -q "would terminate EC2 i-untagged-old" \
+        || { echo "  expected fail: dry run did not report the old untagged instance: $output" >&2; exit 1; }
+    [ ! -s "$TERM_LOG" ] || { echo "  expected fail: dry run terminated" >&2; exit 1; }
+    _run_reap TERM_LOG="$TERM_LOG" >/dev/null 2>&1 || true
+    grep -q "i-untagged-old" "$TERM_LOG" || { echo "  expected fail: old untagged not terminated: $(cat "$TERM_LOG")" >&2; exit 1; }
+    ! grep -q "i-untagged-new" "$TERM_LOG" || { echo "  expected fail: young untagged terminated" >&2; exit 1; }
+) && _pass "Test 14d: untagged spill instance reaped after launch grace" || _fail "Test 14d: untagged spill instance reaped after launch grace"
+
+# ============================================================
 # EC2 online tests (Tests 15-18)
 #
 # These tests run against the real AWS account (189923011121, us-west-2).

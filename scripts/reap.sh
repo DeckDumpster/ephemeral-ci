@@ -559,9 +559,9 @@ fi
 # run has finished (early collection) or when the instance exceeds
 # MAX_AGE_HOURS. Instances whose runner is currently busy are kept.
 #
-# Falls back to age-only mode when the ephemeral-ci:runner tag is absent;
-# provision.sh must tag runner instances with that key for the busy check
-# and early-collection path to function.
+# An instance without the ephemeral-ci:runner tag is an orphan by
+# construction (provision.sh tags at launch) and is terminated once older than
+# UNTAGGED_GRACE_MINUTES (default 15), not MAX_AGE_HOURS.
 #
 # Also terminates:
 #   - stale AMI-builder instances (Name=ephemeral-ci-runner, age-only)
@@ -575,6 +575,11 @@ fi
 # ---------------------------------------------------------------------------
 
 SPILL_REGION="${SPILL_REGION:-us-west-2}"
+
+# An untagged spill instance is reaped once older than this launch grace.
+UNTAGGED_GRACE_MINUTES="${UNTAGGED_GRACE_MINUTES:-15}"
+[[ "$UNTAGGED_GRACE_MINUTES" =~ ^[0-9]+$ ]] || { echo "reap.sh: UNTAGGED_GRACE_MINUTES must be a non-negative integer" >&2; exit 1; }
+UNTAGGED_GRACE_SECONDS=$(( UNTAGGED_GRACE_MINUTES * 60 ))
 
 # Return the on-demand cost estimate string for <age_seconds> of <instance_type>.
 # Prints "~$N.NNNN" for known types or "<N.Nh> (rate unknown for <type>)" otherwise.
@@ -743,16 +748,16 @@ PYEOF
             continue
         fi
     else
-        # Degraded mode: the ephemeral-ci:runner tag is absent.
-        # provision.sh must set this tag so the busy check and early
-        # collection can function; without it only the age cutoff protects
-        # running jobs, and the owning-run early-collection path is disabled.
-        echo "reap.sh: EC2 $EC2_IID ($EC2_NAME): no ephemeral-ci:runner tag — degraded mode (age-only). provision.sh must tag runner instances." >&2
-        if [ "$EC2_LAUNCH_EPOCH" -gt "$CUTOFF" ]; then
-            echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, ${EC2_AGE_HOURS}h): within age cutoff — keeping" >&2
+        # Untagged: provision.sh tags ephemeral-ci:runner at launch, so a
+        # current instance without it is an orphan of a provision that died
+        # (or a pre-fix leak), never a live job. Keep it only for the launch
+        # grace, in case the tag is still propagating.
+        if [ "$EC2_AGE_SECONDS" -lt "$UNTAGGED_GRACE_SECONDS" ]; then
+            echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, $(( EC2_AGE_SECONDS / 60 ))m): no ephemeral-ci:runner tag, within ${UNTAGGED_GRACE_MINUTES}m launch grace — keeping" >&2
             (( ec2_skipped++ )) || true
             continue
         fi
+        echo "reap.sh: EC2 $EC2_IID ($EC2_NAME, $(( EC2_AGE_SECONDS / 60 ))m): no ephemeral-ci:runner tag past ${UNTAGGED_GRACE_MINUTES}m launch grace — orphan" >&2
     fi
 
     if "$DRY_RUN"; then
