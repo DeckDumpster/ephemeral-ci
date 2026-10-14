@@ -715,6 +715,13 @@ else bad "--check proves the generator by --dryrun over a repo fixture, installi
 if [ -f "$(dirname "$SUBSTRATE")/fixtures/quadlet/ephemeral-ci-quadlet-probe.container" ]; then ok "the Quadlet fixture ships in the repo"
 else bad "the Quadlet fixture ships in the repo" "missing"; fi
 
+# sp-xi9pd2: an absent fixture dir is named, not reported as "rendered no [Service]".
+_q_out="$(QUADLET_FIXTURE_DIR="$STUBS/no-fixture" PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_GENERATOR_DIR="$STUBS/generators" bash "$SUBSTRATE" --check 2>&1)"
+if printf '%s' "$_q_out" | grep -q 'fixture dir missing/empty'; then ok "an absent Quadlet fixture dir is named"
+else bad "an absent Quadlet fixture dir is named" "not reported"; fi
+if grep -q 'scripts/fixtures/quadlet' "$(dirname "$SUBSTRATE")/ami-build.sh"; then ok "ami-build ships the Quadlet fixture to the build instance"
+else bad "ami-build ships the Quadlet fixture to the build instance" "not shipped"; fi
+
 # sp-80jm1s: a failed smoke run carries podman's own error, not "run it by hand".
 _pm="$(mktemp -d)"
 printf '#!/bin/sh\ncase "$1" in run) echo "Error: newuidmap: command not found" >&2; exit 125;; *) exit 1;; esac\n' > "$_pm/podman"

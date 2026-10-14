@@ -278,11 +278,18 @@ quadlet_probe() {
 # Read-only proof for --check: run the generator in --dryrun over a fixture shipped in the
 # repo, so nothing is installed under the runner's home. The install-and-daemon-reload proof
 # (quadlet_probe) belongs to the apply path and the spill probe.
-QUADLET_FIXTURE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/quadlet"
+QUADLET_FIXTURE_DIR="${QUADLET_FIXTURE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/quadlet}"
 quadlet_dryrun() {
     local g="$1" out
-    out="$(QUADLET_UNIT_DIRS="$QUADLET_FIXTURE_DIR" "$g" --user --dryrun 2>&1)" || return 1
-    printf '%s\n' "$out" | grep -q '^\[Service\]'
+    if ! compgen -G "$QUADLET_FIXTURE_DIR/*.container" >/dev/null; then
+        printf 'quadlet fixture dir missing/empty: no .container file in %s\n' "$QUADLET_FIXTURE_DIR" >&2
+        return 1
+    fi
+    out="$(QUADLET_UNIT_DIRS="$QUADLET_FIXTURE_DIR" "$g" --user --dryrun 2>&1)" \
+        || { printf 'quadlet generator %s failed:\n%s\n' "$g" "$out" >&2; return 1; }
+    printf '%s\n' "$out" | grep -q '^\[Service\]' && return 0
+    printf 'quadlet generator %s rendered no [Service]; its output:\n%s\n' "$g" "$out" >&2
+    return 1
 }
 check_quadlet() {
     local g="$GENERATOR_DIR/podman-user-generator"
@@ -666,7 +673,7 @@ _gen_src="$RUNNER_ENV_LINK/lib/systemd/user-generators/podman-user-generator"
 $SUDO mkdir -p "$GENERATOR_DIR" && $SUDO ln -sfn "$_gen_src" "$GENERATOR_DIR/podman-user-generator" \
     || { note "could not link the Quadlet generator into $GENERATOR_DIR"; exit 1; }
 quadlet_dryrun "$GENERATOR_DIR/podman-user-generator" \
-    || { note "the Quadlet generator rendered no [Service] for $QUADLET_FIXTURE_DIR"; exit 1; }
+    || { note "the Quadlet dry-run failed over $QUADLET_FIXTURE_DIR (reason above)"; exit 1; }
 
 if ! grep -q "^${RUNUSER}:" /etc/subuid 2>/dev/null \
    || ! grep -q "^${RUNUSER}:" /etc/subgid 2>/dev/null; then
