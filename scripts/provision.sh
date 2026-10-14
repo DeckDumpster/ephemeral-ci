@@ -1119,7 +1119,7 @@ run_ec2_spill() {
     ec2_load_stack   || exit 1
     local _wc=0
     ec2_wait_ceiling || _wc=$?
-    [ "$_wc" -ne 2 ] || return 2
+    [ "$_wc" -ne 2 ] || return 0
     [ "$_wc" -eq 0 ] || exit 1
     SPILL_AMI="$(ec2_find_ami)" || exit 1
 
@@ -1159,10 +1159,11 @@ run_ec2_spill() {
 
 if [ "$_spill_triggered" -eq 1 ]; then
     # Proxmox was full a moment ago, so re-ask it while the EC2 ceiling holds
-    # us. ec2-only never wanted Proxmox. run_ec2_spill returns 2 (instead of
+    # us. ec2-only never wanted Proxmox. run_ec2_spill returns (instead of
     # exiting) only when Proxmox freed up; we then fall through to the clone.
     [ "${SPILL:-off}" != "ec2" ] || SPILL_RECHECK_PROXMOX=1
-    run_ec2_spill "$@" || true
+    # Called bare, not under `|| true`: that would switch set -e off inside it.
+    run_ec2_spill "$@"
     SPILL_RECHECK_PROXMOX=0
 fi
 
