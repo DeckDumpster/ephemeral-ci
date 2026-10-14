@@ -677,14 +677,23 @@ ec2_load_stack() {
         "$SPILL_STACK_NAME" "$SPILL_SUBNET_IDS" "$SPILL_SG_ID" "$SPILL_LT_ID" "$SPILL_DELIVER_DOCUMENT_NAME" >&2
 }
 
-# Print the count of pending/running spill instances.
+# Extra instance tag the ceiling counts by; empty when REPO_SLUG is unset.
+SPILL_REPO_TAG_SPEC=""
+[ -z "${REPO_TAG:-}" ] || SPILL_REPO_TAG_SPEC=",{Key=ephemeral-ci:repo,Value=${REPO_TAG}}"
+
+# Print the count of pending/running spill instances belonging to THIS repo.
+# The ceiling is per repo: instances tagged with another repo's tag (or leaked
+# by one) must not block this one (sp-3lkson). Without REPO_SLUG there is no
+# repo tag to count by, so the count is account-wide as before.
 ec2_count_instances() {
-    local n
+    local n repo_filter=()
+    [ -z "${REPO_TAG:-}" ] || repo_filter=("Name=tag:ephemeral-ci:repo,Values=${REPO_TAG}")
     n="$(aws ec2 describe-instances \
              --region "$SPILL_REGION" \
              --filters \
                'Name=tag:spill:owner,Values=ephemeral-ci' \
                'Name=instance-state-name,Values=pending,running' \
+               "${repo_filter[@]}" \
              --query 'length(Reservations[].Instances[])' \
              --output text 2>&1)" || {
         printf '::error::provision.sh: cannot count spill instances (aws ec2 describe-instances failed; expired credentials look like this): %s\n' "$n" >&2
@@ -696,7 +705,15 @@ ec2_count_instances() {
     esac
 }
 
-# Block until there is room under SPILL_MAX_INSTANCES.
+# One non-waiting pass of the Proxmox capacity gate: 0 when a clone would be
+# admitted now. A node whose resources cannot be read is not "has room" here
+# (CAPACITY_UNCAPPED must not turn a failing API into a Proxmox placement).
+proxmox_has_room_now() {
+    ( CAPACITY_TIMEOUT=0 CAPACITY_UNCAPPED=0 wait_for_capacity ) >/dev/null 2>&1
+}
+
+# Block until there is room under SPILL_MAX_INSTANCES. Returns 2 instead when
+# SPILL_RECHECK_PROXMOX=1 and Proxmox gained room while waiting.
 #
 # The AWS credentials were assumed before provision.sh started and cannot be
 # re-acquired from here (the OIDC token belongs to the action step), so the
@@ -719,6 +736,13 @@ ec2_wait_ceiling() {
             printf '::error::provision.sh: EC2 spill ceiling reached (%s/%s running); waited %ss (limit %ss; capped below the %ss AWS session). Raise spill-max-instances or wait for instances to terminate.\n' \
                 "$count" "$SPILL_MAX_INSTANCES" "$waited" "$limit" "$SPILL_SESSION_SECONDS" >&2
             return 1
+        fi
+        # Proxmox may have freed up since we spilled: take it as soon as it has
+        # room rather than waiting on EC2 (sp-3lkson).
+        if [ "${SPILL_RECHECK_PROXMOX:-0}" = "1" ] && proxmox_has_room_now; then
+            printf 'provision.sh: Proxmox capacity freed while waiting on the EC2 ceiling (%s/%s); placing the runner on Proxmox\n' \
+                "$count" "$SPILL_MAX_INSTANCES" >&2
+            return 2
         fi
         printf 'provision.sh: EC2 spill ceiling reached (%s/%s instances running); waiting (%ss/%ss)\n' \
             "$count" "$SPILL_MAX_INSTANCES" "$waited" "$limit" >&2
@@ -805,7 +829,7 @@ ec2_launch() {
                        "${SPILL_USERDATA_ARGS[@]}" \
                        --instance-market-options "$spot_opts" \
                        --tag-specifications \
-                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}]" \
+                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}${SPILL_REPO_TAG_SPEC}]" \
                        --query 'Instances[0].InstanceId' \
                        --output text 2>&1)"; then
             printf '%s' "$iid"
@@ -843,7 +867,7 @@ ec2_launch() {
                        --instance-initiated-shutdown-behavior terminate \
                        "${SPILL_USERDATA_ARGS[@]}" \
                        --tag-specifications \
-                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}]" \
+                           "ResourceType=instance,Tags=[{Key=spill:owner,Value=ephemeral-ci},{Key=Name,Value=ephemeral-ci-spill},{Key=ephemeral-ci:vmtoken,Value=${vmtoken}},{Key=ephemeral-ci:runner,Value=${RUNNER_LABEL}}${SPILL_REPO_TAG_SPEC}]" \
                        --query 'Instances[0].InstanceId' \
                        --output text 2>&1)"; then
             printf '%s' "$iid"
@@ -1093,7 +1117,10 @@ run_ec2_spill() {
     fi
 
     ec2_load_stack   || exit 1
-    ec2_wait_ceiling || exit 1
+    local _wc=0
+    ec2_wait_ceiling || _wc=$?
+    [ "$_wc" -ne 2 ] || return 0
+    [ "$_wc" -eq 0 ] || exit 1
     SPILL_AMI="$(ec2_find_ami)" || exit 1
 
     RUNNER_TOKEN="$2"
@@ -1131,7 +1158,13 @@ run_ec2_spill() {
 }
 
 if [ "$_spill_triggered" -eq 1 ]; then
+    # Proxmox was full a moment ago, so re-ask it while the EC2 ceiling holds
+    # us. ec2-only never wanted Proxmox. run_ec2_spill returns (instead of
+    # exiting) only when Proxmox freed up; we then fall through to the clone.
+    [ "${SPILL:-off}" != "ec2" ] || SPILL_RECHECK_PROXMOX=1
+    # Called bare, not under `|| true`: that would switch set -e off inside it.
     run_ec2_spill "$@"
+    SPILL_RECHECK_PROXMOX=0
 fi
 
 # --- Generate an ownership token ---
