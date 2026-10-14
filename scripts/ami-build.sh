@@ -307,6 +307,7 @@ apply_substrate() {
     substrate_b64="$(base64 -w0 "${SCRIPT_DIR}/template-substrate.sh")"
     runner_env_b64="$(base64 -w0 "${SCRIPT_DIR}/runner-env.sh")"
     flake_b64="$(base64 -w0 "${SCRIPT_DIR}/../nix/flake.nix")"
+    quadlet_fixture_b64="$(base64 -w0 "${SCRIPT_DIR}/fixtures/quadlet/ephemeral-ci-quadlet-probe.container")"
     start_runner_b64="$(base64 -w0 "${SCRIPT_DIR}/guest/start-runner.sh")"
 
     # Build the single shell script that runs on the instance. jq handles
@@ -343,7 +344,8 @@ id runner 2>/dev/null || sudo useradd --create-home --shell /bin/bash runner
 # The substrate builds the pinned runner env (nix/flake.nix) via runner-env.sh, which it
 # finds beside itself and which finds the flake at ../nix, so the tree is recreated here.
 CI_SRC=/tmp/ci-src
-mkdir -p \$CI_SRC/scripts \$CI_SRC/nix
+mkdir -p \$CI_SRC/scripts/fixtures/quadlet \$CI_SRC/nix
+printf '%s' "${quadlet_fixture_b64}" | base64 -d > \$CI_SRC/scripts/fixtures/quadlet/ephemeral-ci-quadlet-probe.container
 printf '%s' "${substrate_b64}" | base64 -d > \$CI_SRC/scripts/template-substrate.sh
 printf '%s' "${runner_env_b64}" | base64 -d > \$CI_SRC/scripts/runner-env.sh
 printf '%s' "${flake_b64}" | base64 -d > \$CI_SRC/nix/flake.nix
