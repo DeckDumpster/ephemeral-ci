@@ -709,7 +709,7 @@ ec2_count_instances() {
 # admitted now. A node whose resources cannot be read is not "has room" here
 # (CAPACITY_UNCAPPED must not turn a failing API into a Proxmox placement).
 proxmox_has_room_now() {
-    ( CAPACITY_TIMEOUT=0; CAPACITY_UNCAPPED=0; wait_for_capacity ) >/dev/null 2>&1
+    ( CAPACITY_TIMEOUT=0 CAPACITY_UNCAPPED=0 wait_for_capacity ) >/dev/null 2>&1
 }
 
 # Block until there is room under SPILL_MAX_INSTANCES. Returns 2 instead when
