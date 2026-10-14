@@ -696,6 +696,20 @@ _pol_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_PO
 if printf '%s' "$_pol_out" | grep -q "MISSING $STUBS/policy.json"; then bad "--check accepts a present policy.json" "still reported"
 else ok "--check accepts a present policy.json"; fi
 
+echo
+echo "the Nix podman's Quadlet generator (sp-mzreip):"
+if has '^[[:space:]]*check_quadlet$'; then ok "--check verifies a Quadlet unit materialises"
+else bad "--check verifies a Quadlet unit materialises" "check_quadlet not in run_checks"; fi
+if has 'ln -sfn "\$_gen_src" "\$GENERATOR_DIR/podman-user-generator"'; then ok "install links the env's generator where systemd looks"
+else bad "install links the env's generator where systemd looks" "no ln step"; fi
+_q_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_GENERATOR_DIR="$STUBS/no-generators" bash "$SUBSTRATE" --check 2>&1)"
+if printf '%s' "$_q_out" | grep -q "MISSING $STUBS/no-generators/podman-user-generator"; then ok "--check fails on an image with no user generator for podman"
+else bad "--check fails on an image with no user generator for podman" "not reported"; fi
+mkdir -p "$STUBS/generators"; : > "$STUBS/generators/podman-user-generator"
+_q_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_SKIP_QUADLET_PROBE=1 SUBSTRATE_GENERATOR_DIR="$STUBS/generators" bash "$SUBSTRATE" --check 2>&1)"
+if printf '%s' "$_q_out" | grep -q "podman-user-generator"; then bad "--check accepts a registered generator" "still reported"
+else ok "--check accepts a registered generator"; fi
+
 # sp-80jm1s: a failed smoke run carries podman's own error, not "run it by hand".
 _pm="$(mktemp -d)"
 printf '#!/bin/sh\ncase "$1" in run) echo "Error: newuidmap: command not found" >&2; exit 125;; *) exit 1;; esac\n' > "$_pm/podman"
