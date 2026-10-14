@@ -107,7 +107,7 @@ runs:
     # The spill role needs ec2:DescribeInstances and ec2:TerminateInstances
     # scoped to instances tagged spill:owner=ephemeral-ci.
     - name: Configure AWS credentials (EC2 path)
-      if: inputs.backend == 'ec2' && inputs.aws-role-to-assume != ''
+      if: inputs.aws-role-to-assume != '' && (inputs.backend == 'ec2' || (inputs.vmid == '' && inputs.instance-id == '' && inputs.label != ''))
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ inputs.aws-role-to-assume }}
@@ -175,6 +175,19 @@ runs:
         # Lets teardown log a tag:round-vm node out of the tailnet by name.
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
         TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}
+      run: bash "${{ github.action_path }}/../scripts/teardown.sh"
+
+    # A cancel between run-instances and provision's outputs leaves vmid,
+    # backend and instance-id all empty, so neither path above runs and the
+    # instance is orphaned (sp-v8v0qd). The label is known to the caller before
+    # provision starts; find the instance by its ephemeral-ci:runner tag.
+    - name: Terminate an EC2 instance launched but never reported
+      if: inputs.vmid == '' && inputs.instance-id == '' && inputs.label != '' && inputs.aws-role-to-assume != ''
+      shell: bash
+      env:
+        BACKEND: ec2
+        RUNNER_LABEL: ${{ inputs.label }}
+        SPILL_REGION: us-west-2
       run: bash "${{ github.action_path }}/../scripts/teardown.sh"
 
     # DESTROYING THE VM DOES NOT DEREGISTER THE RUNNER.

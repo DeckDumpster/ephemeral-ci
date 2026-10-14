@@ -715,6 +715,9 @@ _ec2_setup() {
     cat > "$AWS_BIN" << 'AWSSTUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
+case "$*" in
+    *tag:ephemeral-ci:runner*) printf '%s\n' "${EC2_STUB_LABEL_IDS-}"; exit 0 ;;
+esac
 case "$1 $2" in
     "ec2 describe-instances")
         # First call (no previous terminate): return a running instance.
@@ -857,6 +860,32 @@ echo "--- Test 26: EC2 path — INSTANCE_ID missing → rc≠0"
     _aws_not_called "ec2 describe-instances" \
         || { echo "  FAIL: describe-instances called without INSTANCE_ID" >&2; exit 1; }
 ) && _pass "Test 26" || _fail "Test 26"
+
+# ============================================================
+# TEST 26b: no INSTANCE_ID, RUNNER_LABEL set (provision cancelled before it
+# reported an id) → instance found by ephemeral-ci:runner tag and terminated
+# ============================================================
+echo "--- Test 26b: EC2 path — no instance id, runner label → terminated by tag"
+(
+    _ec2_setup 26b
+    rc=0
+    INSTANCE_ID="" RUNNER_LABEL="ci-repo-123-1" EC2_STUB_LABEL_IDS="i-0aabbccdd11223344" \
+        _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+    _assert_rc "exit code" "$rc" 0 \
+    && _aws_called "terminate-instances.*i-0aabbccdd11223344" \
+        || { echo "  FAIL: instance not terminated by label" >&2; exit 1; }
+) && _pass "Test 26b" || _fail "Test 26b"
+
+echo "--- Test 26c: EC2 path — no instance id, label matches nothing → rc=0, no terminate"
+(
+    _ec2_setup 26c
+    rc=0
+    INSTANCE_ID="" RUNNER_LABEL="ci-repo-123-1" EC2_STUB_LABEL_IDS="" \
+        _run_ec2_teardown >/dev/null 2>&1 || rc=$?
+    _assert_rc "exit code" "$rc" 0 \
+    && _aws_not_called "terminate-instances" \
+        || { echo "  FAIL: terminate called with no match" >&2; exit 1; }
+) && _pass "Test 26c" || _fail "Test 26c"
 
 # ============================================================
 # TEST 27/28: tailnet logout (sp-7330sk)

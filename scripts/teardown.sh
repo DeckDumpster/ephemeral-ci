@@ -110,6 +110,36 @@ if [ "${BACKEND:-}" = "ec2" ]; then
     EC2_TERMINATE_TIMEOUT="${EC2_TERMINATE_TIMEOUT:-120}"
     EC2_TERMINATE_POLL="${EC2_TERMINATE_POLL:-5}"
 
+    # A cancel can land after run-instances but before provision emits
+    # instance-id, so the caller has no id to pass. The instance carries the
+    # runner label it registers (ephemeral-ci:runner, unique per run attempt):
+    # resolve the id from that. No match means nothing was launched. The
+    # vmtoken is unknown on this path, so the label match is the ownership proof.
+    if [ -z "${INSTANCE_ID:-}" ] && [ -n "${RUNNER_LABEL:-}" ]; then
+        _by_label_ids=""
+        if ! _by_label_ids="$(aws ec2 describe-instances \
+                --region "$SPILL_REGION" \
+                --filters "Name=tag:spill:owner,Values=ephemeral-ci" \
+                          "Name=tag:ephemeral-ci:runner,Values=${RUNNER_LABEL}" \
+                          "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+                --query 'Reservations[*].Instances[*].InstanceId' \
+                --output text 2>&1)"; then
+            printf 'teardown.sh: EC2 lookup by runner label failed: %s\n' "$_by_label_ids" >&2
+            exit 1
+        fi
+        if [ -z "$(printf '%s' "$_by_label_ids" | tr -d '[:space:]')" ]; then
+            printf 'teardown.sh: no EC2 instance carries runner label %s; nothing to terminate\n' \
+                "$RUNNER_LABEL" >&2
+            exit 0
+        fi
+        # shellcheck disable=SC2086
+        aws ec2 terminate-instances --region "$SPILL_REGION" \
+            --instance-ids $_by_label_ids >/dev/null
+        printf 'teardown.sh: terminated EC2 instance(s) %s found by runner label %s\n' \
+            "$(printf '%s' "$_by_label_ids" | tr -s '[:space:]' ' ')" "$RUNNER_LABEL" >&2
+        exit 0
+    fi
+
     if [ -z "${INSTANCE_ID:-}" ]; then
         echo "teardown.sh: BACKEND=ec2 but INSTANCE_ID is not set" >&2
         exit 1
