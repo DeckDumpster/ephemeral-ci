@@ -668,6 +668,8 @@ if printf '%s\n' "$_ab" | grep -q '^PATH=.*50-runner-env.conf\|environment.d/50-
 else bad "the user manager's environment carries the runner-env bin" "no environment.d entry"; fi
 if printf '%s\n' "$_ab" | grep -q 'user.conf.d/50-runner-env.conf' && printf '%s\n' "$_ab" | grep -q 'DefaultEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin'; then ok "systemd --user units start with the runner-env bin on PATH (sp-5nl8jo)"
 else bad "systemd --user units start with the runner-env bin on PATH (sp-5nl8jo)" "no DefaultEnvironment drop-in"; fi
+if printf '%s\n' "$_ab" | grep -q 'user/service.d/50-runner-env.conf' && printf '%s\n' "$_ab" | grep -q '^\[Service\]\\nEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin'; then ok "user units carry the runner-env PATH on the unit itself, over PAM's (sp-of73ze)"
+else bad "user units carry the runner-env PATH on the unit itself, over PAM's (sp-of73ze)" "no user/service.d Environment= drop-in"; fi
 if printf '%s\n' "$_ab" | grep -q '^Wants=user@\\\${RUNNER_UID}.service' && printf '%s\n' "$_ab" | grep -q '^After=.*user@\\\${RUNNER_UID}.service'; then ok "the spill runner service waits for the user manager"
 else bad "the spill runner service waits for the user manager" "no Wants/After user@<uid>.service"; fi
 if printf '%s\n' "$_ab" | grep -q 'podman info fails under the runner service'; then ok "the AMI build proves podman info passes for the runner before imaging"

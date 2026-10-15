@@ -398,6 +398,13 @@ printf 'PATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/us
 sudo mkdir -p /etc/systemd/user.conf.d
 printf '[Manager]\nDefaultEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
     | sudo tee /etc/systemd/user.conf.d/50-runner-env.conf >/dev/null
+# Ubuntu's PAM (pam_env, /etc/environment) hands user@.service its own PATH ending in /snap/bin,
+# and that manager environment beats both drop-ins above, so units still lacked podman
+# (sp-of73ze). Environment= on the unit itself outranks the manager's environment; a
+# type-level service.d drop-in reaches every user service, transient systemd-run units too.
+sudo mkdir -p /etc/systemd/user/service.d
+printf '[Service]\nEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
+    | sudo tee /etc/systemd/user/service.d/50-runner-env.conf >/dev/null
 # linger: the user manager (and /run/user/<uid>) exists from boot, not only
 # while a login session does.
 sudo loginctl enable-linger runner
@@ -449,7 +456,7 @@ as_user systemd-run --user --wait --pipe --collect /usr/bin/env podman --version
     || { echo "ami-build: a systemd --user unit cannot find podman" >&2; \
          as_user systemctl --user show-environment >&2 || true; \
          as_user systemd-run --user --wait --pipe --collect /usr/bin/env >&2 || true; \
-         cat /etc/systemd/user.conf.d/50-runner-env.conf /etc/environment.d/50-runner-env.conf >&2 || true; exit 1; }
+         cat /etc/systemd/user/service.d/50-runner-env.conf /etc/systemd/user.conf.d/50-runner-env.conf /etc/environment.d/50-runner-env.conf >&2 || true; exit 1; }
 
 echo "ami-build: substrate applied, runner unpacked, path unit enabled, podman info passes"
 SCRIPT
