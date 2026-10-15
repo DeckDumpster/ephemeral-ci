@@ -439,10 +439,17 @@ as_service podman info >/dev/null \
          as_service podman info >&2 || true; exit 1; }
 as_service podman info --format '{{.Store.GraphDriverName}}' >&2
 # A transient --user unit, the way the consumers' systemd --user units run, must find podman.
-sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" systemctl --user daemon-reexec
-sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" systemd-run --user --wait --pipe --collect \
-    /usr/bin/env podman --version >&2 \
-    || { echo "ami-build: a systemd --user unit cannot find podman" >&2; exit 1; }
+# A RESTART, not daemon-reexec: reexec serialises the running manager's environment and restores
+# it, so the PATH the manager started with (before the drop-ins above existed) survives it
+# (sp-vn3w0k). A restarted user@ manager re-reads user.conf.d and environment.d from scratch.
+sudo systemctl restart "user@\${RUNNER_UID}.service"
+for _ in \$(seq 1 30); do [ -S "/run/user/\${RUNNER_UID}/bus" ] && break; sleep 1; done
+as_user() { sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" "\$@"; }
+as_user systemd-run --user --wait --pipe --collect /usr/bin/env podman --version >&2 \
+    || { echo "ami-build: a systemd --user unit cannot find podman" >&2; \
+         as_user systemctl --user show-environment >&2 || true; \
+         as_user systemd-run --user --wait --pipe --collect /usr/bin/env >&2 || true; \
+         cat /etc/systemd/user.conf.d/50-runner-env.conf /etc/environment.d/50-runner-env.conf >&2 || true; exit 1; }
 
 echo "ami-build: substrate applied, runner unpacked, path unit enabled, podman info passes"
 SCRIPT
