@@ -297,6 +297,11 @@ jobs:
           test "$(command -v podman)" = /opt/ephemeral-ci/runner-env/bin/podman \
             || { echo "::error::podman resolves to $(command -v podman), not the pinned runner env"; exit 1; }
           case "$have" in "$(sed -n 's/^PODMAN_SERIES=//p' ephemeral-ci/scripts/template-substrate.sh)".*) ;; *) echo "::error::podman $have is not the series PODMAN_SERIES names"; exit 1 ;; esac
+      - name: Assert a systemd --user unit finds podman
+        # sp-5nl8jo: the user manager's units must see the runner env's PATH, as on the template.
+        run: |
+          systemd-run --user --wait --pipe --collect /usr/bin/env podman --version \
+            || { echo "::error::a transient systemd --user unit cannot find podman"; exit 1; }
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/spira

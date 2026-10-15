@@ -392,6 +392,12 @@ printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/us
 sudo mkdir -p /etc/environment.d
 printf 'PATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
     | sudo tee /etc/environment.d/50-runner-env.conf >/dev/null
+# environment.d only reaches the manager's own environment, not the units it starts, so a
+# systemd-run --user unit (pokedumpster's backup-check) got the default PATH and "podman:
+# command not found" (sp-5nl8jo). DefaultEnvironment is what every user unit starts with.
+sudo mkdir -p /etc/systemd/user.conf.d
+printf '[Manager]\nDefaultEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' \
+    | sudo tee /etc/systemd/user.conf.d/50-runner-env.conf >/dev/null
 # linger: the user manager (and /run/user/<uid>) exists from boot, not only
 # while a login session does.
 sudo loginctl enable-linger runner
@@ -432,6 +438,11 @@ as_service podman info >/dev/null \
     || { echo "ami-build: podman info fails under the runner service's environment" >&2; \
          as_service podman info >&2 || true; exit 1; }
 as_service podman info --format '{{.Store.GraphDriverName}}' >&2
+# A transient --user unit, the way the consumers' systemd --user units run, must find podman.
+sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" systemctl --user daemon-reexec
+sudo -u runner env XDG_RUNTIME_DIR="/run/user/\${RUNNER_UID}" systemd-run --user --wait --pipe --collect \
+    /usr/bin/env podman --version >&2 \
+    || { echo "ami-build: a systemd --user unit cannot find podman" >&2; exit 1; }
 
 echo "ami-build: substrate applied, runner unpacked, path unit enabled, podman info passes"
 SCRIPT
