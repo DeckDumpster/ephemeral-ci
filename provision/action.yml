@@ -192,7 +192,7 @@ inputs:
       the join and proceeds without it: the `tailnet` output then reads
       "unavailable" and the job runs cold. Has no effect on the Proxmox path.
     required: false
-    default: 'false'
+    default: 'true'
 
 outputs:
   vmid:

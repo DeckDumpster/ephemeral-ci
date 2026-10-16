@@ -459,13 +459,13 @@ case "$SPILL_INSTANCE_TYPE" in
            "$SPILL_INSTANCE_TYPE" >&2; exit 1 ;;
 esac
 SPILL_SSM_WAIT_SECONDS="${SPILL_SSM_WAIT_SECONDS:-300}"
-#   SPILL_TAILNET       true | false (default false). When true the instance
+#   SPILL_TAILNET       true | false (default true). When true the instance
 #                       joins the tailnet as tag:round-vm before the runner
 #                       registers, so a spilled job reaches the caller's warm
 #                       build cache. Needs TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET.
 #   SPILL_TAILNET_WAIT_SECONDS how long registration waits for the join; on
 #                       timeout the runner registers anyway (job runs cold).
-SPILL_TAILNET="${SPILL_TAILNET:-false}"
+SPILL_TAILNET="${SPILL_TAILNET:-true}"
 #   SPILL_AMI_ID        Launch exactly this AMI instead of the newest promoted
 #                       one. Only the spill probe sets it, to run a freshly built
 #                       AMI before it is promoted. The substrate-sha check still

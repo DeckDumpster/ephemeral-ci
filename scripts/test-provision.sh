@@ -2033,7 +2033,8 @@ fi
 #
 # The tailnet helper is replaced through TAILNET_SH so no Tailscale API is
 # called; the fake mints the key "tskey-auth-FAKE" and fails when told to.
-#   34: default (false) -- no user-data, no tailnet line, wait parameter 0
+#   34: explicit false -- no user-data, no tailnet line, wait parameter 0
+#       (the default is true since sp-vnq2ds: every EC2 runner reaches the cache)
 #   35: true -- user-data joins as tag:round-vm under spill-<vmtoken>, the
 #       document is told to wait, tailnet=up when the guest reports it
 #   36: true but the guest reports no join -- tailnet=unavailable and the
@@ -2061,8 +2062,8 @@ _run_tailnet_provision() {
         >"$SCRATCH/out$1" 2>"$SCRATCH/err$1" && return 0 || return $?
 }
 
-_run_tailnet_provision 34 && _rc=0 || _rc=$?
-[ "$_rc" -eq 0 ] && ok "test-34: default spill-tailnet=false provisions" \
+SPILL_TAILNET=false _run_tailnet_provision 34 && _rc=0 || _rc=$?
+[ "$_rc" -eq 0 ] && ok "test-34: spill-tailnet=false provisions" \
     || ko "test-34: provision failed (rc=$_rc; $(cat "$SCRATCH/err34"))"
 if ! grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--user-data" && [ ! -e "$AWS_USERDATA_COPY" ]; then
     ok "test-34: no user-data without spill-tailnet"
