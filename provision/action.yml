@@ -1,8 +1,9 @@
 name: Provision an ephemeral CI runner
 description: >-
-  Clone a Proxmox template into a per-run VM, register it as an org-level
-  self-hosted runner in a restricted group, and wait for it to come online.
-  Outputs the VMID to destroy and the label to schedule onto.
+  Launch a per-run EC2 runner, register it as an org-level self-hosted
+  runner in a restricted group, and wait for it to come online. Every CI path
+  sets spill: ec2-only; the Proxmox clone path is retained only for legacy
+  callers. Outputs the identifiers to tear down and the label to schedule onto.
 
 # WHY THIS IS A COMPOSITE ACTION AND NOT A REUSABLE WORKFLOW
 # ---------------------------------------------------------
@@ -139,11 +140,11 @@ inputs:
     default: '0'
   spill:
     description: >-
-      Set to "ec2" to enable EC2 spill when Proxmox capacity is exhausted.
-      Set to "ec2-only" to skip the Proxmox attempt entirely and go straight to
-      EC2. Use ec2-only only for probes and never on a normal CI path — a
-      consumer that sets it stops using Proxmox altogether and pays for every run.
-      Any other value (or absent) disables spill.
+      Every CI path sets "ec2-only": skip the Proxmox attempt entirely and go
+      straight to EC2 (law-buy-capacity-rather-than-wait). "ec2" tries Proxmox
+      first and spills to EC2 when capacity is exhausted; it is legacy and no
+      consumer should use it. Any other value (or absent) disables spill and
+      leaves the run on Proxmox, which is not an acceptable default for CI.
     required: false
     default: 'off'
   spill-after-seconds:

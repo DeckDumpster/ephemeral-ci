@@ -204,9 +204,11 @@ jobs:
     if: needs.check-ami.outputs.ready == 'true'
     runs-on: ubuntu-latest
     outputs:
-      vmid:     ${{ steps.provision.outputs.vmid }}
-      label:    ${{ steps.provision.outputs.label }}
-      vm-token: ${{ steps.provision.outputs.vm-token }}
+      vmid:        ${{ steps.provision.outputs.vmid }}
+      label:       ${{ steps.provision.outputs.label }}
+      vm-token:    ${{ steps.provision.outputs.vm-token }}
+      backend:     ${{ steps.provision.outputs.backend }}
+      instance-id: ${{ steps.provision.outputs.instance-id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -226,6 +228,9 @@ jobs:
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
+          spill:              ec2-only
+          spill-tailnet:      'true'
+          aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
 
   # Tears down the VM provisioned above. Runs in its own job on a fresh
   # runner so the Tailscale setup does not collide with probe-provision's.
@@ -240,12 +245,14 @@ jobs:
           ref: ${{ needs.find-green.outputs.target }}
 
       - name: Probe teardown at candidate SHA
-        if: needs.probe-provision.outputs.vmid != ''
+        if: needs.probe-provision.outputs.label != ''
         uses: ./teardown
         with:
           vmid:               ${{ needs.probe-provision.outputs.vmid }}
           label:              ${{ needs.probe-provision.outputs.label }}
           vm-token:           ${{ needs.probe-provision.outputs.vm-token }}
+          backend:            ${{ needs.probe-provision.outputs.backend }}
+          instance-id:        ${{ needs.probe-provision.outputs.instance-id }}
           runner-reg-pat:     ${{ secrets.RUNNER_REG_PAT }}
           ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           ts-oauth-secret:    ${{ secrets.TS_OAUTH_SECRET }}
@@ -256,6 +263,7 @@ jobs:
           pve-node:           ${{ vars.PVE_NODE }}
           template-vmid:      ${{ vars.TEMPLATE_VMID }}
           pve-ca-cert:        ${{ vars.PVE_CA_CERT }}
+          aws-role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
           consumer-result:    ${{ needs.probe-provision.result }}
 
   advance:
