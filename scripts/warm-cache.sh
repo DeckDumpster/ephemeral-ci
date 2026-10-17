@@ -63,6 +63,7 @@ bake() {
     [ "$n" -gt 0 ] || die "manifest names no consumers"
     for i in $(seq 0 $((n - 1))); do
         name="$(jq -r ".consumers[$i].name" "$MANIFEST")"
+        [ -n "$name" ] && [ "$name" != null ] || die "consumer $i has no name"
         repo="$(jq -r ".consumers[$i].repo" "$MANIFEST")"
         ref="$(jq -r ".consumers[$i].ref" "$MANIFEST")"
         note "== $name ($repo @ $ref)"
@@ -83,7 +84,7 @@ bake() {
         )
         e="$(git -C "$work/$name" rev-parse HEAD)"
         printf '%s %s\n' "$name" "$e" >> "$work/baked"
-        rm -rf "$work/$name"
+        rm -rf "${work:?}/${name:?}"
     done
     { cat "$work/baked"; printf 'lock-sha %s\n' "$(lock_sha)"; } > "$dir/BAKED"
     note "baked: $(tr '\n' ';' < "$dir/BAKED")"
