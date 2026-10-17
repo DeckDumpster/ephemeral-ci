@@ -19,6 +19,8 @@ on:
       - scripts/runner-env.sh
       - nix/flake.nix
       - scripts/guest/start-runner.sh
+      - scripts/warm-cache.sh
+      - warm/consumers.json
       - .github/workflows/ami-build.yml
   schedule:
     - cron: '17 6 * * 1'   # weekly: picks up the latest base image and runner release
@@ -37,7 +39,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:

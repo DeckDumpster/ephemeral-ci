@@ -69,6 +69,7 @@ jobs:
               scripts/test-spill-probe.sh \
               scripts/test-spill-probe-first-test.sh \
               scripts/test-tailnet.sh \
+              scripts/test-warm-cache.sh \
               scripts/test-workflow-paths.sh; do
             test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
           done
@@ -118,6 +119,9 @@ jobs:
       # the content of the list and that --check mutates nothing. It matters
       # because a missing entry does not fail here; it fails in a consumer's run,
       # on a VM that is destroyed forty seconds later.
+      - name: warm cache
+        run: bash scripts/test-warm-cache.sh
+
       - name: template substrate
         run: bash scripts/test-template-substrate.sh
 

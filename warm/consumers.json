@@ -1,0 +1,33 @@
+{
+  "dir": "/opt/ephemeral-ci/warm",
+  "consumers": [
+    {
+      "name": "pokedumpster",
+      "repo": "https://github.com/DeckDumpster/pokedumpster.git",
+      "ref": "master",
+      "lockfiles": ["Cargo.lock", "rust-toolchain.toml", "frontend/package-lock.json", "Containerfile"],
+      "env": {"CARGO_TARGET_DIR": "$HOME/.cache/pkdump-builds"},
+      "steps": [
+        "bash deploy/runner-deps.sh",
+        "cargo fetch --locked",
+        "cargo test --workspace --no-run --locked",
+        "podman build -f Containerfile -t localhost/ephemeral-ci-warm/pokedumpster:warm .",
+        "npm ci --prefix frontend"
+      ]
+    },
+    {
+      "name": "dumpstar",
+      "repo": "https://github.com/DeckDumpster/dumpstar.git",
+      "ref": "main",
+      "lockfiles": ["Cargo.lock", "rust-toolchain.toml", "frontend/package-lock.json", "Containerfile"],
+      "env": {"CARGO_TARGET_DIR": "$HOME/.cache/dumpstar-builds"},
+      "steps": [
+        "bash deploy/runner-deps.sh",
+        "cargo fetch --locked",
+        "cargo test --workspace --no-run --locked",
+        "podman build -f Containerfile -t localhost/ephemeral-ci-warm/dumpstar:warm .",
+        "npm ci --prefix frontend"
+      ]
+    }
+  ]
+}

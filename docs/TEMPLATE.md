@@ -332,6 +332,35 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 itself. Install as the runner user so `~/.local/bin/uv` is on `PATH`.
 Confirm with `uv --version`.
 
+### Warm caches (EC2 AMI) — baked from each consumer's own declaration
+
+A cold ephemeral VM recompiled every dependency on every run: pokedumpster run 420
+spent 9 m 26 s in the image build's release compile, 3 m 09 s in `cargo test`'s
+compile and about 81 s in runner-deps' apt/node install (sp-n1bfe4). The AMI build
+now ends with a bake step, `scripts/warm-cache.sh bake`, that runs as the `runner`
+user from `warm/consumers.json`: per consumer, a shallow clone, then the consumer's
+**own** `deploy/runner-deps.sh` (toolchain, apt, node), `cargo fetch`, the
+`cargo test --no-run` compile into the same `CARGO_TARGET_DIR` its `ci.sh` defaults to,
+a `podman build` of its Containerfile (builder layers into the runner's store) and
+`npm ci`. The clone is then deleted; what remains is under `/home/runner`, where the
+job looks.
+
+This does not break the substrate boundary above: the substrate still carries no
+consumer's package list. The consumer's script is run at build time, so its list is
+never copied here. It does not change what CI runs.
+
+* **Refresh.** The image is tagged `warm-lock-sha`, the hash of the manifest and every
+  lockfile it names at each consumer's ref. `warm-refresh.yml` compares it every six
+  hours (`scripts/check-warm-fresh.sh`) and dispatches Build spill AMI when it differs.
+  A fetch failure is never read as fresh.
+* **Fail closed.** A failing step fails the bake and the AMI build.
+* **Known limit.** pokedumpster's Containerfile scopes its cargo target *cache mount* by
+  a hash of the checkout path (pd-wjmd). Image layers are baked either way; whether the
+  cache mount is warm for a job depends on that hash matching, which the first measured
+  run must show.
+* **Disk.** The root volume is 64 GiB, a ceiling rather than a measurement; the bake prints
+  `df` so the figure can be replaced.
+
 ### Playwright / Chromium system libraries and fonts — NOT substrate
 
 One consumer's dependency; see the boundary note under "uv". The template carries

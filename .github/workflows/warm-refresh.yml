@@ -1,0 +1,42 @@
+name: Refresh warm caches
+
+# The runner AMI carries each consumer's baked cargo registry, target dirs, builder image
+# layers and node_modules (warm/consumers.json). Those go stale when a consumer's lockfile
+# moves, so this compares the newest AMI's warm-lock-sha tag with the lockfiles as they are
+# now and dispatches Build spill AMI when they differ (sp-tu41vm).
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  actions: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_SPILL_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: Rebuild the AMI if the baked caches are stale
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rc=0
+          bash scripts/check-warm-fresh.sh || rc=$?
+          [ "$rc" -eq 0 ] && exit 0
+          [ "$rc" -eq 10 ] || exit "$rc"
+          # A build already queued or running will pick the new lockfiles up.
+          pending="$(gh run list --workflow ami-build.yml --json status --jq '[.[] | select(.status=="queued" or .status=="in_progress")] | length')"
+          if [ "$pending" -gt 0 ]; then
+            echo "an ami-build run is already pending; not dispatching another"
+            exit 0
+          fi
+          gh workflow run ami-build.yml
