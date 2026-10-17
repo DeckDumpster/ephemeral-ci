@@ -7,11 +7,14 @@
 # tagged with the build date and the current git commit, then deregisters
 # older AMIs (with their backing snapshots) keeping the newest N.
 #
-# DISK SIZE: 32 GiB. Measured gate runs need approximately 24 GiB:
+# DISK SIZE: 64 GiB. Measured gate runs need approximately 24 GiB:
 #   OS 5, runner 1, substrate packages 2, consumer tools ~5, data ~1,
-#   plus the mandatory 10 GiB deploy/diskcheck.sh floor. 32 GiB is 33%
-#   headroom over the measured minimum. The Proxmox template uses 40 GiB,
-#   but that was not derived from measurement.
+#   plus the mandatory 10 GiB deploy/diskcheck.sh floor. The warm caches
+#   (warm/consumers.json: cargo registry, deps-only target dirs, builder image
+#   layers, node_modules, for each consumer) are added on top. Their size is
+#   NOT yet measured: 64 GiB is a ceiling chosen to make the first bake fit, and
+#   the bake prints `df` so the real figure can replace this guess (sp-tu41vm).
+#   The Proxmox template uses 40 GiB, but that was not derived from measurement.
 #
 # INSTANCE TYPE: c7i.2xlarge (8 vCPU, 16 GiB). Must match the spill runner
 # type so that template-substrate.sh's memory contract is validated on the
@@ -27,6 +30,7 @@
 #   spill:owner=ephemeral-ci  (required for the budget filter and the reaper)
 #   build-date=YYYYMMDD
 #   git-commit=SHORT_SHA
+#   warm-lock-sha=<warm-cache.sh lock-sha: manifest + consumer lockfiles baked in>
 #   substrate-sha=<sha256 of template-substrate.sh and ami-build.sh, see
 #     ami_inputs_sha in ami-wait.sh>  (provision.sh refuses an AMI whose tag
 #     differs from the inputs at its own ref, so a change to either one is
@@ -58,12 +62,14 @@ TAG_KEY="spill:owner"
 TAG_VALUE="ephemeral-ci"
 AMI_NAME_PREFIX="ephemeral-ci-runner"
 BUILDER_TYPE="c7i.2xlarge"
-ROOT_DISK_GIB=32
+ROOT_DISK_GIB=64
 RETAIN_COUNT=3
 # Budget for build instance to register with SSM after launch.
 SSM_WAIT_SECONDS=300
 # Budget for template-substrate.sh + runner install to complete.
 BUILD_WAIT_SECONDS=600
+# Budget for scripts/warm-cache.sh: a cold release compile alone is ~9.5 min (run 420).
+WARM_WAIT_SECONDS=3600
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_NAME="EphemeralCiSpill"
@@ -485,6 +491,59 @@ SCRIPT
 }
 
 # ---------------------------------------------------------------------------
+# apply_warm: bake each consumer's warm caches (warm/consumers.json) as the
+# runner user, after the substrate and the runner are in place. A separate SSM
+# command with its own budget: the compile outlasts BUILD_WAIT_SECONDS. Returns
+# the command id on stdout.
+# ---------------------------------------------------------------------------
+apply_warm() {
+    local instance_id="$1"
+    local warm_b64 manifest_b64 script ssm_params cmd_id
+    warm_b64="$(base64 -w0 "${SCRIPT_DIR}/warm-cache.sh")"
+    manifest_b64="$(base64 -w0 "${SCRIPT_DIR}/../warm/consumers.json")"
+    script="$(cat <<SCRIPT
+#!/bin/bash
+set -euo pipefail
+BUILD_LOG=/var/log/ami-warm.log
+exec 3>&1 4>&2
+exec >"\$BUILD_LOG" 2>&1
+finish() {
+    local rc=\$?
+    if [ "\$rc" -ne 0 ]; then
+        { echo "ami-build: warm bake exited \$rc; last 4000 bytes of \$BUILD_LOG:"; tail -c 4000 "\$BUILD_LOG"; } >&4
+    else
+        tail -c 4000 "\$BUILD_LOG" >&3
+    fi
+}
+trap finish EXIT
+command -v jq >/dev/null || sudo apt-get install -y -o DPkg::Lock::Timeout=300 jq
+W=/tmp/ci-warm
+mkdir -p \$W/scripts \$W/warm
+printf '%s' "${warm_b64}" | base64 -d > \$W/scripts/warm-cache.sh
+printf '%s' "${manifest_b64}" | base64 -d > \$W/warm/consumers.json
+chmod -R a+rX \$W
+# As the runner, with its login HOME: the caches belong under its \$HOME.
+sudo -u runner -H bash \$W/scripts/warm-cache.sh bake
+rm -rf \$W
+df -h / >&2
+echo "ami-build: warm caches baked: \$(cat /opt/ephemeral-ci/warm/BAKED | tr '\\n' ';')"
+SCRIPT
+)"
+    ssm_params="$(jq -n --arg script "$script" '{"commands": [$script]}')"
+    note "sending warm bake over SSM to $instance_id (budget ${WARM_WAIT_SECONDS}s)"
+    cmd_id="$(aws_w ssm send-command \
+        --instance-ids "$instance_id" \
+        --document-name "AWS-RunShellScript" \
+        --parameters "$ssm_params" \
+        --timeout-seconds "$WARM_WAIT_SECONDS" \
+        --region "$REGION" \
+        --query 'Command.CommandId' \
+        --output text)"
+    note "SSM command: $cmd_id"
+    printf '%s' "$cmd_id"
+}
+
+# ---------------------------------------------------------------------------
 # wait_command: poll SSM command until completion; print stdout on success
 # ---------------------------------------------------------------------------
 wait_command() {
@@ -559,6 +618,9 @@ create_ami() {
     local instance_id="$1" ami_name="$2" build_date="$3" git_commit="$4"
     local substrate_sha
     substrate_sha="$(ami_inputs_sha "$SCRIPT_DIR")"
+    local warm_lock_sha
+    warm_lock_sha="$(bash "${SCRIPT_DIR}/warm-cache.sh" lock-sha)" \
+        || { printf 'ami-build.sh: cannot compute warm-lock-sha; refusing to tag an image as warm\n' >&2; return 1; }
     note "stopping $instance_id before snapshot"
 
     aws_w ec2 stop-instances --instance-ids "$instance_id" --region "$REGION" >/dev/null
@@ -572,13 +634,14 @@ create_ami() {
         --arg tk "$TAG_KEY" --arg tv "$TAG_VALUE" \
         --arg name "$AMI_NAME_PREFIX" \
         --arg bd "$build_date" --arg gc "$git_commit" \
-        --arg ss "$substrate_sha" \
+        --arg ss "$substrate_sha" --arg wl "$warm_lock_sha" \
         '{ResourceType: $type, Tags: [
             {Key: $tk, Value: $tv},
             {Key: "Name", Value: $name},
             {Key: "build-date", Value: $bd},
             {Key: "git-commit", Value: $gc},
-            {Key: "substrate-sha", Value: $ss}
+            {Key: "substrate-sha", Value: $ss},
+            {Key: "warm-lock-sha", Value: $wl}
         ]}')"
     local tag_spec_snap
     tag_spec_snap="$(jq -n --arg type snapshot \
@@ -740,6 +803,9 @@ ssm_elapsed="$(wait_ssm "$instance_id")"
 
 cmd_id="$(apply_substrate "$instance_id")"
 wait_command "$instance_id" "$cmd_id" "$BUILD_WAIT_SECONDS"
+
+warm_cmd_id="$(apply_warm "$instance_id")"
+wait_command "$instance_id" "$warm_cmd_id" "$WARM_WAIT_SECONDS"
 
 new_ami="$(create_ami "$instance_id" "$ami_name" "$build_date" "$git_commit")"
 
