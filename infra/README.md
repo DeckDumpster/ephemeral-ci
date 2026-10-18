@@ -15,8 +15,12 @@ It creates:
 
 - an S3 state bucket (private, SSE-S3, versioned, TLS-only, `RETAIN`). Locking
   is S3-native, so there is no DynamoDB table.
-- the IAM role `terraform-deploy`, assumable only by `spira-concierge` and only
-  when `aws:MultiFactorAuthPresent` is true. Its policy is least privilege:
+- the IAM role `terraform-deploy`, assumable only by `spira-concierge` sessions
+  (MFA is not carried across role chaining, so it is enforced by
+  `spira-concierge`'s own trust, not here). IAM writes on users/roles require the
+  `terraform-deploy-boundary` permissions boundary (no IAM writes inside it), and
+  all IAM writes on `spira-concierge`, `terraform-deploy` and the boundary are
+  denied. Its policy is least privilege:
   the state bucket, `<prefix>-*` buckets, `<prefix>-*` IAM users/roles/policies/instance
   profiles, `<prefix>/*` secrets for each prefix in `TERRAFORM_NAME_PREFIXES`
   (`spira`, `cubby`), the names the retired ephemeral-ci stacks gave their
@@ -61,7 +65,7 @@ provider "aws" {
 
 ### Assuming the role
 
-The MFA condition is checked on the calling session, so the Concierge's
+`spira-concierge`'s own trust checks MFA, so the Concierge's
 `spira-concierge` credentials must themselves come from an MFA-authenticated
 session (`aws sts get-session-token --serial-number <mfa-arn> --token-code <code>`,
 or an equivalent MFA-gated login). Then Terraform's `assume_role` blocks above

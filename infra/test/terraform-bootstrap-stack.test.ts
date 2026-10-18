@@ -51,14 +51,24 @@ test('no DynamoDB lock table', () => {
   template.resourceCountIs('AWS::DynamoDB::Table', 0);
 });
 
-test('role trust names only spira-concierge and requires MFA', () => {
+type Stmt = {
+  Sid: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown;
+};
+const policyResources = () => [
+  ...Object.values(template.findResources('AWS::IAM::Policy')),
+  ...Object.values(template.findResources('AWS::IAM::ManagedPolicy')),
+] as { Properties: { PolicyDocument: { Statement: Stmt[] } } }[];
+const stmts = (): Stmt[] => policyResources().flatMap((p) => p.Properties.PolicyDocument.Statement);
+
+test('trust admits a spira-concierge assumed-role session, without an MFA condition', () => {
   const roles = template.findResources('AWS::IAM::Role');
   expect(Object.keys(roles)).toHaveLength(1);
   const doc = (Object.values(roles)[0] as { Properties: { AssumeRolePolicyDocument: unknown } })
     .Properties.AssumeRolePolicyDocument;
   const json = JSON.stringify(doc);
   expect(json).toContain(':iam::189923011121:role/spira-concierge');
-  expect(json.match(/role\//g)).toHaveLength(1);
+  expect(json.match(/role\//g)).toHaveLength(2);
+  expect(json).not.toContain('MultiFactorAuthPresent');
   template.hasResourceProperties('AWS::IAM::Role', {
     RoleName: 'terraform-deploy',
     AssumeRolePolicyDocument: {
@@ -67,19 +77,55 @@ test('role trust names only spira-concierge and requires MFA', () => {
           Action: 'sts:AssumeRole',
           Effect: 'Allow',
           Principal: { AWS: Match.anyValue() },
-          Condition: { Bool: { 'aws:MultiFactorAuthPresent': 'true' } },
+          Condition: { ArnEquals: { 'aws:PrincipalArn': Match.anyValue() } },
         },
       ],
     },
   });
 });
 
+test('every Allow that writes IAM users/roles carries the boundary condition', () => {
+  // The Spot service-linked role is AWS-owned and cannot carry a boundary.
+  const writers = stmts().filter(
+    (st) => st.Effect === 'Allow' && st.Sid !== 'SpotServiceLinkedRole' && ([] as string[]).concat(st.Action).some(
+      (a) => /^iam:(Create|Put|Attach|Detach|Update|Delete|Tag|Untag)(User|Role|AccessKey|AssumeRole)/.test(a),
+    ),
+  );
+  expect(writers.length).toBeGreaterThan(0);
+  for (const st of writers) {
+    expect(JSON.stringify(st.Condition ?? st)).toMatch(/iam:PermissionsBoundary.*DeployBoundary/);
+  }
+});
+
+test('explicit Deny on IAM writes to spira-concierge, terraform-deploy and the boundary', () => {
+  const deny = stmts().find((st) => st.Sid === 'DenyIamWritesOnGuards')!;
+  expect(deny.Effect).toBe('Deny');
+  const res = JSON.stringify(deny.Resource);
+  expect(res).toContain('role/spira-concierge');
+  expect(res).toContain('role/terraform-deploy');
+  expect(res).toContain('DeployBoundary');
+  const actions = ([] as string[]).concat(deny.Action);
+  for (const v of ['iam:Attach*', 'iam:Put*', 'iam:Create*', 'iam:Update*', 'iam:Delete*']) {
+    expect(actions).toContain(v);
+  }
+  const rm = stmts().find((st) => st.Sid === 'DenyBoundaryRemoval')!;
+  expect(rm.Effect).toBe('Deny');
+});
+
+test('boundary policy denies IAM writes and assuming the deploy role', () => {
+  template.hasResourceProperties('AWS::IAM::ManagedPolicy', {
+    ManagedPolicyName: 'terraform-deploy-boundary',
+    PolicyDocument: {
+      Statement: Match.arrayWith([
+        Match.objectLike({ Sid: 'NoIamWrites', Effect: 'Deny', Action: Match.arrayWith(['iam:Put*', 'iam:Attach*']) }),
+        Match.objectLike({ Sid: 'NoAssumingDeployRole', Effect: 'Deny', Action: 'sts:AssumeRole' }),
+      ]),
+    },
+  });
+});
+
 test('role policy is least privilege: no admin, no unscoped iam or secrets', () => {
-  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
-  expect(policies).toHaveLength(1);
-  const statements = (
-    policies[0] as { Properties: { PolicyDocument: { Statement: { Action: string | string[]; Resource: unknown }[] } } }
-  ).Properties.PolicyDocument.Statement;
+  const statements = stmts().filter((st) => st.Sid !== 'Everything' && st.Effect === 'Allow');
   for (const st of statements) {
     const actions = ([] as string[]).concat(st.Action);
     expect(actions).not.toContain('*');
@@ -89,15 +135,12 @@ test('role policy is least privilege: no admin, no unscoped iam or secrets', () 
     }
   }
   expect(JSON.stringify(statements)).not.toContain('AdministratorAccess');
-  template.resourceCountIs('AWS::IAM::ManagedPolicy', 0);
+  template.resourceCountIs('AWS::IAM::ManagedPolicy', 3);
 });
 
 test('name patterns cover exactly spira and cubby, nothing broader', () => {
-  const policy = Object.values(template.findResources('AWS::IAM::Policy'))[0] as {
-    Properties: { PolicyDocument: { Statement: { Sid: string; Resource: unknown }[] } };
-  };
   const res = (sid: string): string[] => {
-    const st = policy.Properties.PolicyDocument.Statement.find((x) => x.Sid === sid)!;
+    const st = stmts().find((x) => x.Sid === sid)!;
     return ([] as unknown[]).concat(st.Resource).map((r) => JSON.stringify(r));
   };
   const strip = (r: string) =>
@@ -113,10 +156,12 @@ test('name patterns cover exactly spira and cubby, nothing broader', () => {
     ['cubby-*', 'cubby-*/*', 'spira-*', 'spira-*/*'].sort(),
   );
   expect(flat('PrefixedSecrets').sort()).toEqual(['cubby/*', 'spira/*']);
-  const iamRes = flat('PrefixedIam');
-  expect(iamRes.filter((x) => x === 'spira-*')).toHaveLength(4);
-  expect(iamRes.filter((x) => x === 'cubby-*')).toHaveLength(4);
-  expect(iamRes).toHaveLength(8);
+  for (const sid of ['PrefixedIamRead', 'PrefixedIamPrincipalWrite', 'PrefixedIamPolicyWrite']) {
+    const r = flat(sid);
+    expect(r.every((x) => x === 'spira-*' || x === 'cubby-*')).toBe(true);
+    expect(r.filter((x) => x === 'spira-*')).toHaveLength(r.length / 2);
+  }
+  expect(flat('PrefixedIamPrincipalWrite')).toHaveLength(4);
 });
 
 test('outputs: bucket name, region, role arn', () => {
@@ -126,8 +171,7 @@ test('outputs: bucket name, region, role arn', () => {
 });
 
 test('adopted resources are named patterns, never a bare wildcard, and never the admin role', () => {
-  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
-  const json = JSON.stringify(policies);
+  const json = JSON.stringify(policyResources());
   expect(json).toContain('ephemeral-ci-*');
   expect(json).toContain('oidc-provider/token.actions.githubusercontent.com');
   expect(json).not.toContain('cdk-bootstrap');
