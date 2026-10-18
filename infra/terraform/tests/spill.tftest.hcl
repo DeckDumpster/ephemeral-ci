@@ -150,3 +150,40 @@ run "spill_scripts_read_ids_from_ssm_parameters" {
     error_message = "the spill and ami-build roles may read the spill parameters"
   }
 }
+
+run "every_managed_principal_carries_the_deploy_boundary" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      for p in [
+        aws_iam_role.instance, aws_iam_role.spill, aws_iam_role.ami_build, aws_iam_role.ci_test,
+        aws_iam_user.round_spill, aws_iam_user.backup_writer,
+      ] : p.permissions_boundary == "arn:aws:iam::189923011121:policy/terraform-deploy-boundary"
+    ])
+    error_message = "terraform-deploy may write a role or user only while it carries terraform-deploy-boundary"
+  }
+}
+
+# terraform-deploy-boundary (lib/terraform-bootstrap-stack.ts) allows "*" and denies
+# the iam write verbs and sts:AssumeRole on terraform-deploy. A policy is therefore
+# unchanged by the boundary exactly when it grants none of those.
+run "boundary_cuts_nothing_the_policies_grant" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      for d in [
+        aws_iam_role_policy.spill.policy, aws_iam_role_policy.ami_build.policy,
+        aws_iam_role_policy.ci_test.policy, aws_iam_policy.round_spill.policy,
+        aws_iam_user_policy.backup_writer.policy,
+      ] : alltrue([
+        for st in jsondecode(d).Statement : st.Effect != "Allow" || alltrue([
+          for a in flatten([try(st.Action, [])]) :
+          !can(regex("^(\\*|iam:\\*|iam:(Create|Put|Attach|Detach|Update|Delete|Add|Remove|Set|Tag|Untag).*|sts:(\\*|AssumeRole))$", a))
+        ])
+      ])
+    ])
+    error_message = "a granted action falls under the boundary's deny: the boundary would cut it"
+  }
+}

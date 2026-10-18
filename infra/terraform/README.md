@@ -21,6 +21,12 @@ unchanged), so what Terraform compares against is what CloudFormation wrote.
 The SSM documents are stored compact (no whitespace), as CloudFormation sent
 them: the provider compares `content` as a string.
 
+Every role and user here carries `terraform-deploy-boundary` (`permissions_boundary`):
+`terraform-deploy` may write a principal's policies only while the boundary is
+on it (sp-h1mt06). The boundary allows `*` and denies IAM writes and
+assuming `terraform-deploy`; `tests/spill.tftest.hcl` asserts that no policy
+here grants any of those, so the boundary changes no effective permission.
+
 Expected adoption plan: `44 to import, 7 to add, 2 to change, 0 to destroy`,
 the two changes being only the `ssm:GetParametersByPath` statements on
 `aws_iam_role_policy.spill` and `.ami_build`.

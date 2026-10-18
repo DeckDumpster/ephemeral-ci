@@ -87,6 +87,7 @@ resource "aws_security_group" "spill" {
 # to "commands this session issued". The exposure is accepted.
 
 resource "aws_iam_role" "instance" {
+  permissions_boundary = local.permissions_boundary_arn
   name               = var.physical_ids["instance_role_name"]
   assume_role_policy = file("${path.module}/policies/instance-role.assume.json")
 }
@@ -195,6 +196,10 @@ resource "aws_iam_service_linked_role" "spot" {
 # ── Roles assumed through OIDC ────────────────────────────────────────────────
 
 locals {
+  # terraform-deploy may write a role or user only while it carries this boundary
+  # (TerraformBootstrap); the account id comes from the deploy role's own ARN.
+  permissions_boundary_arn = "${regex("^arn:[^:]+:iam::[0-9]+:", var.deploy_role_arn)}policy/terraform-deploy-boundary"
+
   policy_vars = {
     launch_template_id     = aws_launch_template.spill.id
     deliver_document_name  = aws_ssm_document.deliver_runner_token.name
@@ -210,6 +215,7 @@ locals {
 }
 
 resource "aws_iam_role" "spill" {
+  permissions_boundary = local.permissions_boundary_arn
   name               = "ephemeral-ci-spill"
   assume_role_policy = templatefile("${path.module}/policies/spill-role.assume.json.tftpl", local.policy_vars)
 }
@@ -223,6 +229,7 @@ resource "aws_iam_role_policy" "spill" {
 # Assumed only by ami-build.yml on main; carries every spill grant plus the
 # build-time operations.
 resource "aws_iam_role" "ami_build" {
+  permissions_boundary = local.permissions_boundary_arn
   name               = "ephemeral-ci-ami-build"
   assume_role_policy = templatefile("${path.module}/policies/ami-build-role.assume.json.tftpl", local.policy_vars)
 }
@@ -234,6 +241,7 @@ resource "aws_iam_role_policy" "ami_build" {
 }
 
 resource "aws_iam_role" "ci_test" {
+  permissions_boundary = local.permissions_boundary_arn
   name               = "ephemeral-ci-ci-test"
   assume_role_policy = templatefile("${path.module}/policies/ci-test-role.assume.json.tftpl", local.policy_vars)
 }
@@ -298,7 +306,8 @@ resource "aws_s3_bucket_policy" "round_ami_staging" {
 # policies (sp-ifzkdi).
 
 resource "aws_iam_user" "round_spill" {
-  name = "spira-round-spill"
+  name                 = "spira-round-spill"
+  permissions_boundary = local.permissions_boundary_arn
 
   # Present on the live user, keyed by the access key id; kept so the adoption
   # changes nothing.
