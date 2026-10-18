@@ -187,3 +187,12 @@ run "boundary_cuts_nothing_the_policies_grant" {
     error_message = "a granted action falls under the boundary's deny: the boundary would cut it"
   }
 }
+
+run "root_volume_leaves_the_verify_floor_free" {
+  command = plan
+
+  assert {
+    condition     = aws_launch_template.spill.block_device_mappings[0].ebs[0].volume_size == 100
+    error_message = "root volume must be floor (60) + AMI used (25) + margin (15) = 100 GiB; see locals in spill.tf"
+  }
+}

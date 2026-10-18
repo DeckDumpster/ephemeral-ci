@@ -344,7 +344,7 @@ jobs:
           SPIRA: ${{ steps.deps-spira.outcome }}
           POKEDUMPSTER: ${{ steps.deps-pokedumpster.outcome }}
           DECKDUMPSTER: ${{ steps.deps-deckdumpster.outcome }}
-        run: bash ephemeral-ci/scripts/spill-probe-verdict.sh spira="$SPIRA" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
+        run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-verdict.sh" spira="$SPIRA" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
 
       # runner-deps proves the packages exist; only a test that starts proves
       # the repo can begin work on this image. Each step runs the repo's own
@@ -381,7 +381,7 @@ jobs:
         env:
           POKEDUMPSTER: ${{ steps.first-pokedumpster.outcome }}
           DECKDUMPSTER: ${{ steps.first-deckdumpster.outcome }}
-        run: bash ephemeral-ci/scripts/spill-probe-verdict.sh --what "first test" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
+        run: bash "$GITHUB_WORKSPACE/ephemeral-ci/scripts/spill-probe-verdict.sh" --what "first test" pokedumpster="$POKEDUMPSTER" deckdumpster="$DECKDUMPSTER"
 
   # Only a passing probe tags the AMI spill:probe=passed, which is what
   # provision.sh requires. Re-sending spill:owner satisfies the AmiBuildRole's

@@ -483,13 +483,15 @@ case "$SPILL_MARKET" in
     *) printf 'provision.sh: SPILL_MARKET=%s must be on-demand or spot\n' "$SPILL_MARKET" >&2; exit 1 ;;
 esac
 #   SPILL_ROOT_GIB      Root volume size of the spilled instance, in GiB. The
-#                       default matches the Proxmox runner (template 107, a 79G
-#                       root filesystem), because the same job must fit on either:
+#                       default is the free-space floor (60) + what the AMI
+#                       occupies (25) + margin (15), the same sum as
+#                       spill_root_gib in infra/terraform/spill.tf; the Proxmox
+#                       runner (template 107, a 79G root) set the 60G floor, because the same job must fit on either:
 #                       at 32 GiB pokedumpster's parallel gates hit the disk floor
 #                       and 7 never started (sp-6rzyjn, run 38286350182). The spill
 #                       probe asserts the free space this buys (SPILL_MIN_FREE_GIB
 #                       in spill-probe.yml repeats it: keep the two together).
-SPILL_ROOT_GIB="${SPILL_ROOT_GIB:-80}"
+SPILL_ROOT_GIB="${SPILL_ROOT_GIB:-100}"
 SPILL_MIN_FREE_GIB=60
 case "$SPILL_ROOT_GIB" in
     ''|*[!0-9]*) printf 'provision.sh: SPILL_ROOT_GIB=%s must be a whole number of GiB\n' "$SPILL_ROOT_GIB" >&2; exit 1 ;;

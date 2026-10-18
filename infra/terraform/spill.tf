@@ -2,6 +2,16 @@
 # documents, the GitHub OIDC provider and the roles CI assumes through it.
 
 locals {
+  # One number sizes the spilled root volume: the free-space floor the probe's
+  # verify job asserts (SPILL_MIN_FREE_GIB in scripts/provision.sh, 60G), plus
+  # what the AMI itself occupies (23G measured on the sp-tu41vm image, rounded
+  # up to 25), plus 15G margin for the AMI to grow. Raise spill_ami_used_gib
+  # when a measured AMI outgrows it; never lower the floor to pass.
+  spill_min_free_gib = 60
+  spill_ami_used_gib = 25
+  spill_margin_gib   = 15
+  spill_root_gib     = local.spill_min_free_gib + local.spill_ami_used_gib + local.spill_margin_gib
+
   subnets = {
     a = { id_key = "subnet_a", cidr = "10.0.0.0/24", az = "us-west-2a", name = "ephemeral-ci-spill-public-a" }
     b = { id_key = "subnet_b", cidr = "10.0.1.0/24", az = "us-west-2b", name = "ephemeral-ci-spill-public-b" }
@@ -138,13 +148,13 @@ resource "aws_launch_template" "spill" {
   }
 
   # Must match the AMI's root device (/dev/sda1, set in scripts/ami-build.sh);
-  # any other name declares an additional blank volume. provision.sh overrides
-  # the size per launch.
+  # any other name declares an additional blank volume. provision.sh launches
+  # with the same size (SPILL_ROOT_GIB default); keep the two together.
   block_device_mappings {
     device_name = "/dev/sda1"
 
     ebs {
-      volume_size           = 32
+      volume_size           = local.spill_root_gib
       volume_type           = "gp3"
       delete_on_termination = "true"
       encrypted             = "true"
