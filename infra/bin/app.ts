@@ -3,6 +3,8 @@ import { SpillStack } from '../lib/spill-stack';
 import { BackupStack } from '../lib/backup-stack';
 import { BootstrapIdentityStack } from '../lib/bootstrap-identity-stack';
 
+import { TerraformBootstrapStack } from '../lib/terraform-bootstrap-stack';
+
 const app = new cdk.App();
 new SpillStack(app, 'EphemeralCiSpill', {
   env: {
@@ -28,4 +30,10 @@ new BootstrapIdentityStack(app, 'BootstrapIdentity', {
   synthesizer: new cdk.DefaultStackSynthesizer({
     generateBootstrapVersionRule: false,
   }),
+});
+new TerraformBootstrapStack(app, 'TerraformBootstrap', {
+  env: {
+    account: '189923011121',
+    region: 'us-west-2',
+  },
 });
