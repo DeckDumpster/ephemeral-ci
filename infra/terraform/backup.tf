@@ -56,7 +56,8 @@ resource "aws_s3_bucket_policy" "snapshot" {
 }
 
 resource "aws_iam_user" "backup_writer" {
-  name = var.physical_ids["backup_writer_user_name"]
+  name                 = var.physical_ids["backup_writer_user_name"]
+  permissions_boundary = local.permissions_boundary_arn
 }
 
 resource "aws_iam_user_policy" "backup_writer" {
