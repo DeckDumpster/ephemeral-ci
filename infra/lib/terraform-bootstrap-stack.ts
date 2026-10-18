@@ -287,6 +287,19 @@ export class TerraformBootstrapStack extends cdk.Stack {
       resources: ofKind('user'),
       conditions: { StringEquals: { [`aws:ResourceTag/${BOUNDARY_TAG_KEY}`]: BOUNDARY_TAG_VALUE } },
     }));
+    // TagUser/TagRole support aws:TagKeys / aws:RequestTag/${TagKey} but not
+    // iam:PermissionsBoundary (AWS Service Authorization Reference, "Actions,
+    // resources, and condition keys for AWS Identity and Access Management"),
+    // so the boundary-conditioned write above can never match a tag change on
+    // an existing principal. This statement lets the role (re)apply only the
+    // boundary tag key on principals under the managed prefixes; the guards
+    // stay covered by DenyIamWritesOnGuards.
+    role.addStatements(new iam.PolicyStatement({
+      sid: `${sidPrefix}IamBoundaryTagWrite`,
+      actions: ['iam:TagUser', 'iam:UntagUser', 'iam:TagRole', 'iam:UntagRole'],
+      resources: principals,
+      conditions: { 'ForAllValues:StringEquals': { 'aws:TagKeys': [BOUNDARY_TAG_KEY] } },
+    }));
     role.addStatements(new iam.PolicyStatement({
       sid: `${sidPrefix}IamPolicyWrite`,
       actions: [
