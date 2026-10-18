@@ -13,6 +13,9 @@ export const TERRAFORM_NAME_PREFIXES: readonly string[] = ['spira', 'cubby'];
 
 const DEPLOY_ROLE_NAME = 'terraform-deploy';
 const BOUNDARY_NAME = 'terraform-deploy-boundary';
+/** Terraform tags every boundaried user with this, so access-key actions can be scoped to them. */
+export const BOUNDARY_TAG_KEY = 'terraform-deploy-boundary';
+export const BOUNDARY_TAG_VALUE = 'true';
 const IAM_WRITE_VERBS = [
   'Create', 'Put', 'Attach', 'Detach', 'Update', 'Delete', 'Add', 'Remove', 'Set', 'Tag', 'Untag',
 ] as const;
@@ -263,7 +266,6 @@ export class TerraformBootstrapStack extends cdk.Stack {
       sid: `${sidPrefix}IamPrincipalWrite`,
       actions: [
         'iam:CreateUser', 'iam:DeleteUser', 'iam:UpdateUser', 'iam:TagUser', 'iam:UntagUser',
-        'iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:UpdateAccessKey',
         'iam:CreateRole', 'iam:DeleteRole', 'iam:UpdateRole', 'iam:UpdateAssumeRolePolicy',
         'iam:TagRole', 'iam:UntagRole',
         'iam:PutUserPolicy', 'iam:DeleteUserPolicy', 'iam:PutRolePolicy', 'iam:DeleteRolePolicy',
@@ -272,6 +274,18 @@ export class TerraformBootstrapStack extends cdk.Stack {
       ],
       resources: principals,
       conditions: boundaryCondition,
+    }));
+    // iam:CreateAccessKey (and Delete/Update) carry no iam:PermissionsBoundary
+    // key, so a boundary condition could never match them. The user resource
+    // type supports aws:ResourceTag/${TagKey} (AWS Service Authorization
+    // Reference, "Actions, resources, and condition keys for AWS Identity and
+    // Access Management"), so keys are limited to users tagged at creation,
+    // which this role can only do alongside the boundary.
+    role.addStatements(new iam.PolicyStatement({
+      sid: `${sidPrefix}IamAccessKeyWrite`,
+      actions: ['iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:UpdateAccessKey'],
+      resources: ofKind('user'),
+      conditions: { StringEquals: { [`aws:ResourceTag/${BOUNDARY_TAG_KEY}`]: BOUNDARY_TAG_VALUE } },
     }));
     role.addStatements(new iam.PolicyStatement({
       sid: `${sidPrefix}IamPolicyWrite`,

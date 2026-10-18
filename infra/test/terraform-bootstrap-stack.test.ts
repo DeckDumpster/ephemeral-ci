@@ -88,12 +88,27 @@ test('every Allow that writes IAM users/roles carries the boundary condition', (
   // The Spot service-linked role is AWS-owned and cannot carry a boundary.
   const writers = stmts().filter(
     (st) => st.Effect === 'Allow' && st.Sid !== 'SpotServiceLinkedRole' && ([] as string[]).concat(st.Action).some(
-      (a) => /^iam:(Create|Put|Attach|Detach|Update|Delete|Tag|Untag)(User|Role|AccessKey|AssumeRole)/.test(a),
+      (a) => /^iam:(Create|Put|Attach|Detach|Update|Delete|Tag|Untag)(User|Role|AssumeRole)/.test(a),
     ),
   );
   expect(writers.length).toBeGreaterThan(0);
   for (const st of writers) {
     expect(JSON.stringify(st.Condition ?? st)).toMatch(/iam:PermissionsBoundary.*DeployBoundary/);
+  }
+});
+
+test('access keys are allowed only on tagged users, with a condition key CreateAccessKey supports', () => {
+  const keyStmts = stmts().filter(
+    (st) => st.Effect === 'Allow' && ([] as string[]).concat(st.Action).some((a) => /AccessKey$/.test(a) && a !== 'iam:ListAccessKeys'),
+  );
+  expect(keyStmts.length).toBeGreaterThan(0);
+  for (const st of keyStmts) {
+    expect(([] as string[]).concat(st.Action)).toEqual(
+      expect.arrayContaining(['iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:UpdateAccessKey']),
+    );
+    expect(st.Condition).toEqual({ StringEquals: { 'aws:ResourceTag/terraform-deploy-boundary': 'true' } });
+    expect(JSON.stringify(st.Condition)).not.toMatch(/PermissionsBoundary/);
+    for (const r of ([] as any[]).concat(st.Resource)) expect(JSON.stringify(r)).toMatch(/:user\/(spira|cubby|ephemeral-ci|EphemeralCiSpill|EphemeralCiBackup)-\*/);
   }
 });
 
