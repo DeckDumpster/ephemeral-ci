@@ -102,7 +102,8 @@ works; see "One-time setup" below.
 A repository that builds its round-VM AMI with the spill role (spira's
 `round-ami-build.yml`) sets these repository variables from the
 `EphemeralCiSpill` stack outputs (`aws cloudformation describe-stacks`; region
-`us-west-2`):
+`us-west-2`; the stack goes when `scripts/tf-retire-stack.sh` retires it, after
+which the same values are the Terraform outputs in `infra/terraform/outputs.tf`):
 
 | Variable | Source |
 | --- | --- |
@@ -114,6 +115,26 @@ A repository that builds its round-VM AMI with the spill role (spira's
 | `ROUND_AMI_INSTANCE_TYPE` | `c7i.2xlarge` (the only type the role may launch) |
 | `ROUND_AMI_BASE_PARAM` | output `RoundAmiBaseParam` |
 | `ROUND_AMI_STAGING_BUCKET` | output `RoundAmiStagingBucket` (objects expire after one day) |
+
+#### Spill ids are SSM parameters
+
+`provision.sh`, `ami-build.sh`, `ec2-diag.sh`, `check-spill-permissions.sh` and
+`test-reap.sh` read the spill infrastructure ids from SSM Parameter Store, in
+one `aws ssm get-parameters-by-path --path /ephemeral-ci/spill/` (region
+`us-west-2`), not from CloudFormation. `infra/terraform/ssm.tf` writes them
+(`String`, same names as the former stack outputs); the spill and ami-build roles
+may `ssm:GetParametersByPath` on that path only. `scripts/spill-params.sh` is
+the shared reader.
+
+| Parameter | Value |
+| --- | --- |
+| `/ephemeral-ci/spill/SubnetIds` | the three AZ subnets, comma-separated |
+| `/ephemeral-ci/spill/SecurityGroupId` | the spill security group |
+| `/ephemeral-ci/spill/LaunchTemplateId` | the spill launch template id |
+| `/ephemeral-ci/spill/LaunchTemplateName` | `ephemeral-ci-spill` |
+| `/ephemeral-ci/spill/InstanceProfileName` | the instance profile |
+| `/ephemeral-ci/spill/DeliverDocumentName` | SSM document that delivers the runner token |
+| `/ephemeral-ci/spill/DiagnoseDocumentName` | SSM document `ec2-diag.sh` runs |
 
 #### Round VMs hold the hypervisor (`ROUND_VM_TAG`)
 

@@ -54,14 +54,15 @@
 #   SPILL_ROLE_ARN    — ARN of the spill role (default: arn:aws:iam::189923011121:role/ephemeral-ci-spill)
 #   SPILL_REGION      — AWS region (default: us-west-2)
 #   SPILL_ACCOUNT     — AWS account number (default: 189923011121)
-#   SPILL_STACK_NAME  — CloudFormation stack name (default: EphemeralCiSpill)
 
 set -euo pipefail
 
 REGION="${SPILL_REGION:-us-west-2}"
 ACCOUNT="${SPILL_ACCOUNT:-189923011121}"
 SPILL_ROLE_ARN="${SPILL_ROLE_ARN:-arn:aws:iam::${ACCOUNT}:role/ephemeral-ci-spill}"
-STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=spill-params.sh
+. "$SCRIPT_DIR/spill-params.sh"
 INSTANCE_PROFILE_NAME="ephemeral-ci-spill-instance"
 
 # ── Print limitations ────────────────────────────────────────────────────────
@@ -150,28 +151,22 @@ _SG="arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-00000000000000000"
 _SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/subnet-00000000000000000"
 _AMI="arn:aws:ec2:${REGION}::image/ami-00000000000000000"
 _PARAM="arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/ephemeral-ci/runner-token/testtoken"
-_CF_STACK="arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/${STACK_NAME}/*"
+_SPILL_PARAM_PATH="arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/ephemeral-ci/spill"
 
-# ── Discover SSM document name from stack output ─────────────────────────────
-# The document has no pinned Name; CloudFormation generates one.  Read it
-# from the DeliverDocumentName output so simulation uses the real ARN.
+# ── Discover SSM document name from the spill parameters ─────────────────────
+# The document has no pinned Name; CloudFormation generated it. Read it from
+# the DeliverDocumentName parameter so simulation uses the real ARN.
 _SSM_DOC_NAME=""
-if _stack_raw="$(aws cloudformation describe-stacks \
-        --region "$REGION" \
-        --stack-name "$STACK_NAME" \
-        --query 'Stacks[0].Outputs' \
-        --output json 2>&1)"; then
-    _SSM_DOC_NAME="$(printf '%s' "$_stack_raw" | python3 -c \
-        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o.get("DeliverDocumentName",""))' 2>/dev/null)" \
-        || true
+if spill_params_load "$REGION"; then
+    _SSM_DOC_NAME="$(spill_param DeliverDocumentName)"
 fi
 if [ -n "$_SSM_DOC_NAME" ]; then
     _SSM_DOC="arn:aws:ssm:${REGION}:${ACCOUNT}:document/${_SSM_DOC_NAME}"
     printf 'check-spill-permissions: SSM document = %s\n\n' "$_SSM_DOC"
 else
     _SSM_DOC="arn:aws:ssm:${REGION}:${ACCOUNT}:document/PLACEHOLDER-document-name-unresolved"
-    printf 'check-spill-permissions: WARNING: cannot read DeliverDocumentName from stack %s; SendCommand document step may report incorrect result\n\n' \
-        "$STACK_NAME"
+    printf 'check-spill-permissions: WARNING: cannot read DeliverDocumentName from SSM parameters under %s (%s); SendCommand document step may report incorrect result\n\n' \
+        "$SPILL_PARAMS_PATH" "${SPILL_PARAMS_ERR:-parameter absent}"
 fi
 
 # ── Simulation engine ────────────────────────────────────────────────────────
@@ -318,11 +313,12 @@ run_sim "describe / read-only (resource: *)" "$(_sim_json \
     -- \
     '*')"
 
-# 2. cloudformation:DescribeStacks — scoped to the EphemeralCiSpill stack
-run_sim "cloudformation:DescribeStacks" "$(_sim_json \
-    cloudformation:DescribeStacks \
+# 2. ssm:GetParametersByPath — scoped to /ephemeral-ci/spill/, where the
+#    scripts read their ids (provision.sh, ami-build.sh, ec2-diag.sh).
+run_sim "ssm:GetParametersByPath" "$(_sim_json \
+    ssm:GetParametersByPath \
     -- \
-    "$_CF_STACK")"
+    "$_SPILL_PARAM_PATH")"
 
 # 3. SSM Parameter Store actions — scoped to the runner-token prefix.
 #    PutParameter, DeleteParameter, GetParameter, GetParameters are all

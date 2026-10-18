@@ -149,6 +149,8 @@ RUNNER_GROUP="${RUNNER_GROUP:-ephemeral-ci}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=run-record.sh
 . "$SCRIPT_DIR/run-record.sh"
+# shellcheck source=spill-params.sh
+. "$SCRIPT_DIR/spill-params.sh"
 
 if [ $# -ne 3 ]; then
     printf 'Usage: provision.sh <runner-label> <registration-token> <repo-url>\n' >&2
@@ -436,7 +438,6 @@ fi
 #   SPILL_MAX_INSTANCES global ceiling on concurrently running spill instances;
 #                       provision blocks (with a ceiling message) when at the cap
 #   SPILL_REGION        AWS region where the spill infrastructure lives
-#   SPILL_STACK_NAME    CloudFormation stack that holds VPC/SG/launch template
 #   SPILL_INSTANCE_TYPE EC2 instance type; must match the IAM policy allowlist
 #                       (c7i.* or c8i.* families as of the SpillStack)
 #   SPILL_SSM_WAIT_SECONDS how long to wait for the SSM agent to go Online after
@@ -448,7 +449,6 @@ SPILL_REGION="${SPILL_REGION:-us-west-2}"
 # Seconds of AWS role session to trust, counted from provision.sh's start. The
 # default session is 3600s; the margin leaves room to launch after the wait.
 SPILL_SESSION_SECONDS="${SPILL_SESSION_SECONDS:-3000}"
-SPILL_STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
 SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.2xlarge}"
 # Same families the spill role's ec2:InstanceType condition admits (infra/terraform/policies/spill-role.policy.json.tftpl).
 # Refused here, up front, rather than as an opaque RunInstances AccessDenied
@@ -670,30 +670,29 @@ wait_for_capacity() {
 # These functions are only called when SPILL=ec2 AND Proxmox capacity is
 # exhausted.  All AWS CLI calls use SPILL_REGION so they are region-agnostic.
 
-# Load the CloudFormation stack outputs (SubnetIds, SecurityGroupId,
-# LaunchTemplateId) into SPILL_SUBNET_IDS, SPILL_SG_ID, SPILL_LT_ID globals.
+# Load the spill ids (SubnetIds, SecurityGroupId, LaunchTemplateId,
+# DeliverDocumentName) from the SSM parameters under /ephemeral-ci/spill/ into
+# SPILL_SUBNET_IDS, SPILL_SG_ID, SPILL_LT_ID, SPILL_DELIVER_DOCUMENT_NAME.
 # SPILL_SUBNET_IDS is a comma-separated list of subnet IDs in multiple AZs.
 ec2_load_stack() {
-    local raw
-    raw="$(aws cloudformation describe-stacks \
-               --region "$SPILL_REGION" \
-               --stack-name "$SPILL_STACK_NAME" \
-               --query 'Stacks[0].Outputs' \
-               --output json 2>&1)" || {
-        printf '::error::provision.sh: cannot read CloudFormation stack %s: %s\n' \
-            "$SPILL_STACK_NAME" "$raw" >&2
+    spill_params_load "$SPILL_REGION" || {
+        printf '::error::provision.sh: %s\n' "$SPILL_PARAMS_ERR" >&2
         return 1
     }
-    SPILL_SUBNET_IDS="$(printf '%s' "$raw" | python3 -c \
-        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SubnetIds"])')" || return 1
-    SPILL_SG_ID="$(printf '%s' "$raw" | python3 -c \
-        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["SecurityGroupId"])')" || return 1
-    SPILL_LT_ID="$(printf '%s' "$raw" | python3 -c \
-        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["LaunchTemplateId"])')" || return 1
-    SPILL_DELIVER_DOCUMENT_NAME="$(printf '%s' "$raw" | python3 -c \
-        'import json,sys; o={r["OutputKey"]:r["OutputValue"] for r in json.load(sys.stdin)}; print(o["DeliverDocumentName"])')" || return 1
-    printf 'provision.sh: spill stack %s loaded (subnets=%s sg=%s lt=%s doc=%s)\n' \
-        "$SPILL_STACK_NAME" "$SPILL_SUBNET_IDS" "$SPILL_SG_ID" "$SPILL_LT_ID" "$SPILL_DELIVER_DOCUMENT_NAME" >&2
+    SPILL_SUBNET_IDS="$(spill_param SubnetIds)"
+    SPILL_SG_ID="$(spill_param SecurityGroupId)"
+    SPILL_LT_ID="$(spill_param LaunchTemplateId)"
+    SPILL_DELIVER_DOCUMENT_NAME="$(spill_param DeliverDocumentName)"
+    local k v
+    for k in SUBNET_IDS SG_ID LT_ID DELIVER_DOCUMENT_NAME; do
+        v="SPILL_$k"
+        [ -n "${!v}" ] || {
+            printf '::error::provision.sh: SSM parameter for %s missing under /ephemeral-ci/spill/\n' "$k" >&2
+            return 1
+        }
+    done
+    printf 'provision.sh: spill parameters loaded (subnets=%s sg=%s lt=%s doc=%s)\n' \
+        "$SPILL_SUBNET_IDS" "$SPILL_SG_ID" "$SPILL_LT_ID" "$SPILL_DELIVER_DOCUMENT_NAME" >&2
 }
 
 # Extra instance tag the ceiling counts by; empty when REPO_SLUG is unset.
@@ -1032,7 +1031,7 @@ ec2_wait_ssm() {
 # is recorded in SSM command history; see the residual note in infra/terraform/spill.tf
 # (instance role comment) for the accepted exposure and its bounds.
 #
-# The custom document name is read from the DeliverDocumentName stack output
+# The custom document name is read from the DeliverDocumentName SSM parameter
 # by ec2_load_stack (SPILL_DELIVER_DOCUMENT_NAME).  The instance never calls
 # the SSM API directly.
 ec2_deliver_token() {

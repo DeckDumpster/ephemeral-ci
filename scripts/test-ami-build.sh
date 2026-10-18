@@ -38,7 +38,7 @@ AMI_NAME_PREFIX="ephemeral-ci-runner"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOOTSTRAP="${SCRIPT_DIR}/ami-build.sh"
 
-# Populated from EphemeralCiSpill stack outputs for online tests (section 3).
+# Populated from the /ephemeral-ci/spill/ SSM parameters for online tests (section 3).
 SUBNET_ID=""
 SECURITY_GROUP_ID=""
 INSTANCE_PROFILE_NAME=""
@@ -96,7 +96,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 0. Offline: stack-outputs path with a describe-stacks stub
+# 0. Offline: spill-parameters path with an ssm get-parameters-by-path stub
 # These run without AWS credentials and exercise the load_stack_outputs
 # changes introduced in db-n1gi.
 # ---------------------------------------------------------------------------
@@ -112,8 +112,11 @@ case "$1 $2" in
     "sts get-caller-identity")
         printf '189923011121'
         ;;
-    "cloudformation describe-stacks")
-        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub00000001,subnet-stub00000002,subnet-stub00000003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+    "ssm get-parameters-by-path")
+        printf '/ephemeral-ci/spill/SubnetIds	subnet-stub00000001,subnet-stub00000002,subnet-stub00000003
+/ephemeral-ci/spill/SecurityGroupId	sg-stub000000001
+/ephemeral-ci/spill/InstanceProfileName	ephemeral-ci-spill-instance
+'
         ;;
     "ec2 describe-images")
         case "$*" in
@@ -156,8 +159,11 @@ case "$1 $2" in
     "sts get-caller-identity")
         printf '189923011121'
         ;;
-    "cloudformation describe-stacks")
-        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub00000001,subnet-stub00000002,subnet-stub00000003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+    "ssm get-parameters-by-path")
+        printf '/ephemeral-ci/spill/SubnetIds	subnet-stub00000001,subnet-stub00000002,subnet-stub00000003
+/ephemeral-ci/spill/SecurityGroupId	sg-stub000000001
+/ephemeral-ci/spill/InstanceProfileName	ephemeral-ci-spill-instance
+'
         ;;
     "ec2 describe-images")
         case "$*" in
@@ -197,30 +203,35 @@ STUB
 }
 
 # Creates a temp dir with a fake aws binary; caller owns cleanup (rm -rf).
-# Reads STUB_CF_MODE: ok | absent | bad-status
+# Reads STUB_CF_MODE: ok | absent | empty. Every call is appended to
+# $STUB_ARGV_FILE when set; describe-stacks is a test failure of its own.
 _make_cf_stub() {
     local d
     d="$(mktemp -d)"
     cat > "${d}/aws" << 'STUB'
 #!/usr/bin/env bash
 _mode="${STUB_CF_MODE:-ok}"
+[ -z "${STUB_ARGV_FILE:-}" ] || printf '%s\n' "$*" >> "$STUB_ARGV_FILE"
 case "$1 $2" in
     "sts get-caller-identity")
         printf '189923011121'
         ;;
-    "cloudformation describe-stacks")
+    "ssm get-parameters-by-path")
         case "$_mode" in
             absent)
-                printf 'An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id EphemeralCiSpill does not exist\n' >&2
+                printf 'An error occurred (AccessDeniedException) when calling the GetParametersByPath operation: not authorized\n' >&2
                 exit 255
                 ;;
-            bad-status)
-                printf '{"Stacks":[{"StackStatus":"CREATE_IN_PROGRESS","Outputs":[]}]}'
+            empty)
                 ;;
             *)
-                printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub00000001,subnet-stub00000002,subnet-stub00000003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub000000001"},{"OutputKey":"InstanceProfileName","OutputValue":"ephemeral-ci-spill-instance"}]}]}'
+                printf '/ephemeral-ci/spill/SubnetIds\tsubnet-stub00000001,subnet-stub00000002,subnet-stub00000003\n/ephemeral-ci/spill/SecurityGroupId\tsg-stub000000001\n/ephemeral-ci/spill/InstanceProfileName\tephemeral-ci-spill-instance\n'
                 ;;
         esac
+        ;;
+    "cloudformation describe-stacks")
+        printf 'describe-stacks must not be called\n' >&2
+        exit 99
         ;;
     *)
         exit 0
@@ -231,59 +242,63 @@ STUB
     printf '%s' "$d"
 }
 
-# 0a. absent stack: ami-build.sh must name the stack and cdk deploy
+# 0a. unreadable parameters: ami-build.sh must name the path and terraform apply
 _sd="$(_make_cf_stub)"
 _out="$(STUB_CF_MODE=absent PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
 rm -rf "$_sd"
-if grep -q 'EphemeralCiSpill' <<<"$_out"; then
-    ok "stack-outputs absent: error names the stack"
+if grep -q '/ephemeral-ci/spill/' <<<"$_out"; then
+    ok "spill parameters unreadable: error names the parameter path"
 else
-    ko "stack-outputs absent: error does not name EphemeralCiSpill (got: $_out)"
+    ko "spill parameters unreadable: error does not name /ephemeral-ci/spill/ (got: $_out)"
 fi
-if grep -q 'cdk deploy' <<<"$_out"; then
-    ok "stack-outputs absent: error names cdk deploy"
+if grep -q 'terraform apply' <<<"$_out"; then
+    ok "spill parameters unreadable: error names terraform apply"
 else
-    ko "stack-outputs absent: error does not name cdk deploy (got: $_out)"
+    ko "spill parameters unreadable: error does not name terraform apply (got: $_out)"
 fi
 
-# 0b. bad stack status: ami-build.sh must name the stack, the status, and cdk deploy
+# 0b. no parameters under the path: same, and says there are none
 _sd="$(_make_cf_stub)"
-_out="$(STUB_CF_MODE=bad-status PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
+_out="$(STUB_CF_MODE=empty PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
 rm -rf "$_sd"
-if grep -q 'EphemeralCiSpill' <<<"$_out"; then
-    ok "stack-outputs bad-status: error names the stack"
+if grep -q 'no SSM parameters under /ephemeral-ci/spill/' <<<"$_out"; then
+    ok "spill parameters empty: error says there are none"
 else
-    ko "stack-outputs bad-status: error does not name EphemeralCiSpill (got: $_out)"
+    ko "spill parameters empty: error does not say so (got: $_out)"
 fi
-if grep -q 'CREATE_IN_PROGRESS' <<<"$_out"; then
-    ok "stack-outputs bad-status: error names the status"
+if grep -q 'terraform apply' <<<"$_out"; then
+    ok "spill parameters empty: error names terraform apply"
 else
-    ko "stack-outputs bad-status: error does not name CREATE_IN_PROGRESS (got: $_out)"
-fi
-if grep -q 'cdk deploy' <<<"$_out"; then
-    ok "stack-outputs bad-status: error names cdk deploy"
-else
-    ko "stack-outputs bad-status: error does not name cdk deploy (got: $_out)"
+    ko "spill parameters empty: error does not name terraform apply (got: $_out)"
 fi
 
-# 0c. success path: all three outputs are read from the stack and logged
+# 0c. success path: all three ids are read from the parameters and logged,
+# and the stack is never described
 _sd="$(_make_cf_stub)"
-_out="$(STUB_CF_MODE=ok PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
+_argv="$_sd/argv"
+_out="$(STUB_ARGV_FILE="$_argv" STUB_CF_MODE=ok PATH="${_sd}:${PATH}" bash "$BOOTSTRAP" --dry-run 2>&1)" || true
+_calls="$(cat "$_argv" 2>/dev/null || true)"
 rm -rf "$_sd"
 if grep -q 'subnet=subnet-stub00000001' <<<"$_out"; then
-    ok "stack-outputs ok: SubnetIds loaded from stack"
+    ok "spill parameters ok: SubnetIds loaded"
 else
-    ko "stack-outputs ok: SubnetIds not found in output (got: $_out)"
+    ko "spill parameters ok: SubnetIds not found in output (got: $_out)"
 fi
 if grep -q 'sg=sg-stub000000001' <<<"$_out"; then
-    ok "stack-outputs ok: SecurityGroupId loaded from stack"
+    ok "spill parameters ok: SecurityGroupId loaded"
 else
-    ko "stack-outputs ok: SecurityGroupId not found in output"
+    ko "spill parameters ok: SecurityGroupId not found in output"
 fi
 if grep -q 'profile=ephemeral-ci-spill-instance' <<<"$_out"; then
-    ok "stack-outputs ok: InstanceProfileName loaded from stack"
+    ok "spill parameters ok: InstanceProfileName loaded"
 else
-    ko "stack-outputs ok: InstanceProfileName not found in output"
+    ko "spill parameters ok: InstanceProfileName not found in output"
+fi
+if grep -q 'ssm get-parameters-by-path .*--path /ephemeral-ci/spill/' <<<"$_calls" \
+   && ! grep -q 'describe-stacks' <<<"$_calls"; then
+    ok "spill parameters ok: read by path, describe-stacks never called"
+else
+    ko "spill parameters ok: wrong aws calls (got: $_calls)"
 fi
 
 # 0d. dry-run completes without polling SSM, announces what it would have waited for
@@ -345,8 +360,8 @@ cat > "${_rd}/aws" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
     "sts get-caller-identity") printf '189923011121' ;;
-    "cloudformation describe-stacks")
-        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-s1"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-s1"},{"OutputKey":"InstanceProfileName","OutputValue":"prof-s1"}]}]}' ;;
+    "ssm get-parameters-by-path")
+        printf '/ephemeral-ci/spill/SubnetIds\tsubnet-s1\n/ephemeral-ci/spill/SecurityGroupId\tsg-s1\n/ephemeral-ci/spill/InstanceProfileName\tprof-s1\n' ;;
     "ec2 describe-images") printf 'ami-stubbase001' ;;
     "ec2 run-instances") printf 'None' ;;
     "ssm describe-instance-information") printf 'ssm-called-with-empty-id\n' >&2 ;;
@@ -376,8 +391,8 @@ _all="\$*"
 case "\$_sub" in
     "sts get-caller-identity")
         printf '189923011121' ;;
-    "cloudformation describe-stacks")
-        printf '{"Stacks":[{"StackStatus":"CREATE_COMPLETE","Outputs":[{"OutputKey":"SubnetIds","OutputValue":"subnet-stub0001,subnet-stub0002,subnet-stub0003"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-stub0001"},{"OutputKey":"InstanceProfileName","OutputValue":"prof-stub0001"}]}]}' ;;
+    "ssm get-parameters-by-path")
+        printf '/ephemeral-ci/spill/SubnetIds\tsubnet-stub0001,subnet-stub0002,subnet-stub0003\n/ephemeral-ci/spill/SecurityGroupId\tsg-stub0001\n/ephemeral-ci/spill/InstanceProfileName\tprof-stub0001\n' ;;
     "ec2 describe-images")
         printf 'ami-stubbase001' ;;
     "ec2 run-instances")
@@ -572,19 +587,14 @@ if [ "$actual_account" != "$ACCOUNT_ID" ]; then
     exit 0
 fi
 
-# Read stack outputs from the deployed EphemeralCiSpill stack for use in test 3.
-_stack_json="$(aws cloudformation describe-stacks \
-    --stack-name EphemeralCiSpill --output json --region "$REGION" 2>/dev/null)" || _stack_json=""
-if [ -n "$_stack_json" ]; then
-    SUBNET_ID="$(printf '%s' "$_stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SubnetIds") | .OutputValue' \
-        2>/dev/null | cut -d, -f1)" || SUBNET_ID=""
-    SECURITY_GROUP_ID="$(printf '%s' "$_stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SecurityGroupId") | .OutputValue' \
-        2>/dev/null)" || SECURITY_GROUP_ID=""
-    INSTANCE_PROFILE_NAME="$(printf '%s' "$_stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="InstanceProfileName") | .OutputValue' \
-        2>/dev/null)" || INSTANCE_PROFILE_NAME=""
+# Read the spill ids from the SSM parameters under /ephemeral-ci/spill/ for use in test 3.
+SUBNET_ID=""; SECURITY_GROUP_ID=""; INSTANCE_PROFILE_NAME=""
+# shellcheck source=spill-params.sh
+. "$(dirname "${BASH_SOURCE[0]}")/spill-params.sh"
+if spill_params_load "$REGION"; then
+    SUBNET_ID="$(spill_param SubnetIds)"; SUBNET_ID="${SUBNET_ID%%,*}"
+    SECURITY_GROUP_ID="$(spill_param SecurityGroupId)"
+    INSTANCE_PROFILE_NAME="$(spill_param InstanceProfileName)"
 fi
 
 # ---------------------------------------------------------------------------

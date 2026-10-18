@@ -130,3 +130,28 @@ run "backup_writer_is_put_only" {
     error_message = "the backup writer may put objects and nothing else"
   }
 }
+
+run "spill_scripts_read_ids_from_ssm_parameters" {
+  command = apply
+
+  assert {
+    condition = toset(keys(aws_ssm_parameter.spill)) == toset([
+      "SubnetIds", "SecurityGroupId", "LaunchTemplateId", "LaunchTemplateName",
+      "InstanceProfileName", "DeliverDocumentName", "DiagnoseDocumentName",
+    ])
+    error_message = "every id the spill scripts read must be an SSM parameter"
+  }
+
+  assert {
+    condition     = alltrue([for p in aws_ssm_parameter.spill : startswith(p.name, "/ephemeral-ci/spill/")])
+    error_message = "the parameters live under /ephemeral-ci/spill/ and nowhere else"
+  }
+
+  assert {
+    condition = alltrue([
+      for r in [aws_iam_role_policy.spill, aws_iam_role_policy.ami_build] :
+      strcontains(r.policy, "ssm:GetParametersByPath") && strcontains(r.policy, "parameter/ephemeral-ci/spill/*")
+    ])
+    error_message = "the spill and ami-build roles may read the spill parameters"
+  }
+}

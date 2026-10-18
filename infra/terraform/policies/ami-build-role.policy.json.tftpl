@@ -114,6 +114,14 @@
       "Resource": "arn:aws:cloudformation:us-west-2:189923011121:stack/EphemeralCiSpill/*"
     },
     {
+      "Action": "ssm:GetParametersByPath",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/spill",
+        "arn:aws:ssm:us-west-2:189923011121:parameter/ephemeral-ci/spill/*"
+      ]
+    },
+    {
       "Action": "iam:PassRole",
       "Condition": {
         "StringEquals": {
