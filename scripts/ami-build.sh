@@ -45,9 +45,9 @@
 #   the positive-control test (create a stale AMI, run --prune-only, verify
 #   removal) and for manual housekeeping.
 #
-# Prerequisites: the EphemeralCiSpill CloudFormation stack must be deployed
-#   (cd infra && cdk deploy). ami-build.sh reads SubnetIds, SecurityGroupId,
-#   and InstanceProfileName from the stack's Outputs via describe-stacks.
+# Prerequisites: infra/terraform must be applied. ami-build.sh reads SubnetIds,
+#   SecurityGroupId and InstanceProfileName from the SSM parameters under
+#   /ephemeral-ci/spill/ (aws ssm get-parameters-by-path).
 #
 # Permissions required beyond the spill role:
 #   ec2:CreateImage, ec2:DeregisterImage, ec2:DeleteSnapshot,
@@ -72,7 +72,6 @@ BUILD_WAIT_SECONDS=600
 WARM_WAIT_SECONDS=3600
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STACK_NAME="EphemeralCiSpill"
 
 DRY_RUN=0
 PRUNE_ONLY=0
@@ -96,6 +95,8 @@ note() { printf 'ami-build: %s\n' "$*" >&2; }
 
 # shellcheck source=ami-wait.sh
 . "${SCRIPT_DIR}/ami-wait.sh"
+# shellcheck source=spill-params.sh
+. "${SCRIPT_DIR}/spill-params.sh"
 
 # aws_w: mutating aws call -- skipped in dry-run; returns a placeholder string
 aws_w() {
@@ -125,35 +126,20 @@ verify_account() {
 # load_stack_outputs: read subnet, sg, and instance profile from the CDK stack
 # ---------------------------------------------------------------------------
 load_stack_outputs() {
-    local stack_json status
-    stack_json="$(aws cloudformation describe-stacks \
-        --stack-name "$STACK_NAME" \
-        --output json \
-        --region "$REGION" 2>&1)" || {
-        printf 'ami-build.sh: %s stack not found -- run: cd infra && cdk deploy\n' \
-            "$STACK_NAME" >&2
+    local ids
+    spill_params_load "$REGION" || {
+        printf 'ami-build.sh: %s -- run terraform apply in infra/terraform\n' "$SPILL_PARAMS_ERR" >&2
         return 1
     }
-    status="$(printf '%s' "$stack_json" | jq -r '.Stacks[0].StackStatus // empty')"
-    case "$status" in
-        CREATE_COMPLETE|UPDATE_COMPLETE) ;;
-        *)
-            printf 'ami-build.sh: %s stack status is %s (need CREATE_COMPLETE or UPDATE_COMPLETE) -- run: cd infra && cdk deploy\n' \
-                "$STACK_NAME" "${status:-unknown}" >&2
-            return 1
-            ;;
-    esac
     # SubnetIds is a comma-separated list; use the first entry for the build instance.
-    SUBNET_ID="$(printf '%s' "$stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SubnetIds") | .OutputValue' | cut -d, -f1)"
-    SECURITY_GROUP_ID="$(printf '%s' "$stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="SecurityGroupId") | .OutputValue')"
-    INSTANCE_PROFILE_NAME="$(printf '%s' "$stack_json" | \
-        jq -r '.Stacks[0].Outputs[] | select(.OutputKey=="InstanceProfileName") | .OutputValue')"
-    : "${SUBNET_ID:?SubnetIds missing from $STACK_NAME outputs}"
-    : "${SECURITY_GROUP_ID:?SecurityGroupId missing from $STACK_NAME outputs}"
-    : "${INSTANCE_PROFILE_NAME:?InstanceProfileName missing from $STACK_NAME outputs}"
-    note "outputs: subnet=$SUBNET_ID sg=$SECURITY_GROUP_ID profile=$INSTANCE_PROFILE_NAME"
+    ids="$(spill_param SubnetIds)"
+    SUBNET_ID="${ids%%,*}"
+    SECURITY_GROUP_ID="$(spill_param SecurityGroupId)"
+    INSTANCE_PROFILE_NAME="$(spill_param InstanceProfileName)"
+    : "${SUBNET_ID:?SubnetIds missing from ${SPILL_PARAMS_PATH}}"
+    : "${SECURITY_GROUP_ID:?SecurityGroupId missing from ${SPILL_PARAMS_PATH}}"
+    : "${INSTANCE_PROFILE_NAME:?InstanceProfileName missing from ${SPILL_PARAMS_PATH}}"
+    note "parameters: subnet=$SUBNET_ID sg=$SECURITY_GROUP_ID profile=$INSTANCE_PROFILE_NAME"
 }
 
 # ---------------------------------------------------------------------------

@@ -915,7 +915,7 @@ AWSEOF
 # Prerequisites:
 #   - AWS credentials configured for account 189923011121
 #   - GITHUB_TOKEN and GH_ORG set (for runner busy check)
-#   - EphemeralCiSpill CloudFormation stack deployed in us-west-2
+#   - infra/terraform applied (SSM parameters under /ephemeral-ci/spill/, us-west-2)
 #
 # Resources created and cleaned up within each test:
 #   - One t3.micro EC2 instance (Tests 15, 16, 17)
@@ -930,7 +930,6 @@ echo "--- EC2 online tests (account 189923011121 / us-west-2)"
 
 EC2_ACCOUNT_ID="189923011121"
 EC2_REGION="${SPILL_REGION:-us-west-2}"
-EC2_STACK="EphemeralCiSpill"
 EC2_BASE_AMI=""       # populated by _ec2_find_ami()
 EC2_SUBNET=""         # populated from stack outputs
 EC2_SG=""             # populated from stack outputs
@@ -944,36 +943,18 @@ if [ "$_ec2_actual_account" != "$EC2_ACCOUNT_ID" ]; then
     PASS=$(( PASS + 4 ))
 else
 
-# Load EphemeralCiSpill stack outputs.
-_ec2_stack_json="$(aws cloudformation describe-stacks \
-    --stack-name "$EC2_STACK" \
-    --region "$EC2_REGION" \
-    --output json 2>/dev/null)" || _ec2_stack_json=""
-
-EC2_SUBNET="$(printf '%s' "$_ec2_stack_json" | python3 -c \
-    'import json,sys
-j=json.load(sys.stdin)
-o=j["Stacks"][0]["Outputs"]
-ids=next((x["OutputValue"] for x in o if x["OutputKey"]=="SubnetIds"),"")
-print(ids.split(",")[0] if ids else "")
-' 2>/dev/null || echo '')"
-
-EC2_SG="$(printf '%s' "$_ec2_stack_json" | python3 -c \
-    'import json,sys
-j=json.load(sys.stdin)
-o=j["Stacks"][0]["Outputs"]
-print(next((x["OutputValue"] for x in o if x["OutputKey"]=="SecurityGroupId"),""))
-' 2>/dev/null || echo '')"
-
-EC2_INSTANCE_PROFILE="$(printf '%s' "$_ec2_stack_json" | python3 -c \
-    'import json,sys
-j=json.load(sys.stdin)
-o=j["Stacks"][0]["Outputs"]
-print(next((x["OutputValue"] for x in o if x["OutputKey"]=="InstanceProfileName"),""))
-' 2>/dev/null || echo '')"
+# Load the spill ids from the SSM parameters under /ephemeral-ci/spill/.
+# shellcheck source=spill-params.sh
+. "$SCRIPT_DIR/spill-params.sh"
+EC2_SUBNET=""; EC2_SG=""; EC2_INSTANCE_PROFILE=""
+if spill_params_load "$EC2_REGION"; then
+    EC2_SUBNET="$(spill_param SubnetIds)"; EC2_SUBNET="${EC2_SUBNET%%,*}"
+    EC2_SG="$(spill_param SecurityGroupId)"
+    EC2_INSTANCE_PROFILE="$(spill_param InstanceProfileName)"
+fi
 
 if [ -z "$EC2_SUBNET" ] || [ -z "$EC2_SG" ]; then
-    echo "  SKIP: EC2 tests — $EC2_STACK stack not deployed or outputs missing"
+    echo "  SKIP: EC2 tests — spill SSM parameters not deployed or missing"
     PASS=$(( PASS + 4 ))
 else
 

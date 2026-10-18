@@ -15,13 +15,18 @@ set -uo pipefail
 IID="${1:-}"
 [ -n "$IID" ] || { echo "ec2-diag.sh: no instance id given" >&2; exit 0; }
 REGION="${SPILL_REGION:-us-west-2}"
-STACK="${SPILL_STACK_NAME:-EphemeralCiSpill}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=spill-params.sh
+. "$SCRIPT_DIR/spill-params.sh"
 
 printf 'ec2-diag: instance %s\n' "$IID"
 
-doc="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
-        --query "Stacks[0].Outputs[?OutputKey=='DiagnoseDocumentName'].OutputValue" \
-        --output text 2>&1)" || { printf '(cannot read stack %s: %s)\n' "$STACK" "$doc"; doc=""; }
+doc=""
+if spill_params_load "$REGION"; then
+    doc="$(spill_param DiagnoseDocumentName)"
+else
+    printf '(%s)\n' "$SPILL_PARAMS_ERR"
+fi
 
 if [ -n "$doc" ] && [ "$doc" != "None" ]; then
     cmd="$(aws ssm send-command --region "$REGION" --instance-ids "$IID" \
@@ -39,7 +44,7 @@ if [ -n "$doc" ] && [ "$doc" != "None" ]; then
             --output text 2>&1
     fi
 else
-    printf '(stack %s has no DiagnoseDocumentName output; deploy the spill stack)\n' "$STACK"
+    printf '(no DiagnoseDocumentName parameter under %s; apply infra/terraform)\n' "$SPILL_PARAMS_PATH"
 fi
 
 printf '\n===== console output =====\n'

@@ -1575,8 +1575,12 @@ SEP=$(printf '\x1e')
 printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
 # Route by subcommand
 case "$1 $2" in
+    "ssm get-parameters-by-path")
+        printf '/ephemeral-ci/spill/SubnetIds\tsubnet-test-a,subnet-test-b,subnet-test-c\n/ephemeral-ci/spill/SecurityGroupId\tsg-test456\n/ephemeral-ci/spill/LaunchTemplateId\tlt-test789\n/ephemeral-ci/spill/DeliverDocumentName\tssm-doc-from-parameter\n'
+        ;;
     "cloudformation describe-stacks")
-        printf '[{"OutputKey":"SubnetIds","OutputValue":"subnet-test-a,subnet-test-b,subnet-test-c"},{"OutputKey":"SecurityGroupId","OutputValue":"sg-test456"},{"OutputKey":"LaunchTemplateId","OutputValue":"lt-test789"},{"OutputKey":"DeliverDocumentName","OutputValue":"ssm-doc-from-stack-output"}]\n'
+        printf 'describe-stacks must not be called: the spill ids come from SSM parameters\n' >&2
+        exit 99
         ;;
     "ec2 describe-instances")
         case "$*" in
@@ -1703,7 +1707,7 @@ fi
 #   - vmtoken on stdout
 #   - run-instances has no --user-data
 #   - run-instances carries ephemeral-ci:vmtoken tag matching stdout vmtoken
-#   - send-command called with document name from stack output (DeliverDocumentName)
+#   - send-command called with document name from the SSM parameter (DeliverDocumentName)
 #   - send-command --parameters carry RunnerToken, RunnerLabel, RunnerUrl, RunnerGroup
 #   - RunnerToken value is the token itself (no ssm-secure reference)
 #   - put-parameter NOT called (token is not stored in Parameter Store)
@@ -1787,13 +1791,21 @@ if [ -f "$AWS_ARGV_FILE" ]; then
         ko "test-29: send-command not called — token delivery did not happen"
     fi
 
-    # send-command must use the document name from the stack output, not a hardcoded string.
-    # The stub returns "ssm-doc-from-stack-output" as DeliverDocumentName; if provision.sh
+    # send-command must use the document name from the SSM parameter, not a hardcoded string.
+    # The stub returns "ssm-doc-from-parameter" as DeliverDocumentName; if provision.sh
     # hardcodes the old name it will not match and this test fails on unfixed code.
-    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ssm-doc-from-stack-output"; then
-        ok "test-29: send-command uses document name from stack output"
+    if grep "send-command" "$AWS_ARGV_FILE" | grep -q "ssm-doc-from-parameter"; then
+        ok "test-29: send-command uses document name from the SSM parameter"
     else
-        ko "test-29: send-command did not use document name from stack output (expected ssm-doc-from-stack-output; got: $(grep send-command "$AWS_ARGV_FILE" || true))"
+        ko "test-29: send-command did not use document name from the SSM parameter (expected ssm-doc-from-parameter; got: $(grep send-command "$AWS_ARGV_FILE" || true))"
+    fi
+
+    # The ids come from /ephemeral-ci/spill/ SSM parameters, never from the stack.
+    if grep -q '^ssm get-parameters-by-path .*--path /ephemeral-ci/spill/' "$AWS_ARGV_FILE" \
+       && ! grep -q 'describe-stacks' "$AWS_ARGV_FILE"; then
+        ok "test-29: spill ids read from SSM parameters, no describe-stacks"
+    else
+        ko "test-29: spill ids not read from SSM parameters or describe-stacks called (got: $(cat "$AWS_ARGV_FILE"))"
     fi
 
     # send-command --parameters must carry all four keys
@@ -2242,7 +2254,7 @@ cat > "$AWS_BIN" << 'AWSAUTH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$AWS_ARGV_FILE"
 case "$1 $2" in
-    "cloudformation describe-stacks") exec AWS_REAL_PATH "$@" ;;
+    "ssm get-parameters-by-path") exec AWS_REAL_PATH "$@" ;;
     "ec2 describe-instances") case "$*" in *InstanceId*) printf '%b\n' "${AWS_HOLDERS:-}"; exit 0 ;; esac
         if [ -n "${AWS_COUNT:-}" ]; then printf '%s\n' "$AWS_COUNT"; exit 0; fi ;;
 esac

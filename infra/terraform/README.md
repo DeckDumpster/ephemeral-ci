@@ -53,13 +53,16 @@ unchanged), so what Terraform compares against is what CloudFormation wrote.
 
 6. Delete `imports.tf` and the `import` blocks of `bootstrap-identity/main.tf`.
 
-**`EphemeralCiSpill` stays until its readers move.** `provision.sh`,
-`ami-build.sh`, `ec2-diag.sh`, `check-spill-permissions.sh` and `test-reap.sh`
-read its outputs with `aws cloudformation describe-stacks`, and the spill roles
-are granted `cloudformation:DescribeStacks` on it. Deleting the stack before
-they read the Terraform outputs (`outputs.tf`, same names) breaks every spill.
-Run step 5 for the other two stacks now and for this one after that change
-lands.
+**`EphemeralCiSpill` stays until one real spill has gone green reading SSM.**
+Its readers (`provision.sh`, `ami-build.sh`, `ec2-diag.sh`,
+`check-spill-permissions.sh`, `test-reap.sh`) now read the parameters under
+`/ephemeral-ci/spill/` (`ssm.tf`; `SubnetIds`, `SecurityGroupId`,
+`LaunchTemplateId`, `LaunchTemplateName`, `InstanceProfileName`,
+`DeliverDocumentName`, `DiagnoseDocumentName`), so `terraform apply` must have
+written them before any spill runs. Order: apply, run `spill-probe.yml`, then
+step 5 for this stack. The roles still hold `cloudformation:DescribeStacks` on
+the stack for consumers outside this repository (spira's round AMI build); drop
+that statement when those move.
 
 ## Not managed
 
