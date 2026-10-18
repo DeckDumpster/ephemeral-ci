@@ -24,6 +24,7 @@ case "$1 $2" in
             *) printf '/ephemeral-ci/spill/SubnetIds\tsubnet-a,subnet-b\n/ephemeral-ci/spill/SecurityGroupId\tsg-1\n/ephemeral-ci/spill/LaunchTemplateId\tlt-1\n/ephemeral-ci/spill/LaunchTemplateName\tephemeral-ci-spill\n/ephemeral-ci/spill/InstanceProfileName\tprof-1\n/ephemeral-ci/spill/DeliverDocumentName\tdeliver-doc-1\n/ephemeral-ci/spill/DiagnoseDocumentName\tdiag-doc-1\n' ;;
         esac ;;
     "cloudformation describe-stacks") printf 'describe-stacks must not be called\n' >&2; exit 99 ;;
+    "iam simulate-principal-policy") printf '{"EvaluationResults":[]}\n' ;;
     "ssm send-command") printf 'cmd-1\n' ;;
     "ssm get-command-invocation") printf 'Success\n' ;;
     *) exit 0 ;;
