@@ -87,7 +87,7 @@ test('trust admits a spira-concierge assumed-role session, without an MFA condit
 test('every Allow that writes IAM users/roles carries the boundary condition', () => {
   // The Spot service-linked role is AWS-owned and cannot carry a boundary.
   const writers = stmts().filter(
-    (st) => st.Effect === 'Allow' && st.Sid !== 'SpotServiceLinkedRole' && ([] as string[]).concat(st.Action).some(
+    (st) => st.Effect === 'Allow' && st.Sid !== 'SpotServiceLinkedRole' && !/IamBoundaryTagWrite$/.test(st.Sid ?? '') && ([] as string[]).concat(st.Action).some(
       (a) => /^iam:(Create|Put|Attach|Detach|Update|Delete|Tag|Untag)(User|Role|AssumeRole)/.test(a),
     ),
   );
@@ -110,6 +110,21 @@ test('access keys are allowed only on tagged users, with a condition key CreateA
     expect(JSON.stringify(st.Condition)).not.toMatch(/PermissionsBoundary/);
     for (const r of ([] as any[]).concat(st.Resource)) expect(JSON.stringify(r)).toMatch(/:user\/(spira|cubby|ephemeral-ci|EphemeralCiSpill|EphemeralCiBackup)-\*/);
   }
+});
+
+test('existing principals can be tagged, but only with the boundary tag key, never on the guards', () => {
+  const tag = stmts().filter((st) => /IamBoundaryTagWrite$/.test(st.Sid ?? ''));
+  expect(tag.length).toBeGreaterThan(0);
+  for (const st of tag) {
+    expect(st.Effect).toBe('Allow');
+    expect(([] as string[]).concat(st.Action).sort()).toEqual(['iam:TagRole', 'iam:TagUser', 'iam:UntagRole', 'iam:UntagUser']);
+    expect(st.Condition).toEqual({ 'ForAllValues:StringEquals': { 'aws:TagKeys': ['terraform-deploy-boundary'] } });
+    const res = JSON.stringify(st.Resource);
+    expect(res).not.toContain('role/spira-concierge');
+    expect(res).not.toContain('role/terraform-deploy"');
+  }
+  const deny = stmts().find((st) => st.Sid === 'DenyIamWritesOnGuards')!;
+  expect(([] as string[]).concat(deny.Action)).toEqual(expect.arrayContaining(['iam:Tag*']));
 });
 
 test('explicit Deny on IAM writes to spira-concierge, terraform-deploy and the boundary', () => {
