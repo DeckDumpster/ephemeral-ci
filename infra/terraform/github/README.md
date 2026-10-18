@@ -10,8 +10,9 @@ Applied by the Concierge with a GitHub token (repository administration).
 cd infra/terraform/github
 export GITHUB_TOKEN=...
 gh api repos/DeckDumpster/ephemeral-ci/branches/main/protection   # read today's values
-terraform init -backend-config="bucket=<StateBucketName>"
-terraform plan  -var-file=main.tfvars   # must show only `infra` added to contexts
+terraform init -backend-config="bucket=<StateBucketName>" \
+  -backend-config='assume_role={role_arn="<terraform-deploy role ARN>"}'   # state is 403 without the role
+terraform plan  -var-file=main.tfvars   # must be: 1 to import, 0 to add, 1 to change, 0 to destroy; the change adds `infra` to contexts
 terraform apply -var-file=main.tfvars
 ```
 
@@ -19,7 +20,7 @@ terraform apply -var-file=main.tfvars
 
 ```hcl
 existing_required_checks        = ["test"]   # required_status_checks.contexts, as read
-enforce_admins                  = false      # enforce_admins.enabled
+enforce_admins                  = true       # enforce_admins.enabled (true on main today)
 strict_status_checks            = false      # required_status_checks.strict
 required_approving_review_count = null       # required_pull_request_reviews.required_approving_review_count, or null
 ```
