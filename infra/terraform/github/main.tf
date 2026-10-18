@@ -58,6 +58,12 @@ variable "required_approving_review_count" {
   default     = null
 }
 
+variable "import_enabled" {
+  type        = bool
+  default     = true
+  description = "Import main's existing protection. Off only in the offline test, where the mocked provider has nothing to import."
+}
+
 locals {
   required_checks = setunion(var.existing_required_checks, ["infra"])
 }

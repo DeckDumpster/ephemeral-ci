@@ -4,6 +4,7 @@ variables {
   existing_required_checks = ["test"]
   enforce_admins           = false
   strict_status_checks     = false
+  import_enabled           = false
 }
 
 run "infra_is_added_to_existing_checks" {
