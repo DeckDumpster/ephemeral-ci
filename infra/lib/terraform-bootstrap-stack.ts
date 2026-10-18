@@ -1,0 +1,132 @@
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+
+export interface TerraformBootstrapStackProps extends cdk.StackProps {
+  /** Existing role the Concierge runs as; the only principal that may assume terraform-deploy. */
+  readonly conciergeRoleName?: string;
+  /** Name prefix that IAM users/roles/policies managed by Terraform must carry. */
+  readonly iamNamePrefix?: string;
+}
+
+/**
+ * The last thing CDK deploys (law-infrastructure-is-terraform): the Terraform
+ * state bucket and the MFA-gated role Terraform runs as. State locking is
+ * S3-native (Terraform >= 1.10 `use_lockfile`), so there is no DynamoDB table.
+ */
+export class TerraformBootstrapStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: TerraformBootstrapStackProps) {
+    super(scope, id, props);
+
+    const conciergeRoleName = props?.conciergeRoleName ?? 'spira-concierge';
+    const prefix = props?.iamNamePrefix ?? 'spira-';
+
+    const bucket = new s3.Bucket(this, 'StateBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        { noncurrentVersionExpiration: cdk.Duration.days(90) },
+      ],
+    });
+
+    const role = new iam.Role(this, 'DeployRole', {
+      roleName: 'terraform-deploy',
+      description: 'Assumed by the Concierge, with MFA, to run terraform apply',
+      maxSessionDuration: cdk.Duration.hours(4),
+      assumedBy: new iam.ArnPrincipal(
+        `arn:${this.partition}:iam::${this.account}:role/${conciergeRoleName}`,
+      ).withConditions({
+        Bool: { 'aws:MultiFactorAuthPresent': 'true' },
+      }),
+    });
+
+    const iamArn = (kind: string) =>
+      `arn:${this.partition}:iam::${this.account}:${kind}/${prefix}*`;
+
+    // State backend: this bucket only, objects and the native lock file.
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'StateBucketList',
+      actions: ['s3:ListBucket', 's3:GetBucketVersioning', 's3:GetBucketLocation'],
+      resources: [bucket.bucketArn],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'StateObjects',
+      actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+      resources: [bucket.arnForObjects('*')],
+    }));
+
+    // S3 buckets Terraform manages, scoped by name prefix.
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'PrefixedBuckets',
+      actions: ['s3:*'],
+      resources: [
+        `arn:${this.partition}:s3:::${prefix}*`,
+        `arn:${this.partition}:s3:::${prefix}*/*`,
+      ],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'BucketDiscovery',
+      actions: ['s3:ListAllMyBuckets', 's3:GetBucketLocation'],
+      resources: ['*'],
+    }));
+
+    // IAM principals and policies, name-prefixed. No iam:* on '*', and the
+    // role cannot edit itself (terraform-deploy does not match the prefix).
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'PrefixedIam',
+      actions: [
+        'iam:CreateUser', 'iam:DeleteUser', 'iam:GetUser', 'iam:UpdateUser', 'iam:TagUser', 'iam:UntagUser',
+        'iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:ListAccessKeys', 'iam:UpdateAccessKey',
+        'iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:UpdateRole', 'iam:UpdateAssumeRolePolicy',
+        'iam:TagRole', 'iam:UntagRole', 'iam:PassRole', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies',
+        'iam:ListInstanceProfilesForRole',
+        'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:GetPolicy', 'iam:GetPolicyVersion',
+        'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion', 'iam:ListPolicyVersions',
+        'iam:PutUserPolicy', 'iam:GetUserPolicy', 'iam:DeleteUserPolicy', 'iam:ListUserPolicies',
+        'iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy',
+        'iam:AttachUserPolicy', 'iam:DetachUserPolicy', 'iam:ListAttachedUserPolicies',
+        'iam:AttachRolePolicy', 'iam:DetachRolePolicy',
+        'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile', 'iam:GetInstanceProfile',
+        'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile',
+      ],
+      resources: [iamArn('user'), iamArn('role'), iamArn('policy'), iamArn('instance-profile')],
+    }));
+
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'PrefixedSecrets',
+      actions: ['secretsmanager:*'],
+      resources: [`arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${prefix}*`],
+    }));
+
+    // What ephemeral-ci's own stacks use. EC2 has no useful resource scoping
+    // for Describe*/Run*, so these are region-pinned instead.
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'Ec2InThisRegion',
+      actions: ['ec2:*'],
+      resources: ['*'],
+      conditions: { StringEquals: { 'aws:RequestedRegion': this.region } },
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'Ssm',
+      actions: ['ssm:*'],
+      resources: ['*'],
+      conditions: { StringEquals: { 'aws:RequestedRegion': this.region } },
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'CloudFormationRead',
+      actions: [
+        'cloudformation:Describe*', 'cloudformation:Get*',
+        'cloudformation:List*', 'cloudformation:DetectStackDrift',
+      ],
+      resources: ['*'],
+    }));
+
+    new cdk.CfnOutput(this, 'StateBucketName', { value: bucket.bucketName });
+    new cdk.CfnOutput(this, 'Region', { value: this.region });
+    new cdk.CfnOutput(this, 'DeployRoleArn', { value: role.roleArn });
+  }
+}
