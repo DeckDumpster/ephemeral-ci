@@ -38,3 +38,24 @@ run "empty_existing_list_is_refused" {
 
   expect_failures = [var.existing_required_checks]
 }
+
+run "repository_id_is_the_node_id_not_the_name" {
+  command = plan
+
+  override_data {
+    target = data.github_repository.this
+    values = {
+      node_id = "R_kgDOUcRKZg"
+    }
+  }
+
+  assert {
+    condition     = github_branch_protection.main.repository_id == "R_kgDOUcRKZg"
+    error_message = "repository_id must be the node id the provider stores; the name forces replacement of the import"
+  }
+
+  assert {
+    condition     = length(github_branch_protection.main.force_push_bypassers) == 0
+    error_message = "force_push_bypassers must be [] to match the imported value"
+  }
+}

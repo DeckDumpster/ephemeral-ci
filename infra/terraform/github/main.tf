@@ -68,10 +68,17 @@ locals {
   required_checks = setunion(var.existing_required_checks, ["infra"])
 }
 
+# The provider stores the repository's GraphQL node id in repository_id, not its
+# name. Declaring the name differs from the imported value and forces replacement.
+data "github_repository" "this" {
+  name = "ephemeral-ci"
+}
+
 resource "github_branch_protection" "main" {
-  repository_id  = "ephemeral-ci"
-  pattern        = "main"
-  enforce_admins = var.enforce_admins
+  repository_id        = data.github_repository.this.node_id
+  pattern              = "main"
+  enforce_admins       = var.enforce_admins
+  force_push_bypassers = [] # the import reads [], so null would plan a change
 
   required_status_checks {
     strict   = var.strict_status_checks
