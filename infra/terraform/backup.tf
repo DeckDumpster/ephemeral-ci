@@ -76,6 +76,13 @@ resource "aws_iam_user_policy" "backup_writer" {
 resource "aws_secretsmanager_secret" "backup_writer_key" {
   description = "Put-only access key for the Spira snapshot bucket (lc-backup.env)"
   name        = var.physical_ids["backup_secret_name"]
+
+  # Provider-side deletion/replication settings with no API read-back: an
+  # imported secret always shows them as additions, which would make the
+  # adoption plan non-zero.
+  lifecycle {
+    ignore_changes = [recovery_window_in_days, force_overwrite_replica_secret]
+  }
 }
 
 # spira-concierge is the existing role the Concierge runs as.
