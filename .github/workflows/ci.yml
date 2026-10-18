@@ -274,6 +274,12 @@ jobs:
           terraform -chdir=infra/terraform/bootstrap-identity validate
           terraform -chdir=infra/terraform/bootstrap-identity test
 
+      - name: terraform validate and test (github)
+        run: |
+          terraform -chdir=infra/terraform/github init -backend=false -input=false
+          terraform -chdir=infra/terraform/github validate
+          terraform -chdir=infra/terraform/github test
+
       - name: TerraformBootstrap stack tests
         working-directory: infra
         run: |
