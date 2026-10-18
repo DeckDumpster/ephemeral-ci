@@ -86,11 +86,37 @@ test('role policy is least privilege: no admin, no unscoped iam or secrets', () 
     const resources = JSON.stringify(st.Resource);
     if (actions.some((a) => a.startsWith('iam:') || a.startsWith('secretsmanager:'))) {
       expect(resources).not.toBe('"*"');
-      expect(resources).toContain('spira-*');
     }
   }
   expect(JSON.stringify(statements)).not.toContain('AdministratorAccess');
   template.resourceCountIs('AWS::IAM::ManagedPolicy', 0);
+});
+
+test('name patterns cover exactly spira and cubby, nothing broader', () => {
+  const policy = Object.values(template.findResources('AWS::IAM::Policy'))[0] as {
+    Properties: { PolicyDocument: { Statement: { Sid: string; Resource: unknown }[] } };
+  };
+  const res = (sid: string): string[] => {
+    const st = policy.Properties.PolicyDocument.Statement.find((x) => x.Sid === sid)!;
+    return ([] as unknown[]).concat(st.Resource).map((r) => JSON.stringify(r));
+  };
+  const strip = (r: string) =>
+    r.replace(/\{"Ref":"AWS::Partition"\}/g, 'aws')
+      .replace(/\{"Ref":"AWS::Region"\}/g, 'us-west-2')
+      .replace(/\{"Ref":"AWS::AccountId"\}/g, '189923011121')
+      .replace(/[\\{}\[\]"]|Fn::Join|:?,?(?=arn)/g, '');
+  const flat = (sid: string) => res(sid).map((r) => {
+    const m = r.match(/(?:s3:::|\/|secret:)((?:spira|cubby)[-/]\*(?:\/\*)?)"?\]?\]?\}?$/);
+    return m ? m[1] : `UNMATCHED ${strip(r)}`;
+  });
+  expect(flat('PrefixedBuckets').sort()).toEqual(
+    ['cubby-*', 'cubby-*/*', 'spira-*', 'spira-*/*'].sort(),
+  );
+  expect(flat('PrefixedSecrets').sort()).toEqual(['cubby/*', 'spira/*']);
+  const iamRes = flat('PrefixedIam');
+  expect(iamRes.filter((x) => x === 'spira-*')).toHaveLength(4);
+  expect(iamRes.filter((x) => x === 'cubby-*')).toHaveLength(4);
+  expect(iamRes).toHaveLength(8);
 });
 
 test('outputs: bucket name, region, role arn', () => {

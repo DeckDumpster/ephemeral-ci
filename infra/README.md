@@ -16,13 +16,16 @@ It creates:
   is S3-native, so there is no DynamoDB table.
 - the IAM role `terraform-deploy`, assumable only by `spira-concierge` and only
   when `aws:MultiFactorAuthPresent` is true. Its policy is least privilege:
-  the state bucket, `spira-*` buckets, `spira-*` IAM users/roles/policies/instance
-  profiles, `spira-*` secrets, EC2/SSM in the stack's region, and CloudFormation
+  the state bucket, `<prefix>-*` buckets, `<prefix>-*` IAM users/roles/policies/instance
+  profiles, `<prefix>/*` secrets for each prefix in `TERRAFORM_NAME_PREFIXES`
+  (`spira`, `cubby`), EC2/SSM in the stack's region, and CloudFormation
   reads. The role cannot modify itself (its name does not carry the prefix).
 - outputs `StateBucketName`, `Region`, `DeployRoleArn`.
 
-Resources Terraform creates must be named with the `spira-` prefix, or the role
-will refuse them.
+Resources Terraform creates must carry one of those prefixes, or the role will
+refuse them. Moving another repository to Terraform is one edit to
+`TERRAFORM_NAME_PREFIXES` in `lib/terraform-bootstrap-stack.ts`, then a redeploy
+of `TerraformBootstrap`.
 
 ### Pointing a Terraform root at it
 
