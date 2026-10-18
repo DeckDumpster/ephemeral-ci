@@ -191,7 +191,7 @@ test('name patterns cover exactly spira, cubby, pkdump and dumpstar, nothing bro
     expect(r.every((x) => ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*'].includes(x))).toBe(true);
     for (const p of ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*']) expect(r.filter((x) => x === p)).toHaveLength(r.length / 4);
   }
-  expect(flat('PrefixedIamPrincipalWrite')).toHaveLength(6);
+  expect(flat('PrefixedIamPrincipalWrite')).toHaveLength(8);
 });
 
 test('outputs: bucket name, region, role arn', () => {
