@@ -88,8 +88,8 @@ resource "aws_security_group" "spill" {
 
 resource "aws_iam_role" "instance" {
   permissions_boundary = local.permissions_boundary_arn
-  name               = var.physical_ids["instance_role_name"]
-  assume_role_policy = file("${path.module}/policies/instance-role.assume.json")
+  name                 = var.physical_ids["instance_role_name"]
+  assume_role_policy   = file("${path.module}/policies/instance-role.assume.json")
 }
 
 resource "aws_iam_role_policy_attachment" "instance_ssm" {
@@ -216,8 +216,8 @@ locals {
 
 resource "aws_iam_role" "spill" {
   permissions_boundary = local.permissions_boundary_arn
-  name               = "ephemeral-ci-spill"
-  assume_role_policy = templatefile("${path.module}/policies/spill-role.assume.json.tftpl", local.policy_vars)
+  name                 = "ephemeral-ci-spill"
+  assume_role_policy   = templatefile("${path.module}/policies/spill-role.assume.json.tftpl", local.policy_vars)
 }
 
 resource "aws_iam_role_policy" "spill" {
@@ -230,8 +230,8 @@ resource "aws_iam_role_policy" "spill" {
 # build-time operations.
 resource "aws_iam_role" "ami_build" {
   permissions_boundary = local.permissions_boundary_arn
-  name               = "ephemeral-ci-ami-build"
-  assume_role_policy = templatefile("${path.module}/policies/ami-build-role.assume.json.tftpl", local.policy_vars)
+  name                 = "ephemeral-ci-ami-build"
+  assume_role_policy   = templatefile("${path.module}/policies/ami-build-role.assume.json.tftpl", local.policy_vars)
 }
 
 resource "aws_iam_role_policy" "ami_build" {
@@ -242,8 +242,8 @@ resource "aws_iam_role_policy" "ami_build" {
 
 resource "aws_iam_role" "ci_test" {
   permissions_boundary = local.permissions_boundary_arn
-  name               = "ephemeral-ci-ci-test"
-  assume_role_policy = templatefile("${path.module}/policies/ci-test-role.assume.json.tftpl", local.policy_vars)
+  name                 = "ephemeral-ci-ci-test"
+  assume_role_policy   = templatefile("${path.module}/policies/ci-test-role.assume.json.tftpl", local.policy_vars)
 }
 
 resource "aws_iam_role_policy" "ci_test" {

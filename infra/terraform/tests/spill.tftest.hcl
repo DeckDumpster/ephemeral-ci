@@ -177,11 +177,11 @@ run "boundary_cuts_nothing_the_policies_grant" {
         aws_iam_role_policy.spill.policy, aws_iam_role_policy.ami_build.policy,
         aws_iam_role_policy.ci_test.policy, aws_iam_policy.round_spill.policy,
         aws_iam_user_policy.backup_writer.policy,
-      ] : alltrue([
-        for st in jsondecode(d).Statement : st.Effect != "Allow" || alltrue([
-          for a in flatten([try(st.Action, [])]) :
-          !can(regex("^(\\*|iam:\\*|iam:(Create|Put|Attach|Detach|Update|Delete|Add|Remove|Set|Tag|Untag).*|sts:(\\*|AssumeRole))$", a))
-        ])
+        ] : alltrue([
+          for st in jsondecode(d).Statement : st.Effect != "Allow" || alltrue([
+            for a in flatten([try(st.Action, [])]) :
+            !can(regex("^(\\*|iam:\\*|iam:(Create|Put|Attach|Detach|Update|Delete|Add|Remove|Set|Tag|Untag).*|sts:(\\*|AssumeRole))$", a))
+          ])
       ])
     ])
     error_message = "a granted action falls under the boundary's deny: the boundary would cut it"
