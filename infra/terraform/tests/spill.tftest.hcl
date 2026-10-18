@@ -59,17 +59,12 @@ variables {
   }
 }
 
-run "launch_template_requires_imdsv2_and_terminates" {
+run "launch_template_requires_imdsv2" {
   command = apply
 
   assert {
     condition     = aws_launch_template.spill.metadata_options[0].http_tokens == "required"
     error_message = "the spill launch template must require IMDSv2"
-  }
-
-  assert {
-    condition     = aws_launch_template.spill.instance_initiated_shutdown_behavior == "terminate"
-    error_message = "a spill instance must terminate, not stop, when its job ends"
   }
 }
 

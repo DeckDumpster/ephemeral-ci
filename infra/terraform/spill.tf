@@ -124,9 +124,10 @@ resource "aws_launch_template" "spill" {
     name = aws_iam_instance_profile.spill.name
   }
 
-  # The guest powers off when its job ends; "stop" would leave a billing,
-  # never-reused instance behind.
-  instance_initiated_shutdown_behavior = "terminate"
+  # No instance_initiated_shutdown_behavior: the deployed template does not set
+  # it, and adding it would make the adoption plan change a live resource.
+  # provision.sh passes --instance-initiated-shutdown-behavior terminate on
+  # every run-instances. Add it here in a later, separate apply.
 
   metadata_options {
     http_tokens                 = "required"
@@ -298,6 +299,12 @@ resource "aws_s3_bucket_policy" "round_ami_staging" {
 
 resource "aws_iam_user" "round_spill" {
   name = "spira-round-spill"
+
+  # Present on the live user, keyed by the access key id; kept so the adoption
+  # changes nothing.
+  tags = {
+    "AKIASYOCLFIYTULLVHEA" = "For spilling round certification to EC2 hosts instead of VMs"
+  }
 }
 
 resource "aws_iam_policy" "round_spill" {

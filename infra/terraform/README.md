@@ -18,6 +18,12 @@ would be admin.
 Policy and trust documents live as files in `policies/` and `documents/`,
 generated once from the synthesised CDK templates (statement order and content
 unchanged), so what Terraform compares against is what CloudFormation wrote.
+The SSM documents are stored compact (no whitespace), as CloudFormation sent
+them: the provider compares `content` as a string.
+
+Expected adoption plan: `44 to import, 7 to add, 2 to change, 0 to destroy`,
+the two changes being only the `ssm:GetParametersByPath` statements on
+`aws_iam_role_policy.spill` and `.ami_build`.
 
 ## Migration runbook (Concierge, MFA session)
 
