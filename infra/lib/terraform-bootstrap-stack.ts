@@ -11,6 +11,12 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  */
 export const TERRAFORM_NAME_PREFIXES: readonly string[] = ['spira', 'cubby'];
 
+const DEPLOY_ROLE_NAME = 'terraform-deploy';
+const BOUNDARY_NAME = 'terraform-deploy-boundary';
+const IAM_WRITE_VERBS = [
+  'Create', 'Put', 'Attach', 'Detach', 'Update', 'Delete', 'Add', 'Remove', 'Set', 'Tag', 'Untag',
+] as const;
+
 export interface TerraformBootstrapStackProps extends cdk.StackProps {
   /** Existing role the Concierge runs as; the only principal that may assume terraform-deploy. */
   readonly conciergeRoleName?: string;
@@ -29,6 +35,8 @@ export class TerraformBootstrapStack extends cdk.Stack {
 
     const conciergeRoleName = props?.conciergeRoleName ?? 'spira-concierge';
     const prefixes = props?.namePrefixes ?? TERRAFORM_NAME_PREFIXES;
+    const conciergeRoleArn = `arn:${this.partition}:iam::${this.account}:role/${conciergeRoleName}`;
+    const deployRoleArn = `arn:${this.partition}:iam::${this.account}:role/${DEPLOY_ROLE_NAME}`;
 
     const bucket = new s3.Bucket(this, 'StateBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -42,15 +50,41 @@ export class TerraformBootstrapStack extends cdk.Stack {
     });
 
     const role = new iam.Role(this, 'DeployRole', {
-      roleName: 'terraform-deploy',
-      description: 'Assumed by the Concierge, with MFA, to run terraform apply',
+      roleName: DEPLOY_ROLE_NAME,
+      description: 'Assumed by the Concierge (MFA enforced at spira-concierge) to run terraform apply',
       maxSessionDuration: cdk.Duration.hours(4),
-      assumedBy: new iam.ArnPrincipal(
-        `arn:${this.partition}:iam::${this.account}:role/${conciergeRoleName}`,
-      ).withConditions({
-        Bool: { 'aws:MultiFactorAuthPresent': 'true' },
+      // The Concierge reaches this role from a spira-concierge assumed-role
+      // session. MFA context is not carried across role chaining, so a
+      // aws:MultiFactorAuthPresent condition here could never hold. MFA is
+      // enforced where the chain starts: spira-concierge's own trust requires it.
+      // The role ARN as principal admits any session of that role.
+      assumedBy: new iam.ArnPrincipal(conciergeRoleArn).withConditions({
+        ArnEquals: { 'aws:PrincipalArn': conciergeRoleArn },
       }),
     });
+
+    // Every user/role this role creates or modifies must carry this boundary,
+    // which caps them below IAM administration and below terraform-deploy.
+    const boundary = new iam.ManagedPolicy(this, 'DeployBoundary', {
+      managedPolicyName: BOUNDARY_NAME,
+      description: 'Permissions boundary for every principal terraform-deploy creates',
+      statements: [
+        new iam.PolicyStatement({ sid: 'Everything', actions: ['*'], resources: ['*'] }),
+        new iam.PolicyStatement({
+          sid: 'NoIamWrites',
+          effect: iam.Effect.DENY,
+          actions: IAM_WRITE_VERBS.map((v) => `iam:${v}*`),
+          resources: ['*'],
+        }),
+        new iam.PolicyStatement({
+          sid: 'NoAssumingDeployRole',
+          effect: iam.Effect.DENY,
+          actions: ['sts:AssumeRole'],
+          resources: [deployRoleArn],
+        }),
+      ],
+    });
+    const boundaryCondition = { StringEquals: { 'iam:PermissionsBoundary': boundary.managedPolicyArn } };
 
     const iamArn = (kind: string) =>
       prefixes.map((p) => `arn:${this.partition}:iam::${this.account}:${kind}/${p}-*`);
@@ -82,28 +116,15 @@ export class TerraformBootstrapStack extends cdk.Stack {
       resources: ['*'],
     }));
 
-    // IAM principals and policies, name-prefixed. No iam:* on '*', and the
-    // role cannot edit itself (terraform-deploy does not match the prefix).
-    role.addToPolicy(new iam.PolicyStatement({
-      sid: 'PrefixedIam',
-      actions: [
-        'iam:CreateUser', 'iam:DeleteUser', 'iam:GetUser', 'iam:UpdateUser', 'iam:TagUser', 'iam:UntagUser',
-        'iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:ListAccessKeys', 'iam:UpdateAccessKey',
-        'iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:UpdateRole', 'iam:UpdateAssumeRolePolicy',
-        'iam:TagRole', 'iam:UntagRole', 'iam:PassRole', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies',
-        'iam:ListInstanceProfilesForRole', 'iam:ListUserTags', 'iam:ListRoleTags', 'iam:ListPolicyTags',
-        'iam:ListInstanceProfileTags', 'iam:ListGroupsForUser', 'iam:ListEntitiesForPolicy',
-        'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:GetPolicy', 'iam:GetPolicyVersion',
-        'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion', 'iam:ListPolicyVersions',
-        'iam:PutUserPolicy', 'iam:GetUserPolicy', 'iam:DeleteUserPolicy', 'iam:ListUserPolicies',
-        'iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy',
-        'iam:AttachUserPolicy', 'iam:DetachUserPolicy', 'iam:ListAttachedUserPolicies',
-        'iam:AttachRolePolicy', 'iam:DetachRolePolicy',
-        'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile', 'iam:GetInstanceProfile',
-        'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile',
-      ],
-      resources: ['user', 'role', 'policy', 'instance-profile'].flatMap(iamArn),
-    }));
+    // IAM statements live in managed policies: a role's inline policies share a
+    // 10240-character cap and CDK splits them silently.
+    const prefixedIam = new iam.ManagedPolicy(this, 'PrefixedIamPolicy', { roles: [role] });
+    const adoptedIamPolicy = new iam.ManagedPolicy(this, 'AdoptedIamPolicy', { roles: [role] });
+
+    // IAM, name-prefixed. Writes to users and roles are allowed only with the
+    // boundary; policies and instance profiles grant nothing by themselves and
+    // can only reach boundary-carrying principals through those writes.
+    this.addIam(prefixedIam, 'Prefixed', boundaryCondition, ['user', 'role', 'policy', 'instance-profile'].flatMap(iamArn));
 
     // What the retired CDK stacks (EphemeralCiSpill, EphemeralCiBackup) created,
     // adopted into Terraform by import. Their physical names are the explicit
@@ -117,31 +138,28 @@ export class TerraformBootstrapStack extends cdk.Stack {
         (kind) => `arn:${this.partition}:iam::${this.account}:${kind}/${p}`,
       ),
     );
-    role.addToPolicy(new iam.PolicyStatement({
-      sid: 'AdoptedIam',
-      actions: [
-        'iam:CreateUser', 'iam:DeleteUser', 'iam:GetUser', 'iam:UpdateUser', 'iam:TagUser', 'iam:UntagUser', 'iam:ListUserTags',
-        'iam:ListGroupsForUser',
-        'iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:UpdateRole', 'iam:UpdateAssumeRolePolicy',
-        'iam:TagRole', 'iam:UntagRole', 'iam:ListRoleTags', 'iam:PassRole', 'iam:ListRolePolicies',
-        'iam:ListAttachedRolePolicies', 'iam:ListInstanceProfilesForRole',
-        'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:GetPolicy', 'iam:GetPolicyVersion',
-        'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion', 'iam:ListPolicyVersions', 'iam:ListPolicyTags',
-        'iam:ListEntitiesForPolicy',
-        'iam:PutUserPolicy', 'iam:GetUserPolicy', 'iam:DeleteUserPolicy', 'iam:ListUserPolicies',
-        'iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy',
-        'iam:AttachUserPolicy', 'iam:DetachUserPolicy', 'iam:ListAttachedUserPolicies',
-        'iam:AttachRolePolicy', 'iam:DetachRolePolicy',
-        'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile', 'iam:GetInstanceProfile', 'iam:ListInstanceProfileTags',
-        'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile',
-      ],
-      resources: adoptedIamArns,
-    }));
+    this.addIam(adoptedIamPolicy, 'Adopted', boundaryCondition, adoptedIamArns);
     // The existing role the backup stack attached its secret-read policy to.
-    role.addToPolicy(new iam.PolicyStatement({
-      sid: 'ConciergeRoleInlinePolicies',
-      actions: ['iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy', 'iam:ListRolePolicies'],
-      resources: [`arn:${this.partition}:iam::${this.account}:role/${conciergeRoleName}`],
+    // Read-only: writes to spira-concierge are denied below.
+    prefixedIam.addStatements(new iam.PolicyStatement({
+      sid: 'ConciergeRoleInlinePoliciesRead',
+      actions: ['iam:GetRolePolicy', 'iam:ListRolePolicies'],
+      resources: [conciergeRoleArn],
+    }));
+
+    // No IAM write on the roles that gate this one, nor on the boundary, and
+    // the boundary can never be removed from a principal.
+    prefixedIam.addStatements(new iam.PolicyStatement({
+      sid: 'DenyIamWritesOnGuards',
+      effect: iam.Effect.DENY,
+      actions: IAM_WRITE_VERBS.map((v) => `iam:${v}*`),
+      resources: [conciergeRoleArn, deployRoleArn, boundary.managedPolicyArn],
+    }));
+    prefixedIam.addStatements(new iam.PolicyStatement({
+      sid: 'DenyBoundaryRemoval',
+      effect: iam.Effect.DENY,
+      actions: ['iam:DeleteRolePermissionsBoundary', 'iam:DeleteUserPermissionsBoundary'],
+      resources: ['*'],
     }));
     role.addToPolicy(new iam.PolicyStatement({
       sid: 'GithubOidcProvider',
@@ -218,5 +236,53 @@ export class TerraformBootstrapStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'StateBucketName', { value: bucket.bucketName });
     new cdk.CfnOutput(this, 'Region', { value: this.region });
     new cdk.CfnOutput(this, 'DeployRoleArn', { value: role.roleArn });
+  }
+
+  private addIam(
+    role: iam.ManagedPolicy,
+    sidPrefix: string,
+    boundaryCondition: Record<string, Record<string, string>>,
+    arns: string[],
+  ): void {
+    const ofKind = (kind: string) => arns.filter((a) => a.includes(`:${kind}/`));
+    const principals = [...ofKind('user'), ...ofKind('role')];
+    const others = [...ofKind('policy'), ...ofKind('instance-profile')];
+    role.addStatements(new iam.PolicyStatement({
+      sid: `${sidPrefix}IamRead`,
+      actions: [
+        'iam:GetUser', 'iam:ListUserTags', 'iam:ListGroupsForUser', 'iam:ListAccessKeys',
+        'iam:GetUserPolicy', 'iam:ListUserPolicies', 'iam:ListAttachedUserPolicies',
+        'iam:GetRole', 'iam:ListRoleTags', 'iam:PassRole', 'iam:ListRolePolicies',
+        'iam:GetRolePolicy', 'iam:ListAttachedRolePolicies', 'iam:ListInstanceProfilesForRole',
+        'iam:GetPolicy', 'iam:GetPolicyVersion', 'iam:ListPolicyVersions', 'iam:ListPolicyTags',
+        'iam:ListEntitiesForPolicy', 'iam:GetInstanceProfile', 'iam:ListInstanceProfileTags',
+      ],
+      resources: arns,
+    }));
+    role.addStatements(new iam.PolicyStatement({
+      sid: `${sidPrefix}IamPrincipalWrite`,
+      actions: [
+        'iam:CreateUser', 'iam:DeleteUser', 'iam:UpdateUser', 'iam:TagUser', 'iam:UntagUser',
+        'iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:UpdateAccessKey',
+        'iam:CreateRole', 'iam:DeleteRole', 'iam:UpdateRole', 'iam:UpdateAssumeRolePolicy',
+        'iam:TagRole', 'iam:UntagRole',
+        'iam:PutUserPolicy', 'iam:DeleteUserPolicy', 'iam:PutRolePolicy', 'iam:DeleteRolePolicy',
+        'iam:AttachUserPolicy', 'iam:DetachUserPolicy', 'iam:AttachRolePolicy', 'iam:DetachRolePolicy',
+        'iam:PutUserPermissionsBoundary', 'iam:PutRolePermissionsBoundary',
+      ],
+      resources: principals,
+      conditions: boundaryCondition,
+    }));
+    role.addStatements(new iam.PolicyStatement({
+      sid: `${sidPrefix}IamPolicyWrite`,
+      actions: [
+        'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion',
+        'iam:TagPolicy', 'iam:UntagPolicy',
+        'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile',
+        'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile',
+        'iam:TagInstanceProfile', 'iam:UntagInstanceProfile',
+      ],
+      resources: others,
+    }));
   }
 }
