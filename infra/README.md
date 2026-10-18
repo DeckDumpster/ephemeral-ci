@@ -23,7 +23,7 @@ It creates:
   denied. Its policy is least privilege:
   the state bucket, `<prefix>-*` buckets, `<prefix>-*` IAM users/roles/policies/instance
   profiles, `<prefix>/*` secrets for each prefix in `TERRAFORM_NAME_PREFIXES`
-  (`spira`, `cubby`), the names the retired ephemeral-ci stacks gave their
+  (`spira`, `cubby`, `pkdump`), the names the retired ephemeral-ci stacks gave their
   resources (`ephemeral-ci-*`, `EphemeralCiSpill-*`, `EphemeralCiBackup-*`, the
   GitHub OIDC provider, the Spot service-linked role, the budget), EC2/SSM in
   the stack's region, and CloudFormation reads. The role cannot modify itself
