@@ -1873,16 +1873,16 @@ fi
 
 # ---------------------------------------------------------------------------
 # Test 29c (sp-6rzyjn): the spill launch sizes the root volume to match the
-# Proxmox runner (default 80 GiB), overridable by SPILL_ROOT_GIB.
+# Proxmox runner (default 100 GiB), overridable by SPILL_ROOT_GIB.
 # ---------------------------------------------------------------------------
 rm -f "$AWS_ARGV_FILE"
 CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
     bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
     >/dev/null 2>&1 || true
-if grep "run-instances" "$AWS_ARGV_FILE" | grep -q 'VolumeSize[^0-9]*80'; then
-    ok "test-29c: default spill root volume is 80 GiB"
+if grep "run-instances" "$AWS_ARGV_FILE" | grep -q 'VolumeSize[^0-9]*100'; then
+    ok "test-29c: default spill root volume is 100 GiB"
 else
-    ko "test-29c: default spill root volume is not 80 GiB"
+    ko "test-29c: default spill root volume is not 100 GiB"
 fi
 rm -f "$AWS_ARGV_FILE"
 SPILL_ROOT_GIB=120 CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
