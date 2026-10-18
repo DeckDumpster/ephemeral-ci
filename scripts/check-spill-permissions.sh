@@ -512,8 +512,8 @@ if [ "${#FAILED_ACTIONS[@]}" -gt 0 ]; then
         printf '  %s\n' "$_a"
     done
     printf '\n'
-    printf 'check-spill-permissions: Add the missing grants to infra/lib/spill-stack.ts\n'
-    printf 'and run `cdk deploy EphemeralCiSpill` before retrying the spill probe.\n'
+    printf 'check-spill-permissions: Add the missing grants to infra/terraform/policies/spill-role.policy.json.tftpl\n'
+    printf 'and have the Concierge run `terraform apply` in infra/terraform before retrying the spill probe.\n'
     _exit=1
 fi
 

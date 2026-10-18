@@ -1,6 +1,3 @@
 {
-  "app": "npx tsx bin/app.ts",
-  "context": {
-    "alertEmail": "me@ryangantt.com"
-  }
+  "app": "npx tsx bin/app.ts"
 }

@@ -240,6 +240,40 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+  # Infrastructure is Terraform (law-infrastructure-is-terraform); the one CDK
+  # stack left is TerraformBootstrap. Offline only: no credentials, the AWS
+  # provider is mocked in `terraform test`.
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform -chdir=infra/terraform fmt -check -recursive
+
+      - name: terraform validate and test (spill, backup)
+        run: |
+          terraform -chdir=infra/terraform init -backend=false -input=false
+          terraform -chdir=infra/terraform validate
+          terraform -chdir=infra/terraform test
+
+      - name: terraform validate and test (bootstrap-identity)
+        run: |
+          terraform -chdir=infra/terraform/bootstrap-identity init -backend=false -input=false
+          terraform -chdir=infra/terraform/bootstrap-identity validate
+          terraform -chdir=infra/terraform/bootstrap-identity test
+
+      - name: TerraformBootstrap stack tests
+        working-directory: infra
+        run: |
+          npm ci
+          npm test
+
   # Only runs when `test` fails on a pull request. Checks whether the base
   # branch's most recent CI run is also failing, which would mean the red is
   # inherited from the base rather than introduced by this PR. A failing

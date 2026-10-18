@@ -1,0 +1,17 @@
+{
+  "Statement": [
+    {
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "Bool": {
+          "aws:MultiFactorAuthPresent": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "${bootstrap_user_arn}"
+      }
+    }
+  ],
+  "Version": "2012-10-17"
+}

@@ -1,0 +1,113 @@
+{
+  "Statement": [
+    {
+      "Action": "ec2:RunInstances",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/spill:owner": "round"
+        },
+        "StringLike": {
+          "ec2:InstanceType": "c7i.*"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ec2:RunInstances",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2:189923011121:subnet/${subnet_a_id}",
+        "arn:aws:ec2:us-west-2:189923011121:subnet/${subnet_b_id}",
+        "arn:aws:ec2:us-west-2:189923011121:subnet/${subnet_c_id}",
+        "arn:aws:ec2:us-west-2:189923011121:security-group/${security_group_id}"
+      ]
+    },
+    {
+      "Action": "ec2:RunInstances",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/spill:owner": "round"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2::image/*"
+    },
+    {
+      "Action": "ec2:RunInstances",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2:189923011121:volume/*",
+        "arn:aws:ec2:us-west-2:189923011121:network-interface/*",
+        "arn:aws:ec2:us-west-2:189923011121:spot-instances-request/*"
+      ]
+    },
+    {
+      "Action": "ec2:CreateTags",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "RunInstances"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2:189923011121:instance/*",
+        "arn:aws:ec2:us-west-2:189923011121:volume/*",
+        "arn:aws:ec2:us-west-2:189923011121:network-interface/*"
+      ]
+    },
+    {
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:StopInstances",
+        "ec2:StartInstances"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/spill:owner": "round"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ec2:Describe*",
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": "ssm:SendCommand",
+      "Effect": "Allow",
+      "Resource": "arn:aws:ssm:us-west-2::document/AWS-RunShellScript"
+    },
+    {
+      "Action": "ssm:SendCommand",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/spill:owner": "round"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:DescribeInstanceInformation"
+      ],
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": "iam:PassRole",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "${instance_role_arn}"
+    }
+  ],
+  "Version": "2012-10-17"
+}

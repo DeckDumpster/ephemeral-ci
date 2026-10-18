@@ -91,7 +91,8 @@ export class TerraformBootstrapStack extends cdk.Stack {
         'iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:ListAccessKeys', 'iam:UpdateAccessKey',
         'iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:UpdateRole', 'iam:UpdateAssumeRolePolicy',
         'iam:TagRole', 'iam:UntagRole', 'iam:PassRole', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies',
-        'iam:ListInstanceProfilesForRole',
+        'iam:ListInstanceProfilesForRole', 'iam:ListUserTags', 'iam:ListRoleTags', 'iam:ListPolicyTags',
+        'iam:ListInstanceProfileTags', 'iam:ListGroupsForUser', 'iam:ListEntitiesForPolicy',
         'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:GetPolicy', 'iam:GetPolicyVersion',
         'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion', 'iam:ListPolicyVersions',
         'iam:PutUserPolicy', 'iam:GetUserPolicy', 'iam:DeleteUserPolicy', 'iam:ListUserPolicies',
@@ -102,6 +103,85 @@ export class TerraformBootstrapStack extends cdk.Stack {
         'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile',
       ],
       resources: ['user', 'role', 'policy', 'instance-profile'].flatMap(iamArn),
+    }));
+
+    // What the retired CDK stacks (EphemeralCiSpill, EphemeralCiBackup) created,
+    // adopted into Terraform by import. Their physical names are the explicit
+    // ephemeral-ci-* ones or CloudFormation's <stack>-<logical id>-<random>, so
+    // they cannot carry the spira- prefix. Each pattern names one stack's
+    // resources; nothing here reaches cdk-bootstrap-admin (the admin role is
+    // managed by its own root, under its own credentials).
+    const adoptedIam = ['ephemeral-ci-*', 'EphemeralCiSpill-*', 'EphemeralCiBackup-*'];
+    const adoptedIamArns = adoptedIam.flatMap((p) =>
+      ['user', 'role', 'policy', 'instance-profile'].map(
+        (kind) => `arn:${this.partition}:iam::${this.account}:${kind}/${p}`,
+      ),
+    );
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'AdoptedIam',
+      actions: [
+        'iam:CreateUser', 'iam:DeleteUser', 'iam:GetUser', 'iam:UpdateUser', 'iam:TagUser', 'iam:UntagUser', 'iam:ListUserTags',
+        'iam:ListGroupsForUser',
+        'iam:CreateRole', 'iam:DeleteRole', 'iam:GetRole', 'iam:UpdateRole', 'iam:UpdateAssumeRolePolicy',
+        'iam:TagRole', 'iam:UntagRole', 'iam:ListRoleTags', 'iam:PassRole', 'iam:ListRolePolicies',
+        'iam:ListAttachedRolePolicies', 'iam:ListInstanceProfilesForRole',
+        'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:GetPolicy', 'iam:GetPolicyVersion',
+        'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion', 'iam:ListPolicyVersions', 'iam:ListPolicyTags',
+        'iam:ListEntitiesForPolicy',
+        'iam:PutUserPolicy', 'iam:GetUserPolicy', 'iam:DeleteUserPolicy', 'iam:ListUserPolicies',
+        'iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy',
+        'iam:AttachUserPolicy', 'iam:DetachUserPolicy', 'iam:ListAttachedUserPolicies',
+        'iam:AttachRolePolicy', 'iam:DetachRolePolicy',
+        'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile', 'iam:GetInstanceProfile', 'iam:ListInstanceProfileTags',
+        'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile',
+      ],
+      resources: adoptedIamArns,
+    }));
+    // The existing role the backup stack attached its secret-read policy to.
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'ConciergeRoleInlinePolicies',
+      actions: ['iam:PutRolePolicy', 'iam:GetRolePolicy', 'iam:DeleteRolePolicy', 'iam:ListRolePolicies'],
+      resources: [`arn:${this.partition}:iam::${this.account}:role/${conciergeRoleName}`],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'GithubOidcProvider',
+      actions: [
+        'iam:GetOpenIDConnectProvider', 'iam:CreateOpenIDConnectProvider', 'iam:DeleteOpenIDConnectProvider',
+        'iam:UpdateOpenIDConnectProviderThumbprint', 'iam:AddClientIDToOpenIDConnectProvider',
+        'iam:RemoveClientIDFromOpenIDConnectProvider', 'iam:TagOpenIDConnectProvider',
+        'iam:UntagOpenIDConnectProvider', 'iam:ListOpenIDConnectProviderTags',
+      ],
+      resources: [
+        `arn:${this.partition}:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`,
+      ],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'SpotServiceLinkedRole',
+      actions: [
+        'iam:GetRole', 'iam:ListRolePolicies', 'iam:ListAttachedRolePolicies', 'iam:ListInstanceProfilesForRole',
+        'iam:ListRoleTags', 'iam:CreateServiceLinkedRole', 'iam:UpdateRoleDescription',
+      ],
+      resources: [
+        `arn:${this.partition}:iam::${this.account}:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot`,
+      ],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'AdoptedBuckets',
+      actions: ['s3:*'],
+      resources: ['ephemeralcispill-*', 'ephemeralcibackup-*'].flatMap((p) => [
+        `arn:${this.partition}:s3:::${p}`,
+        `arn:${this.partition}:s3:::${p}/*`,
+      ]),
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'AdoptedSecrets',
+      actions: ['secretsmanager:*'],
+      resources: [`arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:WriterKeySecret*`],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      sid: 'MonthlyBudget',
+      actions: ['budgets:*'],
+      resources: [`arn:${this.partition}:budgets::${this.account}:budget/*`],
     }));
 
     role.addToPolicy(new iam.PolicyStatement({

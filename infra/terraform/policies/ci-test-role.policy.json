@@ -1,0 +1,18 @@
+{
+  "Statement": [
+    {
+      "Action": "iam:SimulatePrincipalPolicy",
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": [
+        "iam:Get*",
+        "iam:List*"
+      ],
+      "Effect": "Allow",
+      "Resource": "*"
+    }
+  ],
+  "Version": "2012-10-17"
+}
