@@ -151,7 +151,7 @@ _SG="arn:aws:ec2:${REGION}:${ACCOUNT}:security-group/sg-00000000000000000"
 _SUBNET="arn:aws:ec2:${REGION}:${ACCOUNT}:subnet/subnet-00000000000000000"
 _AMI="arn:aws:ec2:${REGION}::image/ami-00000000000000000"
 _PARAM="arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/ephemeral-ci/runner-token/testtoken"
-_SPILL_PARAM_PATH="arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/ephemeral-ci/spill"
+_SPILL_PARAM_ARN="arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/ephemeral-ci/spill"
 
 # ── Discover SSM document name from the spill parameters ─────────────────────
 # The document has no pinned Name; CloudFormation generated it. Read it from
@@ -318,7 +318,7 @@ run_sim "describe / read-only (resource: *)" "$(_sim_json \
 run_sim "ssm:GetParametersByPath" "$(_sim_json \
     ssm:GetParametersByPath \
     -- \
-    "$_SPILL_PARAM_PATH")"
+    "$_SPILL_PARAM_ARN")"
 
 # 3. SSM Parameter Store actions — scoped to the runner-token prefix.
 #    PutParameter, DeleteParameter, GetParameter, GetParameters are all
