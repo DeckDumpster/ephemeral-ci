@@ -3,11 +3,19 @@ import { Construct } from 'constructs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 
+/**
+ * Repositories whose Terraform roots run as terraform-deploy. Each owns the
+ * resources named `<prefix>-*` (S3 buckets, IAM users/roles/policies/instance
+ * profiles) and `<prefix>/*` (Secrets Manager). Moving a repository to
+ * Terraform is one edit to this list, then a redeploy of this stack.
+ */
+export const TERRAFORM_NAME_PREFIXES: readonly string[] = ['spira', 'cubby'];
+
 export interface TerraformBootstrapStackProps extends cdk.StackProps {
   /** Existing role the Concierge runs as; the only principal that may assume terraform-deploy. */
   readonly conciergeRoleName?: string;
-  /** Name prefix that IAM users/roles/policies managed by Terraform must carry. */
-  readonly iamNamePrefix?: string;
+  /** Overrides TERRAFORM_NAME_PREFIXES (tests). */
+  readonly namePrefixes?: readonly string[];
 }
 
 /**
@@ -20,7 +28,7 @@ export class TerraformBootstrapStack extends cdk.Stack {
     super(scope, id, props);
 
     const conciergeRoleName = props?.conciergeRoleName ?? 'spira-concierge';
-    const prefix = props?.iamNamePrefix ?? 'spira-';
+    const prefixes = props?.namePrefixes ?? TERRAFORM_NAME_PREFIXES;
 
     const bucket = new s3.Bucket(this, 'StateBucket', {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -45,7 +53,7 @@ export class TerraformBootstrapStack extends cdk.Stack {
     });
 
     const iamArn = (kind: string) =>
-      `arn:${this.partition}:iam::${this.account}:${kind}/${prefix}*`;
+      prefixes.map((p) => `arn:${this.partition}:iam::${this.account}:${kind}/${p}-*`);
 
     // State backend: this bucket only, objects and the native lock file.
     role.addToPolicy(new iam.PolicyStatement({
@@ -63,10 +71,10 @@ export class TerraformBootstrapStack extends cdk.Stack {
     role.addToPolicy(new iam.PolicyStatement({
       sid: 'PrefixedBuckets',
       actions: ['s3:*'],
-      resources: [
-        `arn:${this.partition}:s3:::${prefix}*`,
-        `arn:${this.partition}:s3:::${prefix}*/*`,
-      ],
+      resources: prefixes.flatMap((p) => [
+        `arn:${this.partition}:s3:::${p}-*`,
+        `arn:${this.partition}:s3:::${p}-*/*`,
+      ]),
     }));
     role.addToPolicy(new iam.PolicyStatement({
       sid: 'BucketDiscovery',
@@ -93,13 +101,15 @@ export class TerraformBootstrapStack extends cdk.Stack {
         'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile', 'iam:GetInstanceProfile',
         'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile',
       ],
-      resources: [iamArn('user'), iamArn('role'), iamArn('policy'), iamArn('instance-profile')],
+      resources: ['user', 'role', 'policy', 'instance-profile'].flatMap(iamArn),
     }));
 
     role.addToPolicy(new iam.PolicyStatement({
       sid: 'PrefixedSecrets',
       actions: ['secretsmanager:*'],
-      resources: [`arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${prefix}*`],
+      resources: prefixes.map(
+        (p) => `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${p}/*`,
+      ),
     }));
 
     // What ephemeral-ci's own stacks use. EC2 has no useful resource scoping
