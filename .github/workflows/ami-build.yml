@@ -5,7 +5,7 @@ name: Build spill AMI
 # refuses to launch an AMI whose tag differs from the substrate at its own ref,
 # so every change to the substrate must be followed by this build.
 #
-# Assumes the AmiBuildRole (infra/lib/spill-stack.ts), whose trust is pinned to
+# Assumes the AmiBuildRole (infra/terraform/spill.tf), whose trust is pinned to
 # this repository's refs/heads/main. Needs the AWS_AMI_BUILD_ROLE_ARN secret
 # (stack output AmiBuildRoleArn).
 

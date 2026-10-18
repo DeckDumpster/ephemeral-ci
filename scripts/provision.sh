@@ -450,7 +450,7 @@ SPILL_REGION="${SPILL_REGION:-us-west-2}"
 SPILL_SESSION_SECONDS="${SPILL_SESSION_SECONDS:-3000}"
 SPILL_STACK_NAME="${SPILL_STACK_NAME:-EphemeralCiSpill}"
 SPILL_INSTANCE_TYPE="${SPILL_INSTANCE_TYPE:-c7i.2xlarge}"
-# Same families the spill role's ec2:InstanceType condition admits (spill-stack.ts).
+# Same families the spill role's ec2:InstanceType condition admits (infra/terraform/policies/spill-role.policy.json.tftpl).
 # Refused here, up front, rather than as an opaque RunInstances AccessDenied
 # after the Proxmox wait has already been spent.
 case "$SPILL_INSTANCE_TYPE" in
@@ -1029,7 +1029,7 @@ ec2_wait_ssm() {
 
 # Deliver the runner token to the instance via SSM Send Command.  The token
 # is passed as a plain String parameter directly in --parameters.  The value
-# is recorded in SSM command history; see the residual note in spill-stack.ts
+# is recorded in SSM command history; see the residual note in infra/terraform/spill.tf
 # (instance role comment) for the accepted exposure and its bounds.
 #
 # The custom document name is read from the DeliverDocumentName stack output

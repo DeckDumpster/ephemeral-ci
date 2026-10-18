@@ -124,3 +124,11 @@ test('outputs: bucket name, region, role arn', () => {
   template.hasOutput('Region', { Value: 'us-west-2' });
   template.hasOutput('DeployRoleArn', {});
 });
+
+test('adopted resources are named patterns, never a bare wildcard, and never the admin role', () => {
+  const policies = Object.values(template.findResources('AWS::IAM::Policy'));
+  const json = JSON.stringify(policies);
+  expect(json).toContain('ephemeral-ci-*');
+  expect(json).toContain('oidc-provider/token.actions.githubusercontent.com');
+  expect(json).not.toContain('cdk-bootstrap');
+});

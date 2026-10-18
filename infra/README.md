@@ -1,8 +1,9 @@
 # infra
 
-The CDK app for ephemeral-ci. All new infrastructure is Terraform
-(law-infrastructure-is-terraform); `TerraformBootstrap` is the last stack CDK
-deploys, and it provides what Terraform needs.
+All infrastructure is Terraform (law-infrastructure-is-terraform) and lives in
+`terraform/`; see `terraform/README.md` for the roots, the migration runbook
+and the CDK-logical-id to Terraform-address map. This directory's CDK app now
+holds one stack, `TerraformBootstrap`, which provides what Terraform needs.
 
 ## TerraformBootstrap
 
@@ -18,8 +19,11 @@ It creates:
   when `aws:MultiFactorAuthPresent` is true. Its policy is least privilege:
   the state bucket, `<prefix>-*` buckets, `<prefix>-*` IAM users/roles/policies/instance
   profiles, `<prefix>/*` secrets for each prefix in `TERRAFORM_NAME_PREFIXES`
-  (`spira`, `cubby`), EC2/SSM in the stack's region, and CloudFormation
-  reads. The role cannot modify itself (its name does not carry the prefix).
+  (`spira`, `cubby`), the names the retired ephemeral-ci stacks gave their
+  resources (`ephemeral-ci-*`, `EphemeralCiSpill-*`, `EphemeralCiBackup-*`, the
+  GitHub OIDC provider, the Spot service-linked role, the budget), EC2/SSM in
+  the stack's region, and CloudFormation reads. The role cannot modify itself
+  (its name does not carry a prefix).
 - outputs `StateBucketName`, `Region`, `DeployRoleArn`.
 
 Resources Terraform creates must carry one of those prefixes, or the role will

@@ -1,0 +1,10 @@
+{
+  "Statement": [
+    {
+      "Action": "s3:PutObject",
+      "Effect": "Allow",
+      "Resource": "${snapshot_bucket_arn}/spira/*"
+    }
+  ],
+  "Version": "2012-10-17"
+}

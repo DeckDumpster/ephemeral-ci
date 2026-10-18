@@ -3,3 +3,10 @@ cdk.out/
 *.js
 *.d.ts
 dist/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+backend.hcl
+physical_ids.auto.tfvars.json

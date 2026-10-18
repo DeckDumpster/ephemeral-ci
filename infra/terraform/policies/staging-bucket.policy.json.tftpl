@@ -1,0 +1,21 @@
+{
+  "Statement": [
+    {
+      "Action": "s3:*",
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      },
+      "Effect": "Deny",
+      "Principal": {
+        "AWS": "*"
+      },
+      "Resource": [
+        "${staging_bucket_arn}",
+        "${staging_bucket_arn}/*"
+      ]
+    }
+  ],
+  "Version": "2012-10-17"
+}

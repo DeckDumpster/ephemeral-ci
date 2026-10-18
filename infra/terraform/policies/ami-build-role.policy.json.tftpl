@@ -1,0 +1,268 @@
+{
+  "Statement": [
+    {
+      "Action": "ec2:RunInstances",
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:launch-template/${launch_template_id}"
+    },
+    {
+      "Action": "ec2:RunInstances",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/spill:owner": "ephemeral-ci"
+        },
+        "Null": {
+          "aws:RequestTag/ephemeral-ci:vmtoken": "false"
+        },
+        "StringLike": {
+          "ec2:InstanceType": [
+            "c7i.*",
+            "c8i.*"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ec2:RunInstances",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2:189923011121:volume/*",
+        "arn:aws:ec2:us-west-2:189923011121:network-interface/*",
+        "arn:aws:ec2:us-west-2:189923011121:security-group/*",
+        "arn:aws:ec2:us-west-2:189923011121:subnet/*",
+        "arn:aws:ec2:us-west-2::image/*"
+      ]
+    },
+    {
+      "Action": "ec2:TerminateInstances",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/spill:owner": "ephemeral-ci"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ec2:DescribeInstances",
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": "ec2:DescribeVolumes",
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": "ec2:DeleteVolume",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/spill:owner": "ephemeral-ci"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:volume/*"
+    },
+    {
+      "Action": "ssm:SendCommand",
+      "Effect": "Allow",
+      "Resource": "arn:aws:ssm:us-west-2:189923011121:document/${deliver_document_name}"
+    },
+    {
+      "Action": "ssm:SendCommand",
+      "Effect": "Allow",
+      "Resource": "arn:aws:ssm:us-west-2:189923011121:document/${diagnose_document_name}"
+    },
+    {
+      "Action": "ec2:GetConsoleOutput",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/spill:owner": "ephemeral-ci"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ssm:SendCommand",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/spill:owner": "ephemeral-ci"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:DescribeInstanceInformation"
+      ],
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": "ec2:DescribeImages",
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": "cloudformation:DescribeStacks",
+      "Effect": "Allow",
+      "Resource": "arn:aws:cloudformation:us-west-2:189923011121:stack/EphemeralCiSpill/*"
+    },
+    {
+      "Action": "iam:PassRole",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "${instance_role_arn}"
+    },
+    {
+      "Action": "ec2:CreateTags",
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "RunInstances"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2:189923011121:instance/*",
+        "arn:aws:ec2:us-west-2:189923011121:volume/*",
+        "arn:aws:ec2:us-west-2:189923011121:network-interface/*"
+      ]
+    },
+    {
+      "Action": "ec2:RunInstances",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/spill:owner": [
+            "ephemeral-ci",
+            "round"
+          ],
+          "ec2:InstanceType": "c7i.2xlarge"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ssm:SendCommand",
+      "Effect": "Allow",
+      "Resource": "arn:aws:ssm:us-west-2::document/AWS-RunShellScript"
+    },
+    {
+      "Action": [
+        "ec2:StopInstances",
+        "ec2:DeregisterImage",
+        "ec2:DeleteSnapshot"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/spill:owner": [
+            "ephemeral-ci",
+            "round"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2:189923011121:instance/*",
+        "arn:aws:ec2:us-west-2::image/*",
+        "arn:aws:ec2:us-west-2::snapshot/*"
+      ]
+    },
+    {
+      "Action": "ec2:CreateImage",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/spill:owner": [
+            "ephemeral-ci",
+            "round"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": [
+        "ec2:CreateImage",
+        "ec2:CreateTags"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/spill:owner": [
+            "ephemeral-ci",
+            "round"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2::image/*",
+        "arn:aws:ec2:us-west-2::snapshot/*"
+      ]
+    },
+    {
+      "Action": "ec2:TerminateInstances",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/spill:owner": "round"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ssm:SendCommand",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/spill:owner": "round"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
+    },
+    {
+      "Action": "ec2:DescribeSnapshots",
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": "ec2:DescribeInstanceStatus",
+      "Effect": "Allow",
+      "Resource": "*"
+    },
+    {
+      "Action": [
+        "s3:GetObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:DeleteObject*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging",
+        "s3:Abort*"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "${staging_bucket_arn}",
+        "${staging_bucket_arn}/*"
+      ]
+    },
+    {
+      "Action": "ssm:GetParameter",
+      "Effect": "Allow",
+      "Resource": "arn:aws:ssm:us-west-2::parameter/aws/service/canonical/ubuntu/server/26.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+    }
+  ],
+  "Version": "2012-10-17"
+}
