@@ -14,6 +14,13 @@
 # Reads only. Never destroys, never registers, never returns non-zero for a
 # guest that is simply broken: the caller is already failing and this must not
 # mask the original error.
+#
+# One exception: if the PVE API cannot be reached at all (curl transport error,
+# so PVAPI_STATUS is empty) it exits 75 with "guest-diag: FATAL - API
+# unreachable". Without that, every section prints empty and "could not be
+# read" looks like "nothing there" (law-absence-needs-a-positive-control). The
+# caller runs this under continue-on-error, so the original error is still not
+# masked.
 set -uo pipefail
 
 VMID="${1:-}"
@@ -32,6 +39,12 @@ CRED_FILE="${CRED_FILE:-/etc/gh-ephemeral-runner/token}"
 # agent/exec returns a pid, not output. The result has to be collected from
 # agent/exec-status, and it is not ready immediately — treating the pid as the
 # answer is why an earlier attempt at this returned nothing useful.
+_api_unreachable() {
+    printf 'guest-diag: FATAL - API unreachable (no HTTP response from %s:%s; check PVE_API_HOST, PVE_CA_CERT_FILE, network)\n' \
+        "${PVE_API_HOST:-localhost}" "${PVE_API_PORT:-8006}" >&2
+    exit 75
+}
+
 _guest() {
     local label="$1"; shift
     local args=() a pid i
@@ -39,6 +52,7 @@ _guest() {
 
     printf '\n===== %s =====\n' "$label"
     if ! pvapi POST "/nodes/${PVE_NODE}/qemu/${VMID}/agent/exec" "${args[@]}" >/dev/null; then
+        [ -n "${PVAPI_STATUS:-}" ] || _api_unreachable
         printf '(exec call failed: HTTP %s)\n' "${PVAPI_STATUS:-none}"
         return 0
     fi
@@ -47,7 +61,10 @@ _guest() {
     [ -n "$pid" ] || { printf '(no pid returned)\n'; return 0; }
 
     for i in $(seq 1 15); do
-        pvapi GET "/nodes/${PVE_NODE}/qemu/${VMID}/agent/exec-status?pid=${pid}" >/dev/null || break
+        pvapi GET "/nodes/${PVE_NODE}/qemu/${VMID}/agent/exec-status?pid=${pid}" >/dev/null || {
+            [ -n "${PVAPI_STATUS:-}" ] || _api_unreachable
+            break
+        }
         printf '%s' "$PVAPI_BODY" | python3 -c '
 import json, sys
 d = json.load(sys.stdin).get("data", {})
