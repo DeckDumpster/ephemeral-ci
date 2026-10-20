@@ -1,8 +1,8 @@
 # sp-ladgs measurement summary — the six runs, in one table
 # source:    derived from runs/batch-<tag>.log, runs/cpu-<tag>.samples and
 #            runs/suite-times-<tag>.tsv in this directory. Every figure here is
-#            recomputable from those files with analyse-samples.py and
-#            analyse-scaling.py, also in this directory.
+#            recomputable from those files with the analyse-samples.py and
+#            analyse-scaling.py scripts, since removed (no Python in this repo; see git history before the sp-z6he37 commit).
 # retrieved: 2026-09-24
 # guest:     Proxmox VM 9016 "spike-sp-ladgs-cpu" on node hypervisor, 16 GiB RAM held
 #            constant, vCPU varied. Harness DeckDumpster/spira @ dd345ae0, branch main,
