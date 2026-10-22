@@ -76,6 +76,29 @@ step 5 for this stack. The roles still hold `cloudformation:DescribeStacks` on
 the stack for consumers outside this repository (spira's round AMI build); drop
 that statement when those move.
 
+## Spira round-candidate ruleset (not Terraform-managed)
+
+The `github/` stack manages only ephemeral-ci, so the ruleset on
+`DeckDumpster/spira` that keeps the ami-build role's
+`spira-round-candidate/*` subject mintable by the harness alone is applied by
+hand (admin token). `<APP_ID>` is the Spira GitHub App's id
+(`gh api /orgs/DeckDumpster/installations` or the App settings page):
+
+```sh
+gh api -X POST repos/DeckDumpster/spira/rulesets --input - <<'JSON'
+{
+  "name": "spira-round-candidate: Spira App only",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["refs/heads/spira-round-candidate/*"], "exclude": []}},
+  "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}],
+  "bypass_actors": [{"actor_id": <APP_ID>, "actor_type": "Integration", "bypass_mode": "always"}]
+}
+JSON
+```
+
+Verify: a push to `spira-round-candidate/x` by a non-App identity is refused.
+
 ## Not managed
 
 - `WriterKey` (the backup writer's access key): Terraform cannot import an
