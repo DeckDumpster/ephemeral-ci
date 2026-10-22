@@ -101,6 +101,19 @@ run "oidc_trust_policies_pin_the_audience" {
     condition     = !strcontains(aws_iam_role.ami_build.assume_role_policy, "pull_request") && strcontains(aws_iam_role.ami_build.assume_role_policy, "ref:refs/heads/main")
     error_message = "the AMI build role is assumable from main only"
   }
+
+  assert {
+    condition     = strcontains(aws_iam_role.ami_build.assume_role_policy, "spira@1358347130:ref:refs/heads/spira-round-candidate/*")
+    error_message = "the AMI build role must trust spira's spira-round-candidate/* branches"
+  }
+
+  assert {
+    condition = length(regexall("spira@1358347130:ref:[^\"]*", aws_iam_role.ami_build.assume_role_policy)) == 2 && alltrue([
+      for m in regexall("spira@1358347130:ref:[^\"]*", aws_iam_role.ami_build.assume_role_policy) :
+      contains(["spira@1358347130:ref:refs/heads/main", "spira@1358347130:ref:refs/heads/spira-round-candidate/*"], m)
+    ])
+    error_message = "no spira ref other than main and spira-round-candidate/* may be trusted"
+  }
 }
 
 run "buckets_are_private" {
