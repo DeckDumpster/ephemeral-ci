@@ -702,6 +702,15 @@ else ok "--check accepts a present policy.json"; fi
 
 echo
 echo "the Nix podman's Quadlet generator (sp-mzreip):"
+if has '^[[:space:]]*check_awscli$' && has '^install_awscli \|\| exit 1$'; then ok "--check asserts aws --version and apply installs the CLI"
+else bad "--check asserts aws --version and apply installs the CLI" "check_awscli/install_awscli not wired"; fi
+_aws_fake="$(mktemp -d)"; printf '#!/bin/sh\necho aws-cli/2\n' > "$_aws_fake/aws"; chmod +x "$_aws_fake/aws"
+_aws_fn="$(sed -n '/^check_awscli()/,/^}/p' "$SUBSTRATE")"
+if SUBSTRATE_AWSCLI_BIN="$_aws_fake/aws" bash -c 'MISSING=(); lack(){ MISSING+=("$1"); }; AWSCLI_BIN=$SUBSTRATE_AWSCLI_BIN; '"$_aws_fn"'; check_awscli'; then ok "check_awscli passes when aws --version succeeds"
+else bad "check_awscli passes when aws --version succeeds" "reported missing"; fi
+if ! SUBSTRATE_AWSCLI_BIN="$_aws_fake/none" bash -c 'MISSING=(); lack(){ MISSING+=("$1"); }; AWSCLI_BIN=$SUBSTRATE_AWSCLI_BIN; '"$_aws_fn"'; check_awscli' 2>/dev/null; then ok "check_awscli fails when aws is absent"
+else bad "check_awscli fails when aws is absent" "passed with no aws"; fi
+rm -rf "$_aws_fake"
 if has '^[[:space:]]*check_quadlet$'; then ok "--check verifies a Quadlet unit materialises"
 else bad "--check verifies a Quadlet unit materialises" "check_quadlet not in run_checks"; fi
 if has 'ln -sfn "\$_gen_src" "\$GENERATOR_DIR/podman-user-generator"'; then ok "install links the env's generator where systemd looks"
