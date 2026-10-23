@@ -210,7 +210,41 @@ PODMAN_PKGS=(uidmap fuse3)
 BUILD_PKGS=(build-essential pkg-config)
 
 # The runner itself and the scripts every consumer's CI calls directly.
-BASE_PKGS=(curl ca-certificates jq)
+BASE_PKGS=(curl ca-certificates jq unzip)
+
+# THE AWS CLI IS GENERAL PURPOSE. dumpstar's realenv VMs boot this same AMI and their
+# start-up script calls `aws` (sp-a71gkq: "aws: command not found", exit 127). The official
+# v2 bundle, pinned and sha256-checked per architecture; bump version and both sums together.
+# AWSCLI_BIN is overridable for the unit tests.
+AWSCLI_VERSION=2.31.0
+AWSCLI_SHA256_x86_64=f5fbb3304307ce008756356fadf7855d377b4342da9911728669265ec1ec36dc
+AWSCLI_SHA256_aarch64=daec73b304ffafa595172a6a598a85bd92bde145c25acf97270d44430e42bcd6
+AWSCLI_BIN="${SUBSTRATE_AWSCLI_BIN:-/usr/local/bin/aws}"
+
+check_awscli() {
+    "$AWSCLI_BIN" --version >/dev/null 2>&1 && return 0
+    lack "$AWSCLI_BIN (aws --version succeeding)" "realenv VMs boot this image and call aws; without it they die 'aws: command not found'"
+    return 1
+}
+
+install_awscli() {
+    check_awscli 2>/dev/null && return 0
+    local arch want dir
+    arch="$(uname -m)"
+    case "$arch" in x86_64|aarch64) ;; *) note "no pinned AWS CLI for $arch"; return 1 ;; esac
+    want="AWSCLI_SHA256_$arch"; want="${!want}"
+    dir="$(mktemp -d)" || return 1
+    note "installing AWS CLI ${AWSCLI_VERSION} (${arch})"
+    if curl -fsSL -o "$dir/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-${arch}-${AWSCLI_VERSION}.zip" \
+       && [ "$(sha256sum "$dir/awscli.zip" | cut -d' ' -f1)" = "$want" ] \
+       && unzip -q "$dir/awscli.zip" -d "$dir" \
+       && $SUDO "$dir/aws/install" --update --bin-dir "$(dirname "$AWSCLI_BIN")" --install-dir /usr/local/aws-cli; then
+        rm -rf "$dir"; return 0
+    fi
+    rm -rf "$dir"
+    note "AWS CLI install failed (download, checksum or install)"
+    return 1
+}
 
 # The podman major.minor every runner image must carry -- the Proxmox template
 # and the EC2 spill AMI alike. A job that spills must not meet a different
@@ -596,6 +630,7 @@ run_checks() {
     check_sudoers
     check_podman_run
     check_quadlet
+    check_awscli
     check_apt_proxy
     check_tmp_backing
     check_mem_size
@@ -716,6 +751,8 @@ if ! check_containers_policy 2>/dev/null; then
         && policy_content | $SUDO tee "$POLICY_FILE" >/dev/null \
         || note "could not write ${POLICY_FILE}"
 fi
+
+install_awscli || exit 1
 
 # Re-check and report. A partial apply is a failure here rather than a surprise
 # inside a consumer's job on a VM that no longer exists.
