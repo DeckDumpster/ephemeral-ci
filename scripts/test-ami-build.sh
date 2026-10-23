@@ -494,7 +494,9 @@ cat > "${_sd}/aws" << 'STUB'
 case "$1 $2" in
     "sts get-caller-identity") printf '189923011121' ;;
     "ec2 describe-images")
-        printf '%s' '[{"id":"ami-passed","passed":true,"snaps":["snap-passed"]},{"id":"ami-u1","passed":false,"snaps":["snap-u1"]},{"id":"ami-u2","passed":false,"snaps":["snap-u2"]},{"id":"ami-u3","passed":false,"snaps":["snap-u3"]}]' ;;
+        printf '%s' '{"Images":[{"ImageId":"ami-passed","CreationDate":"2026-01-01T00:00:00Z","Tags":[{"Key":"spill:probe","Value":"passed"}],"BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-passed","VolumeSize":64}}]},{"ImageId":"ami-u1","CreationDate":"2026-01-02T00:00:00Z","BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-u1","VolumeSize":64}}]},{"ImageId":"ami-u2","CreationDate":"2026-01-03T00:00:00Z","BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-u2","VolumeSize":64}}]},{"ImageId":"ami-u3","CreationDate":"2026-01-04T00:00:00Z","BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-u3","VolumeSize":64}}]}]}' ;;
+    "ec2 describe-instances") printf '{"Reservations":[]}' ;;
+    "ec2 describe-launch-templates") printf '{"LaunchTemplates":[]}' ;;
     "ec2 deregister-image"|"ec2 delete-snapshot") printf '%s\n' "$*" >> "$STUB_CALLS" ;;
 esac
 exit 0
@@ -547,7 +549,9 @@ cat > "${_sd}/aws" << STUB
 case "\$1 \$2" in
     "sts get-caller-identity") printf '189923011121' ;;
     "ec2 describe-images")
-        printf '%s' '[{"id":"ami-v1","sha":"${_v1sha}","passed":true,"snaps":["snap-v1"]},{"id":"ami-m1","sha":"m1","passed":true,"snaps":["snap-m1"]},{"id":"ami-m2","sha":"m2","passed":true,"snaps":["snap-m2"]},{"id":"ami-m3","sha":"m3","passed":true,"snaps":["snap-m3"]}]' ;;
+        printf '%s' '{"Images":[{"ImageId":"ami-v1","CreationDate":"2026-01-01","Tags":[{"Key":"substrate-sha","Value":"${_v1sha}"},{"Key":"spill:probe","Value":"passed"}],"BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-v1","VolumeSize":64}}]},{"ImageId":"ami-m1","CreationDate":"2026-01-02","Tags":[{"Key":"substrate-sha","Value":"m1"},{"Key":"spill:probe","Value":"passed"}],"BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-m1","VolumeSize":64}}]},{"ImageId":"ami-m2","CreationDate":"2026-01-03","Tags":[{"Key":"substrate-sha","Value":"m2"},{"Key":"spill:probe","Value":"passed"}],"BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-m2","VolumeSize":64}}]},{"ImageId":"ami-m3","CreationDate":"2026-01-04","Tags":[{"Key":"substrate-sha","Value":"m3"},{"Key":"spill:probe","Value":"passed"}],"BlockDeviceMappings":[{"Ebs":{"SnapshotId":"snap-m3","VolumeSize":64}}]}]}' ;;
+    "ec2 describe-instances") printf '{"Reservations":[]}' ;;
+    "ec2 describe-launch-templates") printf '{"LaunchTemplates":[]}' ;;
     "ec2 deregister-image"|"ec2 delete-snapshot") printf '%s\n' "\$*" >> "\$STUB_CALLS" ;;
 esac
 exit 0
