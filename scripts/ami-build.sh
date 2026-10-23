@@ -678,6 +678,20 @@ prune_amis() {
     bash "${SCRIPT_DIR}/ami-prune.sh" "${args[@]}"
 }
 
+# The AMI is the build's deliverable; pruning is housekeeping. A prune failure
+# after a successful build is named loudly but never fails the build (sp-mlqbqr).
+prune_after_build() {
+    if ! prune_amis; then
+        note "WARNING: ami-prune failed; the new AMI is published, nothing was pruned"
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            printf 'AMI prune FAILED (build succeeded; new AMI is available): see the ami-prune log lines\n' \
+                >> "$GITHUB_STEP_SUMMARY" || true
+        fi
+        printf '::warning::ami-prune failed; the AMI build itself succeeded\n'
+    fi
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # terminate_builder
 # ---------------------------------------------------------------------------
@@ -688,6 +702,9 @@ terminate_builder() {
         --instance-ids "$instance_id" \
         --region "$REGION" >/dev/null || true
 }
+
+# Sourced (by tests) for its functions only.
+[ "${BASH_SOURCE[0]}" != "$0" ] && return 0
 
 # ---------------------------------------------------------------------------
 # Main
@@ -751,7 +768,7 @@ terminate_builder "$instance_id"
 # Disable the failure-cleanup trap now that we have terminated successfully.
 trap - EXIT
 
-prune_amis
+prune_after_build
 
 note "done -- $new_ami ($ami_name)"
 printf '%s\n' "$new_ami"
