@@ -96,7 +96,7 @@ while IFS= read -r row; do
     gib="$(jq '[.snaps[].gib] | add // 0' <<<"$row")"
     snaps="$(jq -r '.snaps[].id' <<<"$row")"
     if [ "$DRY_RUN" -eq 1 ]; then
-        note "[dry-run] would deregister $ami and delete $(echo $snaps) (${gib} GiB)"
+        note "[dry-run] would deregister $ami and delete $(tr '\n' ' ' <<<"$snaps") (${gib} GiB)"
     else
         note "deregistering $ami"
         aws ec2 deregister-image --image-id "$ami" --region "$REGION" >/dev/null
