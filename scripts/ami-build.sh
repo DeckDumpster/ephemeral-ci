@@ -37,7 +37,7 @@
 #     never served by an AMI built before it)
 #   Name=ephemeral-ci-runner
 #
-# --retain N (default 3): keep the N newest ephemeral-ci-runner AMIs;
+# --retain N (default 2: current + rollback): keep the N newest AMIs;
 #   deregister older ones together with their backing snapshots. Only AMIs
 #   tagged spill:owner=ephemeral-ci are considered.
 #
@@ -63,7 +63,7 @@ TAG_VALUE="ephemeral-ci"
 AMI_NAME_PREFIX="ephemeral-ci-runner"
 BUILDER_TYPE="c7i.2xlarge"
 ROOT_DISK_GIB=64
-RETAIN_COUNT=3
+RETAIN_COUNT=2
 # Budget for build instance to register with SSM after launch.
 SSM_WAIT_SECONDS=300
 # Budget for template-substrate.sh + runner install to complete.
@@ -662,68 +662,16 @@ create_ami() {
 }
 
 # ---------------------------------------------------------------------------
-# prune_amis: keep newest RETAIN_COUNT probe-passed and newest RETAIN_COUNT
-# unproven AMIs; deregister older ones + their snapshots
+# prune_amis: delegates to ami-prune.sh (keeps newest RETAIN_COUNT, the newest
+# probe-passed, published-tag and in-use AMIs; removes the rest + snapshots)
 #
 # Only touches AMIs tagged spill:owner=ephemeral-ci and named
 # ephemeral-ci-runner-*. AMIs lacking that tag are never touched.
 # ---------------------------------------------------------------------------
 prune_amis() {
-    note "pruning old AMIs (keeping newest ${RETAIN_COUNT})"
-
-    local amis_json
-    amis_json="$(aws ec2 describe-images \
-        --owners self \
-        --filters \
-            "Name=tag:${TAG_KEY},Values=${TAG_VALUE}" \
-            "Name=name,Values=${AMI_NAME_PREFIX}-*" \
-        --query 'sort_by(Images, &CreationDate)[*].{id:ImageId,sha:(Tags[?Key==`substrate-sha`]|[0].Value),passed:(Tags[?Key==`spill:probe`]|[0].Value==`passed`),snaps:BlockDeviceMappings[].Ebs.SnapshotId}' \
-        --output json \
-        --region "$REGION" 2>/dev/null)"
-
-    local total
-    total="$(printf '%s' "$amis_json" | jq 'length')"
-    note "found $total tagged AMI(s)"
-
-    # Probe-passed and unproven images are counted separately: each keeps its
-    # newest RETAIN_COUNT, so a run of newer unproven builds can never push the
-    # last probe-passed AMI (the one provision.sh selects) out of retention.
-    # The image matching a published tag's recipe is the one consumers can use
-    # (provision.sh at v1 refuses any other); it is never pruned and does not
-    # take a slot from the newest-N (sp-h8p1u2).
-    local protected_shas protected_json
-    protected_shas="$(published_tag_shas "${AMI_BUILD_REPO:-$SCRIPT_DIR/..}")"
-    protected_json="$(printf '%s\n' "$protected_shas" | jq -R -s 'split("\n") | map(select(length > 0))')"
-    note "protecting AMIs for published-tag recipes: $(printf '%s' "$protected_shas" | tr '\n' ' ')"
-
-    local remove_list
-    remove_list="$(printf '%s' "$amis_json" \
-        | jq -r --argjson n "$RETAIN_COUNT" --argjson prot "$protected_json" '
-            def stale: if length > $n then .[:length - $n] else [] end;
-            map(select((.sha // "") as $s | ($prot | index($s)) == null)) as $rest
-            | (($rest | map(select(.passed == true)) | stale) + ($rest | map(select(.passed != true)) | stale))
-            | .[] | .id, (.snaps // [] | .[] | select(. != null) | "snap:\(.)")')"
-
-    if [ -z "$remove_list" ]; then
-        note "no pruning needed (within retain $RETAIN_COUNT per probe status)"
-        return 0
-    fi
-
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        if [[ "$line" == snap:* ]]; then
-            snap_id="${line#snap:}"
-            note "deleting snapshot $snap_id"
-            aws_w ec2 delete-snapshot \
-                --snapshot-id "$snap_id" \
-                --region "$REGION" >/dev/null
-        else
-            note "deregistering AMI $line"
-            aws_w ec2 deregister-image \
-                --image-id "$line" \
-                --region "$REGION" >/dev/null
-        fi
-    done <<<"$remove_list"
+    local args=(--keep "$RETAIN_COUNT")
+    [ "$DRY_RUN" -eq 1 ] && args+=(--dry-run)
+    bash "${SCRIPT_DIR}/ami-prune.sh" "${args[@]}"
 }
 
 # ---------------------------------------------------------------------------
