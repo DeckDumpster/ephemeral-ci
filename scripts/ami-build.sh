@@ -670,7 +670,11 @@ create_ami() {
 # ---------------------------------------------------------------------------
 prune_amis() {
     local args=(--keep "$RETAIN_COUNT")
-    [ "$DRY_RUN" -eq 1 ] && args+=(--dry-run)
+    if [ "$DRY_RUN" -eq 1 ]; then
+        # A dry run may have no credentials; the preview must not fail the build.
+        bash "${SCRIPT_DIR}/ami-prune.sh" "${args[@]}" --dry-run || note "prune preview unavailable (dry-run)"
+        return 0
+    fi
     bash "${SCRIPT_DIR}/ami-prune.sh" "${args[@]}"
 }
 
