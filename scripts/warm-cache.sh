@@ -74,7 +74,10 @@ bake() {
         git clone --quiet --depth 1 --branch "$ref" "$repo" "$work/$name"
         (
             cd "$work/$name"
-            export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+            # The pinned runner-env podman, as jobs have it: without it a consumer's
+            # runner-deps sees no podman and apt-installs the distro one, whose
+            # containers-common stopped configuring on the 26.04 archive (sp-3qmmqp).
+            export PATH="/opt/ephemeral-ci/runner-env/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
             while IFS=$'\t' read -r k v; do
                 [ -n "$k" ] || continue
                 export "$k=$(eval "printf '%s' \"$v\"")"

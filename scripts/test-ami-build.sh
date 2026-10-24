@@ -579,6 +579,24 @@ else
 fi
 rm -rf "$_sd" "$_calls" "$_repo"
 
+# 0i2. the base AMI is pinned in base-ami.env, never looked up as latest (sp-3qmmqp), and the
+# warm bake puts the pinned runner-env podman on PATH so runner-deps never apt-installs one.
+if (. "${SCRIPT_DIR}/base-ami.env"; [[ "$BASE_AMI_ID" =~ ^ami-[0-9a-f]+$ ]]); then
+    ok "base-ami.env pins a base AMI id"
+else
+    ko "base-ami.env has no valid BASE_AMI_ID"
+fi
+if grep -q 'ubuntu-resolute-26.04-amd64-server-\*' "$BOOTSTRAP"; then
+    ko "ami-build.sh still resolves the latest base AMI"
+else
+    ok "ami-build.sh has no latest-base lookup"
+fi
+if grep -q 'PATH="/opt/ephemeral-ci/runner-env/bin:' "${SCRIPT_DIR}/warm-cache.sh"; then
+    ok "warm-cache.sh puts the runner-env podman first on PATH"
+else
+    ko "warm-cache.sh bake PATH lacks the runner-env bin"
+fi
+
 # 0j. the runner is pinned and its tarball checksum-verified (sp-rvbce3): no "latest" lookup,
 # and a tarball whose sha256 differs from the pin is refused.
 (. "$BOOTSTRAP"; true)

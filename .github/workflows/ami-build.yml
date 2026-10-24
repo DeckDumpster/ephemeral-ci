@@ -15,6 +15,7 @@ on:
     paths:
       - scripts/template-substrate.sh
       - scripts/ami-build.sh
+      - scripts/base-ami.env
       - scripts/ami-wait.sh
       - scripts/runner-env.sh
       - nix/flake.nix
@@ -23,7 +24,7 @@ on:
       - warm/consumers.json
       - .github/workflows/ami-build.yml
   schedule:
-    - cron: '17 6 * * 1'   # weekly: picks up the latest base image
+    - cron: '17 6 * * 1'   # weekly: rebuilds on the pinned base image (scripts/base-ami.env)
   workflow_dispatch:
 
 # A second build queues rather than cancelling: cancelling mid-build would
