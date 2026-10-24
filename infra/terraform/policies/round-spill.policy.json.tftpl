@@ -71,6 +71,22 @@
       "Resource": "arn:aws:ec2:us-west-2:189923011121:instance/*"
     },
     {
+      "Action": [
+        "ec2:DeregisterImage",
+        "ec2:DeleteSnapshot"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/spill:owner": "round"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:ec2:us-west-2::image/*",
+        "arn:aws:ec2:us-west-2::snapshot/*"
+      ]
+    },
+    {
       "Action": "ec2:Describe*",
       "Effect": "Allow",
       "Resource": "*"
