@@ -581,7 +581,7 @@ rm -rf "$_sd" "$_calls" "$_repo"
 
 # 0i2. the base AMI is pinned in base-ami.env, never looked up as latest (sp-3qmmqp), and the
 # warm bake puts the pinned runner-env podman on PATH so runner-deps never apt-installs one.
-if (. "${SCRIPT_DIR}/base-ami.env"; [[ "$BASE_AMI_ID" =~ ^ami-[0-9a-f]+$ ]]); then
+if (BASE_AMI_ID=""; . "${SCRIPT_DIR}/base-ami.env"; [[ "$BASE_AMI_ID" =~ ^ami-[0-9a-f]+$ ]]); then
     ok "base-ami.env pins a base AMI id"
 else
     ko "base-ami.env has no valid BASE_AMI_ID"
