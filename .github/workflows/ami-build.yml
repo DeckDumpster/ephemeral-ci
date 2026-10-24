@@ -23,7 +23,7 @@ on:
       - warm/consumers.json
       - .github/workflows/ami-build.yml
   schedule:
-    - cron: '17 6 * * 1'   # weekly: picks up the latest base image and runner release
+    - cron: '17 6 * * 1'   # weekly: picks up the latest base image
   workflow_dispatch:
 
 # A second build queues rather than cancelling: cancelling mid-build would
