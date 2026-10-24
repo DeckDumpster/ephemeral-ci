@@ -59,6 +59,18 @@ grep -q 'c1 deadbeef' "$T/warm/BAKED" && grep -q "lock-sha $c" "$T/warm/BAKED" &
 sed -i 's/echo two/false #/' "$T/m.json"
 bash "$WARM" --manifest "$T/m.json" bake >/dev/null 2>&1 && ko "failing step must fail the bake" || ok "failing step fails the bake"
 
+# optional steps: a failure warns, skips later optional steps, and never fails the bake.
+cat > "$T/m2.json" <<EOF2
+{"dir":"$T/warm2","consumers":[{"name":"c1","repo":"https://github.com/o/c1.git","ref":"main",
+ "lockfiles":["Cargo.lock"],
+ "steps":["echo a >> $T/log2",{"run":"false","optional":true},{"run":"echo b >> $T/log2","optional":true},"echo c >> $T/log2"]}]}
+EOF2
+bash "$WARM" --manifest "$T/m2.json" bake >"$T/bake2.out" 2>&1 && ok "optional step failure does not fail the bake" || ko "optional step failure does not fail the bake: $(tail -3 "$T/bake2.out")"
+[ "$(cat "$T/log2")" = "$(printf 'a\nc')" ] && ok "later optional steps skipped, mandatory ones still run" || ko "optional skip semantics: $(cat "$T/log2" 2>&1)"
+grep -q 'WARNING' "$T/bake2.out" && ok "optional failure is warned" || ko "optional failure is warned"
+sed -i 's/"echo c/"false #/' "$T/m2.json"
+bash "$WARM" --manifest "$T/m2.json" bake >/dev/null 2>&1 && ko "mandatory step after optional failure must fail" || ok "mandatory step still fails the bake"
+
 # check-warm-fresh.sh: fresh / stale / cannot-tell, against an aws stub returning the tag.
 cat > "$T/bin/aws" <<'STUB'
 #!/usr/bin/env bash

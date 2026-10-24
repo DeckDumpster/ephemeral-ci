@@ -9,9 +9,9 @@
       "env": {"CARGO_TARGET_DIR": "$HOME/.cache/pkdump-builds"},
       "steps": [
         "bash deploy/runner-deps.sh",
-        "cargo fetch --locked",
-        "cargo test --workspace --no-run --locked",
-        "podman build -f Containerfile -t localhost/ephemeral-ci-warm/pokedumpster:warm .",
+        {"run": "cargo fetch --locked", "optional": true},
+        {"run": "cargo test --workspace --no-run --locked", "optional": true},
+        {"run": "podman build -f Containerfile -t localhost/ephemeral-ci-warm/pokedumpster:warm .", "optional": true},
         "npm ci --prefix frontend"
       ]
     },
@@ -23,9 +23,9 @@
       "env": {"CARGO_TARGET_DIR": "$HOME/.cache/dumpstar-builds"},
       "steps": [
         "bash deploy/runner-deps.sh",
-        "cargo fetch --locked",
-        "cargo test --workspace --no-run --locked",
-        "podman build -f Containerfile -t localhost/ephemeral-ci-warm/dumpstar:warm .",
+        {"run": "cargo fetch --locked", "optional": true},
+        {"run": "cargo test --workspace --no-run --locked", "optional": true},
+        {"run": "podman build -f Containerfile -t localhost/ephemeral-ci-warm/dumpstar:warm .", "optional": true},
         "npm ci --prefix frontend"
       ]
     }

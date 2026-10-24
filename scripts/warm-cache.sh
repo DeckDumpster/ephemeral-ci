@@ -15,7 +15,11 @@
 # substrate (docs/TEMPLATE.md): the bake runs the consumer's own scripts at build time.
 #
 # FAIL CLOSED. A step that fails fails the bake and the AMI build; a half-warm image that
-# looks warm is the failure this exists to prevent.
+# looks warm is the failure this exists to prevent. The one exception is a step declared
+# {"run": ..., "optional": true}: it needs something the AMI builder cannot always reach (the
+# tailnet Cargo registry, sp-7c7zgx). Its failure warns, and the consumer's remaining optional
+# steps are skipped, so a registry outage never stops an AMI build; what was not warmed is
+# fetched at job time on the tailnet-joined runner. Mandatory steps still fail the bake.
 #
 # REFRESH. lock-sha hashes the manifest and every lockfile the manifest names, as they are at
 # each consumer's ref. ami-build.sh tags it on the image as warm-lock-sha; the warm-refresh
@@ -75,12 +79,23 @@ bake() {
                 [ -n "$k" ] || continue
                 export "$k=$(eval "printf '%s' \"$v\"")"
             done < <(jq -r ".consumers[$i].env // {} | to_entries[] | [.key, .value] | @tsv" "$MANIFEST")
-            while IFS= read -r s; do
+            skipped=""
+            while IFS=$'\t' read -r opt s; do
+                if [ "$opt" = true ] && [ -n "$skipped" ]; then
+                    note "[$name] skipped (an earlier optional step failed): $s"
+                    continue
+                fi
                 note "[$name] $s"
                 s0=$SECONDS
-                bash -c "$s" || die "[$name] step failed: $s"
-                note "[$name] took $((SECONDS - s0))s"
-            done < <(jq -r ".consumers[$i].steps[]" "$MANIFEST")
+                if bash -c "$s"; then
+                    note "[$name] took $((SECONDS - s0))s"
+                elif [ "$opt" = true ]; then
+                    note "WARNING [$name] optional step failed, image stays cold for it: $s"
+                    skipped=1
+                else
+                    die "[$name] step failed: $s"
+                fi
+            done < <(jq -r ".consumers[$i].steps[] | if type == \"string\" then [\"false\", .] else [(.optional // false | tostring), .run] end | @tsv" "$MANIFEST")
         )
         e="$(git -C "$work/$name" rev-parse HEAD)"
         printf '%s %s\n' "$name" "$e" >> "$work/baked"
