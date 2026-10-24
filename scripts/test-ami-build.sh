@@ -596,6 +596,12 @@ if grep -q 'PATH="/opt/ephemeral-ci/runner-env/bin:' "${SCRIPT_DIR}/warm-cache.s
 else
     ko "warm-cache.sh bake PATH lacks the runner-env bin"
 fi
+# a bump of the pin must rebuild the AMI, so the build workflow triggers on base-ami.env.
+if grep -q '^      - scripts/base-ami.env$' "${SCRIPT_DIR}/../.github/workflows/ami-build.yml"; then
+    ok "ami-build.yml triggers on a base-ami.env change"
+else
+    ko "ami-build.yml does not trigger on base-ami.env"
+fi
 
 # 0j. the runner is pinned and its tarball checksum-verified (sp-rvbce3): no "latest" lookup,
 # and a tarball whose sha256 differs from the pin is refused.
