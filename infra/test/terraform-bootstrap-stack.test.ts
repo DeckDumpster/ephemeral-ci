@@ -108,7 +108,7 @@ test('access keys are allowed only on tagged users, with a condition key CreateA
     );
     expect(st.Condition).toEqual({ StringEquals: { 'aws:ResourceTag/terraform-deploy-boundary': 'true' } });
     expect(JSON.stringify(st.Condition)).not.toMatch(/PermissionsBoundary/);
-    for (const r of ([] as any[]).concat(st.Resource)) expect(JSON.stringify(r)).toMatch(/:user\/(spira|cubby|pkdump|dumpstar|ephemeral-ci|EphemeralCiSpill|EphemeralCiBackup)-\*/);
+    for (const r of ([] as any[]).concat(st.Resource)) expect(JSON.stringify(r)).toMatch(/:user\/(spira|cubby|pkdump|dumpstar|identity|ephemeral-ci|EphemeralCiSpill|EphemeralCiBackup)-\*/);
   }
 });
 
@@ -168,7 +168,7 @@ test('role policy is least privilege: no admin, no unscoped iam or secrets', () 
   template.resourceCountIs('AWS::IAM::ManagedPolicy', 3);
 });
 
-test('name patterns cover exactly spira, cubby, pkdump and dumpstar, nothing broader', () => {
+test('name patterns cover exactly spira, cubby, pkdump, dumpstar and identity, nothing broader', () => {
   const res = (sid: string): string[] => {
     const st = stmts().find((x) => x.Sid === sid)!;
     return ([] as unknown[]).concat(st.Resource).map((r) => JSON.stringify(r));
@@ -179,19 +179,19 @@ test('name patterns cover exactly spira, cubby, pkdump and dumpstar, nothing bro
       .replace(/\{"Ref":"AWS::AccountId"\}/g, '189923011121')
       .replace(/[\\{}\[\]"]|Fn::Join|:?,?(?=arn)/g, '');
   const flat = (sid: string) => res(sid).map((r) => {
-    const m = r.match(/(?:s3:::|\/|secret:)((?:spira|cubby|pkdump|dumpstar)[-/]\*(?:\/\*)?)"?\]?\]?\}?$/);
+    const m = r.match(/(?:s3:::|\/|secret:)((?:spira|cubby|pkdump|dumpstar|identity)[-/]\*(?:\/\*)?)"?\]?\]?\}?$/);
     return m ? m[1] : `UNMATCHED ${strip(r)}`;
   });
   expect(flat('PrefixedBuckets').sort()).toEqual(
-    ['cubby-*', 'cubby-*/*', 'dumpstar-*', 'dumpstar-*/*', 'pkdump-*', 'pkdump-*/*', 'spira-*', 'spira-*/*'].sort(),
+    ['cubby-*', 'cubby-*/*', 'dumpstar-*', 'dumpstar-*/*', 'identity-*', 'identity-*/*', 'pkdump-*', 'pkdump-*/*', 'spira-*', 'spira-*/*'].sort(),
   );
-  expect(flat('PrefixedSecrets').sort()).toEqual(['cubby/*', 'dumpstar/*', 'pkdump/*', 'spira/*']);
+  expect(flat('PrefixedSecrets').sort()).toEqual(['cubby/*', 'dumpstar/*', 'identity/*', 'pkdump/*', 'spira/*']);
   for (const sid of ['PrefixedIamRead', 'PrefixedIamPrincipalWrite', 'PrefixedIamPolicyWrite']) {
     const r = flat(sid);
-    expect(r.every((x) => ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*'].includes(x))).toBe(true);
-    for (const p of ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*']) expect(r.filter((x) => x === p)).toHaveLength(r.length / 4);
+    expect(r.every((x) => ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*', 'identity-*'].includes(x))).toBe(true);
+    for (const p of ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*', 'identity-*']) expect(r.filter((x) => x === p)).toHaveLength(r.length / 5);
   }
-  expect(flat('PrefixedIamPrincipalWrite')).toHaveLength(8);
+  expect(flat('PrefixedIamPrincipalWrite')).toHaveLength(10);
 });
 
 test('outputs: bucket name, region, role arn', () => {
