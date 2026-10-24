@@ -579,6 +579,34 @@ else
 fi
 rm -rf "$_sd" "$_calls" "$_repo"
 
+# 0j. the runner is pinned and its tarball checksum-verified (sp-rvbce3): no "latest" lookup,
+# and a tarball whose sha256 differs from the pin is refused.
+(. "$BOOTSTRAP"; true)
+if grep -q 'releases/latest' "$BOOTSTRAP"; then
+    ko "ami-build.sh still looks up the latest actions/runner release"
+else
+    ok "ami-build.sh has no latest-runner lookup"
+fi
+_rd="$(mktemp -d)"
+printf 'runner tarball' > "${_rd}/t.tgz"
+_good="$(sha256sum "${_rd}/t.tgz" | cut -d' ' -f1)"
+if (. "$BOOTSTRAP"; verify_runner_tarball "${_rd}/t.tgz" "$_good") 2>/dev/null; then
+    ok "verify_runner_tarball: accepts a tarball matching the pin"
+else
+    ko "verify_runner_tarball: rejected a matching tarball"
+fi
+if (. "$BOOTSTRAP"; verify_runner_tarball "${_rd}/t.tgz" "$(printf '0%.0s' {1..64})") 2>/dev/null; then
+    ko "verify_runner_tarball: accepted a tarball differing from the pin"
+else
+    ok "verify_runner_tarball: refuses a tarball differing from the pin"
+fi
+if (. "$BOOTSTRAP"; [[ "$RUNNER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$RUNNER_SHA256" =~ ^[0-9a-f]{64}$ ]]); then
+    ok "runner pin is a version plus a 64-hex sha256"
+else
+    ko "runner pin malformed"
+fi
+rm -rf "$_rd"
+
 # ---------------------------------------------------------------------------
 # Online tests (sections 1-6): skip when not authenticated to account 189923011121
 # ---------------------------------------------------------------------------

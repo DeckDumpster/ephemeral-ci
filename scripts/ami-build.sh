@@ -71,6 +71,25 @@ BUILD_WAIT_SECONDS=600
 # Budget for scripts/warm-cache.sh: a cold release compile alone is ~9.5 min (run 420).
 WARM_WAIT_SECONDS=3600
 
+# GitHub Actions runner, pinned. The build downloads exactly this release and refuses a
+# tarball whose sha256 differs (sp-rvbce3): a "latest" lookup from the build instance hit
+# GitHub's unauthenticated 60/hour per-IP limit and failed the build. The sha256 is the
+# digest GitHub publishes for the linux-x64 asset. Bump both together, deliberately; a
+# change here also changes the AMI inputs hash, so no older AMI is served for it.
+RUNNER_VERSION="2.338.1"
+RUNNER_SHA256="08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37"
+
+# verify_runner_tarball <file> <sha256>: succeed only if the file hashes to the pin.
+# Shipped verbatim to the build instance (declare -f), so the test exercises the same code.
+verify_runner_tarball() {
+    local file="$1" want="$2" got
+    got="$(sha256sum "$file" | cut -d' ' -f1)"
+    if [ "$got" != "$want" ]; then
+        printf 'ami-build.sh: runner tarball sha256 %s does not match pin %s\n' "$got" "$want" >&2
+        return 1
+    fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
@@ -283,16 +302,10 @@ apply_substrate() {
 
     # APT_PROXY_URL is optional: unset builds from the public mirrors.
 
-    # Fetch the latest Actions runner release tag.
-    local runner_version
-    runner_version="$(curl -sf \
-        'https://api.github.com/repos/actions/runner/releases/latest' \
-        | jq -r '.tag_name | ltrimstr("v")')" || runner_version=""
-    if [ -z "$runner_version" ]; then
-        printf 'ami-build.sh: could not fetch latest actions/runner version\n' >&2
-        return 1
-    fi
-    note "runner version: $runner_version"
+    local runner_version="$RUNNER_VERSION"
+    note "runner version: $runner_version (pinned)"
+    local verify_fn
+    verify_fn="$(declare -f verify_runner_tarball)"
 
     # Encode scripts as base64 (single line, no wrapping).
     local substrate_b64 start_runner_b64 runner_env_b64 flake_b64
@@ -347,9 +360,11 @@ rm -rf \$CI_SRC
 # ---- GitHub Actions runner tarball ----
 RUNNER_DIR=/home/runner/actions-runner
 sudo -u runner mkdir -p "\$RUNNER_DIR"
+${verify_fn}
 sudo -u runner curl -fsSL \
     "https://github.com/actions/runner/releases/download/v${runner_version}/actions-runner-linux-x64-${runner_version}.tar.gz" \
     -o "/tmp/actions-runner.tar.gz"
+verify_runner_tarball /tmp/actions-runner.tar.gz "${RUNNER_SHA256}"
 sudo -u runner tar -xzf "/tmp/actions-runner.tar.gz" -C "\$RUNNER_DIR"
 rm -f "/tmp/actions-runner.tar.gz"
 
