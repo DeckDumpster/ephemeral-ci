@@ -162,29 +162,23 @@ load_stack_outputs() {
 }
 
 # ---------------------------------------------------------------------------
-# find_base_ami: latest Ubuntu 26.04 LTS (Resolute) amd64 AMI from Canonical.
+# find_base_ami: the Ubuntu 26.04 LTS (Resolute) amd64 AMI pinned in
+# scripts/base-ami.env, never "latest" at build time (sp-3qmmqp). Bump it
+# deliberately: a latest lookup changes the image underneath an unchanged recipe.
 # 26.04, not 24.04: noble ships podman 4.9.3 and the Proxmox template runs 5.7,
 # so a spilled job failed tests (the rootless-netns split) a template job passes
 # (sp-2h5q0k). The series both must run is PODMAN_SERIES in template-substrate.sh.
 # ---------------------------------------------------------------------------
 find_base_ami() {
-    note "finding latest Ubuntu 26.04 LTS AMI"
-    local ami_id
-    ami_id="$(aws ec2 describe-images \
-        --owners 099720109477 \
-        --filters \
-            'Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-amd64-server-*' \
-            'Name=state,Values=available' \
-            'Name=architecture,Values=x86_64' \
-        --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
-        --output text \
-        --region "$REGION" 2>/dev/null)"
-    if [ -z "$ami_id" ] || [ "$ami_id" = "None" ]; then
-        printf 'ami-build.sh: no Ubuntu 26.04 AMI found in %s\n' "$REGION" >&2
+    local BASE_AMI_ID=""
+    # shellcheck source=base-ami.env
+    . "${SCRIPT_DIR}/base-ami.env" 2>/dev/null || true
+    if ! [[ "$BASE_AMI_ID" =~ ^ami-[0-9a-f]+$ ]]; then
+        printf 'ami-build.sh: scripts/base-ami.env has no BASE_AMI_ID; refusing to look up a latest base\n' >&2
         return 1
     fi
-    note "base AMI: $ami_id"
-    printf '%s' "$ami_id"
+    note "base AMI (pinned in base-ami.env): $BASE_AMI_ID"
+    printf '%s' "$BASE_AMI_ID"
 }
 
 # ---------------------------------------------------------------------------
