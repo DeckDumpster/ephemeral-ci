@@ -209,3 +209,25 @@ run "root_volume_leaves_the_verify_floor_free" {
     error_message = "root volume must be floor (60) + AMI used (25) + margin (15) = 100 GiB; see locals in spill.tf"
   }
 }
+
+run "testenv_resume_store_is_private_and_expires_in_seven_days" {
+  command = apply
+
+  assert {
+    condition     = aws_s3_bucket_public_access_block.testenv_resume.block_public_acls && aws_s3_bucket_public_access_block.testenv_resume.restrict_public_buckets
+    error_message = "the resume bucket must block public access"
+  }
+
+  assert {
+    condition     = one(aws_s3_bucket_lifecycle_configuration.testenv_resume.rule).expiration[0].days == 7 && one(one(aws_s3_bucket_lifecycle_configuration.testenv_resume.rule).filter).prefix == "resume/"
+    error_message = "resume/ objects must expire after seven days"
+  }
+
+  assert {
+    condition = alltrue([
+      for st in jsondecode(aws_iam_role_policy.instance_testenv_resume.policy).Statement :
+      alltrue([for r in flatten([st.Resource]) : endswith(r, "/resume/*") || st.Action == "s3:ListBucket"])
+    ])
+    error_message = "the instance role may touch only resume/ in the resume bucket"
+  }
+}

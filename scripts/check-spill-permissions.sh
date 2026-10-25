@@ -479,6 +479,48 @@ SIM_ROLE_ARN="$AMI_BUILD_ROLE_ARN" run_sim "ami build role: ssm:SendCommand (AWS
     -- \
     "arn:aws:ssm:${REGION}::document/AWS-RunShellScript")"
 
+# 21. testenv resume store (sp-d7ju06): the spill INSTANCE role may put/get/list
+#     under resume/ in the resume bucket and nothing outside it. The denied
+#     probes are expected denials: an "allowed" there is the failure.
+_RESUME_BUCKET="${TESTENV_RESUME_BUCKET:-spira-testenv-resume-${ACCOUNT}}"
+_RESUME_ARN="arn:aws:s3:::${_RESUME_BUCKET}"
+if [ -n "${INSTANCE_ROLE_ARN##*PLACEHOLDER}" ]; then
+    SIM_ROLE_ARN="$INSTANCE_ROLE_ARN" run_sim "instance role: s3 put/get on resume/" "$(SIM_ROLE_ARN="$INSTANCE_ROLE_ARN" _sim_json \
+        s3:PutObject \
+        s3:GetObject \
+        -- \
+        "${_RESUME_ARN}/resume/probe.json")"
+    SIM_ROLE_ARN="$INSTANCE_ROLE_ARN" run_sim "instance role: s3:ListBucket with prefix resume/" "$(SIM_ROLE_ARN="$INSTANCE_ROLE_ARN" _sim_json \
+        s3:ListBucket \
+        -- \
+        "$_RESUME_ARN" \
+        -- \
+        "s3:prefix|string|resume/probe")"
+    printf 'check-spill-permissions: [instance role: s3 outside resume/ must be DENIED]\n'
+    for _probe in \
+        "s3:PutObject|${_RESUME_ARN}/other/probe.json" \
+        "s3:GetObject|${_RESUME_ARN}/other/probe.json" \
+        "s3:DeleteObject|${_RESUME_ARN}/resume/probe.json" \
+        "s3:PutObject|arn:aws:s3:::${_RESUME_BUCKET}-other/resume/probe.json"; do
+        _pa="${_probe%%|*}"; _pr="${_probe#*|}"
+        if _po="$(aws iam simulate-principal-policy \
+                --cli-input-json "$(SIM_ROLE_ARN="$INSTANCE_ROLE_ARN" _sim_json "$_pa" -- "$_pr")" \
+                --query 'EvaluationResults[0].EvalDecision' --output text 2>&1)"; then
+            case "$_po" in
+                implicitDeny|explicitDeny) printf '  %-14s %s %s\n' "DENIED (ok)" "$_pa" "$_pr" ;;
+                *) printf '  %-14s %s %s\n' "ALLOWED" "$_pa" "$_pr"
+                   FAILED_ACTIONS+=("$_pa on $_pr (must be denied)") ;;
+            esac
+        else
+            printf '  ERROR: %s\n' "$_po"
+            ERRORED_GROUPS+=("instance role: denied probe $_pa")
+        fi
+    done
+    printf '\n'
+else
+    printf 'check-spill-permissions: [instance role resume probes skipped: instance role unknown]\n\n'
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 _exit=0

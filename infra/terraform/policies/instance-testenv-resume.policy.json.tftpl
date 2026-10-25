@@ -1,0 +1,25 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "${bucket_arn}/resume/*",
+      "Sid": "ResumeObjects"
+    },
+    {
+      "Action": "s3:ListBucket",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "resume/*"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "${bucket_arn}",
+      "Sid": "ResumeList"
+    }
+  ],
+  "Version": "2012-10-17"
+}
