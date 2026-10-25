@@ -87,8 +87,16 @@ than 8 hours.
 $0.40/hr; spot is about a third of that and is the default, falling back to
 on-demand when spot is refused. A spot reclaim mid-job ends that job red with no
 defect behind it (sp-vh7mju); re-run it. The default is one switch, the
-org-level Actions variable `SPILL_MARKET` (`spot` | `on-demand`), and a caller's
-explicit `spill-market:` input still wins:
+org-level Actions variable `SPILL_MARKET` (`spot` | `on-demand`). A composite action
+cannot read the `vars` context, so each caller workflow passes it in:
+
+```yaml
+- uses: DeckDumpster/ephemeral-ci/provision@v1
+  with:
+    spill-market: ${{ vars.SPILL_MARKET }}   # empty when unset, which means spot
+```
+
+Set the variable:
 
 ```
 gh variable set SPILL_MARKET --org DeckDumpster --body spot --visibility all
