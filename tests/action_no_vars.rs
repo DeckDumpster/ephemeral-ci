@@ -19,9 +19,15 @@ fn composite_actions_read_no_vars_or_secrets() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for dir in ["provision", "teardown", "warm"] {
         let p = root.join(dir).join("action.yml");
-        let Ok(text) = std::fs::read_to_string(&p) else { continue };
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
         let found = forbidden_contexts(&text);
-        assert!(found.is_empty(), "{} uses vars/secrets: {found:?}", p.display());
+        assert!(
+            found.is_empty(),
+            "{} uses vars/secrets: {found:?}",
+            p.display()
+        );
     }
 }
 

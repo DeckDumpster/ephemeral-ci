@@ -31,7 +31,10 @@ fn prune_refusal_after_build_leaves_the_build_successful() {
             "source {} && prune_after_build && echo BUILD-STEP-OK",
             script.display()
         ))
-        .env("PATH", format!("{}:{}", dir.display(), std::env::var("PATH").unwrap()))
+        .env(
+            "PATH",
+            format!("{}:{}", dir.display(), std::env::var("PATH").unwrap()),
+        )
         .env("PUBLISHED_TAGS", "")
         .output()
         .unwrap();

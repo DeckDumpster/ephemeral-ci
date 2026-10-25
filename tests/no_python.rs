@@ -31,7 +31,13 @@ fn detector_sees_a_tracked_py() {
     let dir = std::env::temp_dir().join(format!("no-python-control-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let git = |args: &[&str]| {
-        assert!(Command::new("git").arg("-C").arg(&dir).args(args).status().unwrap().success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
     };
     git(&["init", "-q"]);
     std::fs::write(dir.join("x.py"), "").unwrap();

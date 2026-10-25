@@ -59,14 +59,26 @@ impl Account {
         fs::write(&aws, STUB).unwrap();
         Command::new("chmod").arg("+x").arg(&aws).status().unwrap();
         fs::write(dir.join("images.json"), image_json(imgs)).unwrap();
-        let insts: Vec<String> = running.iter().map(|i| format!(r#"{{"ImageId":"{i}"}}"#)).collect();
+        let insts: Vec<String> = running
+            .iter()
+            .map(|i| format!(r#"{{"ImageId":"{i}"}}"#))
+            .collect();
         fs::write(
             dir.join("instances.json"),
-            format!(r#"{{"Reservations":[{{"Instances":[{}]}}]}}"#, insts.join(",")),
+            format!(
+                r#"{{"Reservations":[{{"Instances":[{}]}}]}}"#,
+                insts.join(",")
+            ),
         )
         .unwrap();
-        fs::write(dir.join("lts.json"), r#"{"LaunchTemplates":[{"LaunchTemplateId":"lt-1"}]}"#).unwrap();
-        let data = lt_image.map(|i| format!(r#"{{"ImageId":"{i}"}}"#)).unwrap_or("{}".into());
+        fs::write(
+            dir.join("lts.json"),
+            r#"{"LaunchTemplates":[{"LaunchTemplateId":"lt-1"}]}"#,
+        )
+        .unwrap();
+        let data = lt_image
+            .map(|i| format!(r#"{{"ImageId":"{i}"}}"#))
+            .unwrap_or("{}".into());
         fs::write(
             dir.join("ltv.json"),
             format!(r#"{{"LaunchTemplateVersions":[{{"LaunchTemplateData":{data}}}]}}"#),
@@ -76,7 +88,11 @@ impl Account {
     }
 
     fn run(&self, extra: &[&str], fail: &str) -> Output {
-        let path = format!("{}:{}", self.dir.join("bin").display(), std::env::var("PATH").unwrap());
+        let path = format!(
+            "{}:{}",
+            self.dir.join("bin").display(),
+            std::env::var("PATH").unwrap()
+        );
         Command::new("bash")
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/ami-prune.sh"))
             .args(extra)
@@ -126,7 +142,10 @@ fn removes_exactly_the_superseded_and_unreferenced() {
     let r = a.run(&[], "");
     assert!(r.status.success(), "{}", stderr(&r));
     assert_eq!(a.calls("deregister-image"), set(&["ami-d3", "ami-d4"]));
-    assert_eq!(a.calls("delete-snapshot"), set(&["snap-ami-d3", "snap-ami-d4"]));
+    assert_eq!(
+        a.calls("delete-snapshot"),
+        set(&["snap-ami-d3", "snap-ami-d4"])
+    );
     let log = stderr(&r);
     assert!(log.contains("removed ami-d3: freed 32 GiB"), "{log}");
     assert!(log.contains("total: 2 image(s), 64 GiB freed"), "{log}");
@@ -157,7 +176,12 @@ fn newest_probe_passed_survives_newer_unproven_builds() {
 fn fails_closed_when_a_lookup_fails() {
     let a = Account::new(
         "closed",
-        &[("ami-1", 1, false, 32), ("ami-2", 2, false, 32), ("ami-3", 3, false, 32), ("ami-4", 4, false, 32)],
+        &[
+            ("ami-1", 1, false, 32),
+            ("ami-2", 2, false, 32),
+            ("ami-3", 3, false, 32),
+            ("ami-4", 4, false, 32),
+        ],
         &[],
         None,
     );
@@ -171,7 +195,11 @@ fn fails_closed_when_a_lookup_fails() {
 fn dry_run_removes_nothing() {
     let a = Account::new(
         "dry",
-        &[("ami-1", 1, false, 32), ("ami-2", 2, false, 32), ("ami-3", 3, false, 32)],
+        &[
+            ("ami-1", 1, false, 32),
+            ("ami-2", 2, false, 32),
+            ("ami-3", 3, false, 32),
+        ],
         &[],
         None,
     );
