@@ -56,3 +56,7 @@ output "BucketName" {
 output "WriterSecretArn" {
   value = aws_secretsmanager_secret.backup_writer_key.arn
 }
+
+output "TestenvResumeBucket" {
+  value = aws_s3_bucket.testenv_resume.bucket
+}
