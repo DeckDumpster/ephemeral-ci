@@ -84,7 +84,17 @@ EC2 runners from this run (default 4); the reaper terminates any instance older
 than 8 hours.
 
 **EC2 spill costs money.** On-demand `c7i.2xlarge` in us-west-2 is roughly
-$0.40/hr; spot is typically half that. An account-wide $100/month budget is in
+$0.40/hr; spot is about a third of that and is the default, falling back to
+on-demand when spot is refused. A spot reclaim mid-job ends that job red with no
+defect behind it (sp-vh7mju); re-run it. The default is one switch, the
+org-level Actions variable `SPILL_MARKET` (`spot` | `on-demand`), and a caller's
+explicit `spill-market:` input still wins:
+
+```
+gh variable set SPILL_MARKET --org DeckDumpster --body spot --visibility all
+```
+
+Flip it to `on-demand` the same way; every caller's next job follows. An account-wide $100/month budget is in
 place, with email alerts at 80% of actual spend and when the month's forecasted
 total exceeds the limit. `SPILL_MAX_INSTANCES` (the `spill-max-instances` input)
 is the main lever for bounding cost per run.

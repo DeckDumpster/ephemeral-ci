@@ -471,13 +471,15 @@ SPILL_TAILNET="${SPILL_TAILNET:-true}"
 #                       AMI before it is promoted. The substrate-sha check still
 #                       applies.
 SPILL_AMI_ID="${SPILL_AMI_ID:-}"
-#   SPILL_MARKET        on-demand | spot (default on-demand). A spot instance can
-#                       be reclaimed mid-job, and the job then ends as an
+#   SPILL_MARKET        spot | on-demand (default spot). Spot is about a third
+#                       of the on-demand price; when it is refused for capacity
+#                       or price the launch retries on-demand. A spot instance
+#                       can be reclaimed mid-job, and the job then ends as an
 #                       ordinary red with no defect behind it (sp-vh7mju: run
-#                       38285573902, Server.SpotInstanceTermination). A spilled
-#                       job is usually a merge gate, so on-demand is the default;
-#                       spot is for a caller whose work is retryable.
-SPILL_MARKET="${SPILL_MARKET:-on-demand}"
+#                       38285573902, Server.SpotInstanceTermination); the job
+#                       is re-run, the accepted cost. A job that cannot be
+#                       re-run sets on-demand.
+SPILL_MARKET="${SPILL_MARKET:-spot}"
 case "$SPILL_MARKET" in
     on-demand|spot) ;;
     *) printf 'provision.sh: SPILL_MARKET=%s must be on-demand or spot\n' "$SPILL_MARKET" >&2; exit 1 ;;
@@ -833,7 +835,7 @@ ec2_find_ami() {
     printf '%s' "$ami"
 }
 
-# Launch an on-demand instance, or a spot one when SPILL_MARKET=spot
+# Launch a spot instance, or an on-demand one when SPILL_MARKET=on-demand
 # (on-demand fallback on capacity error).
 # Receives the AMI id and the per-run vmtoken; tags the instance with the
 # vmtoken so the instance role's IAM condition can bind parameter access.
@@ -851,7 +853,7 @@ ec2_launch() {
     IFS=',' read -ra subnets <<< "$SPILL_SUBNET_IDS"
 
     # Spot pass: try each AZ; advance on capacity shortage, abort on other errors.
-    # Skipped unless the caller opted in (SPILL_MARKET=spot).
+    # Skipped when SPILL_MARKET=on-demand.
     for subnet in "${subnets[@]}"; do
         [ "$SPILL_MARKET" = "spot" ] || break
         rr_mark attempt spot "$subnet"
@@ -891,7 +893,7 @@ ec2_launch() {
 
     # On-demand pass: same per-AZ loop.
     if [ "$SPILL_MARKET" = "spot" ]; then
-        printf 'provision.sh: spot attempts exhausted; retrying as on-demand\n' >&2
+        printf 'provision.sh: spot refused in every subnet (capacity or price); falling back to on-demand\n' >&2
     else
         printf 'provision.sh: launching on-demand (SPILL_MARKET=on-demand; a spot reclaim would fail the job as a red)\n' >&2
     fi
