@@ -1850,25 +1850,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 29b (sp-vh7mju): the default market is on-demand; spot only on opt-in.
+# Test 29b (sp-7wpit3): the default market is spot; SPILL_MARKET=on-demand opts
+# out; a refused spot launch in every subnet falls back to on-demand.
 # ---------------------------------------------------------------------------
-rm -f "$AWS_ARGV_FILE"
-CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
-    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
-    >/dev/null 2>&1 || true
-if grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--instance-market-options"; then
-    ko "test-29b: default spill launched spot"
+_run29b() {
+    rm -f "$AWS_ARGV_FILE" "${TMPDIR:-/tmp}/ri-count"
+    env "$@" CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
+        bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
+        >/dev/null 2>&1 || true
+    rm -f "${TMPDIR:-/tmp}/ri-count"
+}
+_spot_calls() { grep "run-instances" "$AWS_ARGV_FILE" | grep -c -- "--instance-market-options" || true; }
+_ri_calls() { grep -c "run-instances" "$AWS_ARGV_FILE" || true; }
+_run29b
+[ "$(_spot_calls)" -ge 1 ] && ok "test-29b: unset market launches spot" || ko "test-29b: unset market did not launch spot"
+_run29b SPILL_MARKET=on-demand
+[ "$(_spot_calls)" -eq 0 ] && [ "$(_ri_calls)" -ge 1 ] \
+    && ok "test-29b: SPILL_MARKET=on-demand launches on-demand" || ko "test-29b: SPILL_MARKET=on-demand launched spot"
+_run29b SPILL_MARKET=spot AWS_RUN_INSTANCES_FAIL_N=3
+if [ "$(_spot_calls)" -ge 1 ] && [ "$(_ri_calls)" -gt "$(_spot_calls)" ]; then
+    ok "test-29b: refused spot falls back to on-demand"
 else
-    ok "test-29b: default spill launches on-demand"
-fi
-rm -f "$AWS_ARGV_FILE"
-SPILL_MARKET=spot CURL_NODE_ALLOC_MIB=131072 CAPACITY_TIMEOUT=0 SPILL=ec2-only SPILL_SSM_WAIT_SECONDS=60 \
-    bash "$PROVISION" valid-label test-token https://github.com/owner/repo \
-    >/dev/null 2>&1 || true
-if grep "run-instances" "$AWS_ARGV_FILE" | grep -q -- "--instance-market-options"; then
-    ok "test-29b: SPILL_MARKET=spot launches spot"
-else
-    ko "test-29b: SPILL_MARKET=spot did not launch spot"
+    ko "test-29b: no on-demand fallback after refused spot (spot=$(_spot_calls) total=$(_ri_calls))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2506,7 +2509,7 @@ import json, os
 r = json.loads(os.environ["RR"])
 assert r["event"] == "provision" and r["backend"] == "ec2", r
 assert r["instance_type"] == "c7i.4xlarge" and r["vcpus"] == 16, r
-assert r["market"] == "on-demand" and r["outcome"] == "ok", r
+assert r["market"] == "spot" and r["outcome"] == "ok", r
 assert r["repo"] == "owner/repo" and r["run_id"] == "4242" and r["label"] == "valid-label", r
 assert r["capacity_wait_s"] >= 1, r
 assert len(r["refusals"]) == 1 and r["refusals"][0]["reason"] == "InsufficientInstanceCapacity", r

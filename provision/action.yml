@@ -171,12 +171,14 @@ inputs:
     default: ''
   spill-market:
     description: >-
-      "on-demand" (default) or "spot" for a spilled EC2 runner. Spot can be
+      "spot" or "on-demand" for a spilled EC2 runner. Empty (the default) defers
+      to the org-level Actions variable SPILL_MARKET, and to "spot" when that is
+      unset too; spot falls back to on-demand when it is refused. Spot can be
       reclaimed mid-job, which fails the job as an ordinary red with no defect
-      behind it, so a merge gate must stay on-demand. Set "spot" only for work
-      that is safe to retry. No effect on the Proxmox path.
+      behind it, so a job that cannot be re-run should pass "on-demand". No
+      effect on the Proxmox path.
     required: false
-    default: 'on-demand'
+    default: ''
   spill-root-gib:
     description: >-
       Root volume size in GiB of a spilled EC2 runner. The default matches the
@@ -319,7 +321,7 @@ runs:
         SPILL_AFTER_SECONDS: ${{ inputs.spill-after-seconds }}
         SPILL_MAX_INSTANCES: ${{ inputs.spill-max-instances }}
         SPILL_TAILNET: ${{ inputs.spill-tailnet }}
-        SPILL_MARKET: ${{ inputs.spill-market }}
+        SPILL_MARKET: ${{ inputs.spill-market || vars.SPILL_MARKET || 'spot' }}
         SPILL_ROOT_GIB: ${{ inputs.spill-root-gib }}
         SPILL_AMI_ID: ${{ inputs.spill-ami-id }}
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
@@ -419,18 +421,34 @@ runs:
 
     # Emit a job summary note when an EC2 instance was launched so the cost
     # is visible in the Actions UI. On-demand c7i.2xlarge in us-west-2 is
-    # roughly $0.40/hr; spot is typically half that but is opt-in (spill-market),
-    # because a reclaim fails the job as a red.  Teardown must terminate
+    # roughly $0.40/hr; spot is about a third of that and is the default
+    # (spill-market, else the org variable SPILL_MARKET), because a reclaim fails
+    # the job as a red that is re-run.  Teardown must terminate
     # the instance; if teardown is skipped the instance runs until its runner
     # service exits (configured with --ephemeral).
     - name: Note EC2 spill cost
       if: steps.provision.outputs.backend == 'ec2'
       shell: bash
+      env:
+        RUN_RECORD: ${{ steps.provision.outputs.run-record }}
+        MARKET_INPUT: ${{ inputs.spill-market }}
+        MARKET_VAR: ${{ vars.SPILL_MARKET }}
       run: |
         echo "## EC2 spill" >> "$GITHUB_STEP_SUMMARY"
         echo "Runner provisioned on EC2 instance \`${{ steps.provision.outputs.instance-id }}\` (Proxmox capacity was exhausted)." >> "$GITHUB_STEP_SUMMARY"
         if [ -n "${{ steps.provision.outputs.tailnet }}" ]; then
           echo "Tailnet: \`${{ steps.provision.outputs.tailnet }}\` (tag:round-vm)." >> "$GITHUB_STEP_SUMMARY"
         fi
-        echo "Market: \`${{ inputs.spill-market || 'on-demand' }}\`." >> "$GITHUB_STEP_SUMMARY"
+        if [ -n "$MARKET_INPUT" ]; then
+          requested="$MARKET_INPUT"; source="the spill-market input"
+        elif [ -n "$MARKET_VAR" ]; then
+          requested="$MARKET_VAR"; source="the org variable SPILL_MARKET"
+        else
+          requested="spot"; source="the built-in default"
+        fi
+        launched="$(printf '%s' "$RUN_RECORD" | sed -n 's/.*"market": *"\([a-z-]*\)".*/\1/p' | head -n1)"
+        echo "Market: requested \`$requested\` (from $source), launched \`${launched:-unknown}\`." >> "$GITHUB_STEP_SUMMARY"
+        if [ "$requested" = "spot" ] && [ "$launched" = "on-demand" ]; then
+          echo "Spot was refused (capacity or price); fell back to on-demand." >> "$GITHUB_STEP_SUMMARY"
+        fi
         echo "Instance type: \`${{ inputs.instance-type || 'c7i.2xlarge' }}\` — ensure teardown terminates it to avoid ongoing cost." >> "$GITHUB_STEP_SUMMARY"
