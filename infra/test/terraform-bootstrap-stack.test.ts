@@ -168,7 +168,7 @@ test('role policy is least privilege: no admin, no unscoped iam or secrets', () 
   template.resourceCountIs('AWS::IAM::ManagedPolicy', 3);
 });
 
-test('name patterns cover exactly spira, cubby, pkdump, dumpstar and identity, nothing broader', () => {
+test('name patterns cover exactly spira, cubby, pkdump, dumpstar, identity and mtgc, nothing broader', () => {
   const res = (sid: string): string[] => {
     const st = stmts().find((x) => x.Sid === sid)!;
     return ([] as unknown[]).concat(st.Resource).map((r) => JSON.stringify(r));
@@ -179,19 +179,19 @@ test('name patterns cover exactly spira, cubby, pkdump, dumpstar and identity, n
       .replace(/\{"Ref":"AWS::AccountId"\}/g, '189923011121')
       .replace(/[\\{}\[\]"]|Fn::Join|:?,?(?=arn)/g, '');
   const flat = (sid: string) => res(sid).map((r) => {
-    const m = r.match(/(?:s3:::|\/|secret:)((?:spira|cubby|pkdump|dumpstar|identity)[-/]\*(?:\/\*)?)"?\]?\]?\}?$/);
+    const m = r.match(/(?:s3:::|\/|secret:)((?:spira|cubby|pkdump|dumpstar|identity|mtgc)[-/]\*(?:\/\*)?)"?\]?\]?\}?$/);
     return m ? m[1] : `UNMATCHED ${strip(r)}`;
   });
   expect(flat('PrefixedBuckets').sort()).toEqual(
-    ['cubby-*', 'cubby-*/*', 'dumpstar-*', 'dumpstar-*/*', 'identity-*', 'identity-*/*', 'pkdump-*', 'pkdump-*/*', 'spira-*', 'spira-*/*'].sort(),
+    ['cubby-*', 'cubby-*/*', 'dumpstar-*', 'dumpstar-*/*', 'identity-*', 'identity-*/*', 'mtgc-*', 'mtgc-*/*', 'pkdump-*', 'pkdump-*/*', 'spira-*', 'spira-*/*'].sort(),
   );
-  expect(flat('PrefixedSecrets').sort()).toEqual(['cubby/*', 'dumpstar/*', 'identity/*', 'pkdump/*', 'spira/*']);
+  expect(flat('PrefixedSecrets').sort()).toEqual(['cubby/*', 'dumpstar/*', 'identity/*', 'mtgc/*', 'pkdump/*', 'spira/*']);
   for (const sid of ['PrefixedIamRead', 'PrefixedIamPrincipalWrite', 'PrefixedIamPolicyWrite']) {
     const r = flat(sid);
-    expect(r.every((x) => ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*', 'identity-*'].includes(x))).toBe(true);
-    for (const p of ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*', 'identity-*']) expect(r.filter((x) => x === p)).toHaveLength(r.length / 5);
+    expect(r.every((x) => ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*', 'identity-*', 'mtgc-*'].includes(x))).toBe(true);
+    for (const p of ['spira-*', 'cubby-*', 'pkdump-*', 'dumpstar-*', 'identity-*', 'mtgc-*']) expect(r.filter((x) => x === p)).toHaveLength(r.length / 6);
   }
-  expect(flat('PrefixedIamPrincipalWrite')).toHaveLength(10);
+  expect(flat('PrefixedIamPrincipalWrite')).toHaveLength(12);
 });
 
 test('outputs: bucket name, region, role arn', () => {
