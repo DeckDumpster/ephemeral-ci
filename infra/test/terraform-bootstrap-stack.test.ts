@@ -108,7 +108,7 @@ test('access keys are allowed only on tagged users, with a condition key CreateA
     );
     expect(st.Condition).toEqual({ StringEquals: { 'aws:ResourceTag/terraform-deploy-boundary': 'true' } });
     expect(JSON.stringify(st.Condition)).not.toMatch(/PermissionsBoundary/);
-    for (const r of ([] as any[]).concat(st.Resource)) expect(JSON.stringify(r)).toMatch(/:user\/(spira|cubby|pkdump|dumpstar|identity|ephemeral-ci|EphemeralCiSpill|EphemeralCiBackup)-\*/);
+    for (const r of ([] as any[]).concat(st.Resource)) expect(JSON.stringify(r)).toMatch(/:user\/(spira|cubby|pkdump|dumpstar|identity|mtgc|ephemeral-ci|EphemeralCiSpill|EphemeralCiBackup)-\*/);
   }
 });
 
