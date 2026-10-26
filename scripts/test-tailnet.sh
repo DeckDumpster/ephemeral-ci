@@ -67,7 +67,7 @@ PY
 
 err="$(KEYS_FAIL=1 tailnet_mint_key 2>&1 >/dev/null)" && rc=0 || rc=$?
 if [ "$rc" -ne 0 ] && printf '%s' "$err" | grep -q 'HTTP 400' \
-   && printf '%s' "$err" | grep -q 'tag:round-vm\] are invalid or not permitted'; then
+   && grep -q 'tag:round-vm\] are invalid or not permitted' <<<"$err"; then
     ok "a failed mint names the HTTP status and the API's message"
 else
     ko "failed mint rc=$rc stderr: $err"
