@@ -9,7 +9,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * profiles) and `<prefix>/*` (Secrets Manager). Moving a repository to
  * Terraform is one edit to this list, then a redeploy of this stack.
  */
-export const TERRAFORM_NAME_PREFIXES: readonly string[] = ['spira', 'cubby', 'pkdump', 'dumpstar', 'identity'];
+export const TERRAFORM_NAME_PREFIXES: readonly string[] = ['spira', 'cubby', 'pkdump', 'dumpstar', 'identity', 'mtgc'];
 
 const DEPLOY_ROLE_NAME = 'terraform-deploy';
 const BOUNDARY_NAME = 'terraform-deploy-boundary';
