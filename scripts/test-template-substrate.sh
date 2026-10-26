@@ -33,7 +33,7 @@ FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  ok    %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL  %s: %s\n' "$1" "${2:-}"; }
 
-has() { printf '%s' "$JOINED" | grep -qE "$1"; }
+has() { grep -qE "$1" <<<"$JOINED"; }
 
 echo "test-template-substrate.sh"
 echo
@@ -64,9 +64,9 @@ echo "the substrate list carries what a runner cannot come up without:"
 # whole script passed a copy with slirp4netns deleted from PODMAN_PKGS, because
 # `command -v slirp4netns` in the backend probe still mentioned it -- the name
 # survived in a place that installs nothing.
-PKG_ARRAYS="$(printf '%s' "$JOINED" | grep -E '^[A-Z_]+_PKGS=\(')"
+PKG_ARRAYS="$(grep -E '^[A-Z_]+_PKGS=\(' <<<"$JOINED")"
 for pkg in uidmap fuse3; do
-    if printf '%s' "$PKG_ARRAYS" | grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))"; then
+    if grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))" <<<"$PKG_ARRAYS"; then
         ok "the list names $pkg"
     else
         bad "the list names $pkg" "absent from the *_PKGS arrays"
@@ -84,7 +84,7 @@ else bad "the substrate builds and checks the pinned runner env" "no check_runne
 
 # Rust links through cc, and so do native Python wheels; the failure reads as a
 # broken language toolchain rather than a missing Debian package.
-if printf '%s' "$PKG_ARRAYS" | grep -qE '(\(|[[:space:]])build-essential([[:space:]]|\))'; then
+if grep -qE '(\(|[[:space:]])build-essential([[:space:]]|\))' <<<"$PKG_ARRAYS"; then
     ok "the list names build-essential"
 else
     bad "the list names build-essential" "cargo fails with 'linker cc not found', which reads as a Rust problem"
@@ -334,7 +334,7 @@ else
     bad "the apply path reaches apt-get when running as root" \
         "apt-get was never called; script said: $(printf '%s' "$_apply_out" | grep -i 'root\|elevate' | head -1)"
 fi
-if printf '%s' "$_apply_out" | grep -qi 'need root to install'; then
+if grep -qi 'need root to install' <<<"$_apply_out"; then
     bad "the apply path does not claim it needs root while running as root" \
         "printed 'need root to install' with id -u = 0"
 else
@@ -418,13 +418,13 @@ _check_mem() {
         out="$(SUBSTRATE_MEM_DECLARED="$declared" SUBSTRATE_USER="$(id -un)" MEMINFO_FILE="$minfo" bash "$SUBSTRATE" --check 2>&1)" || true
     fi
     if [ "$expect" = pass ]; then
-        if printf '%s' "$out" | grep -q 'MISSING mem~'; then
+        if grep -q 'MISSING mem~' <<<"$out"; then
             bad "$desc" "$(printf '%s' "$out" | grep 'MISSING mem~' | head -1)"
         else
             ok "$desc"
         fi
     else
-        if printf '%s' "$out" | grep -q 'MISSING mem~'; then
+        if grep -q 'MISSING mem~' <<<"$out"; then
             ok "$desc"
         else
             bad "$desc" "memory check should have failed at ${mib}MiB but passed"
@@ -500,14 +500,14 @@ else
     bad "apt-update failure: substrate exits non-zero" "exited 0 after apt-get update failed"
 fi
 
-if printf '%s' "$_upd_out" | grep -q 'apt-get update failed'; then
+if grep -q 'apt-get update failed' <<<"$_upd_out"; then
     ok "apt-update failure: output names the apt-get update failure"
 else
     bad "apt-update failure: output names the apt-get update failure" \
         "got: $(printf '%s' "$_upd_out" | grep -v '^substrate:' | head -3)"
 fi
 
-if ! printf '%s' "$_upd_out" | grep -q 'not on this release'; then
+if ! grep -q 'not on this release' <<<"$_upd_out"; then
     ok "apt-update failure: does not mislead with missing-package message"
 else
     bad "apt-update failure: does not mislead with missing-package message" \
@@ -539,7 +539,7 @@ else
     bad "absent user: substrate exits non-zero" "exited 0 when SUBSTRATE_USER=absent-test-user but that user does not exist"
 fi
 
-if printf '%s' "$_absent_out" | grep -q 'absent-test-user'; then
+if grep -q 'absent-test-user' <<<"$_absent_out"; then
     ok "absent user: error names the missing user"
 else
     bad "absent user: error names the missing user" "got: $(printf '%s' "$_absent_out" | head -3)"
@@ -552,13 +552,13 @@ echo "runner images are general purpose; the runner may install its repository's
 
 # No repository's packages in the shared substrate (sp-kfadex reverses sp-4tmf61).
 for pkg in libnss3 libatk1.0-0 libgbm1 libgl1 libasound2 libpango-1.0-0 chromium fonts-liberation; do
-    if printf '%s' "$PKG_ARRAYS" | grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))"; then
+    if grep -qE "(\(|[[:space:]])${pkg}([[:space:]]|\))" <<<"$PKG_ARRAYS"; then
         bad "the list does not name $pkg" "repo-specific package in the shared substrate"
     else
         ok "the list does not name $pkg"
     fi
 done
-if printf '%s' "$PKG_ARRAYS" | grep -q '^UI_PKGS='; then
+if grep -q '^UI_PKGS=' <<<"$PKG_ARRAYS"; then
     bad "no UI_PKGS array" "UI_PKGS is back"
 else
     ok "no UI_PKGS array"
@@ -574,10 +574,10 @@ done
 # Wrapped lines and backslash continuations are folded first: the phrase and the
 # package list both wrap in the prose that this lint exists to catch.
 _doc="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$SCRIPT_DIR/../docs/TEMPLATE.md" | tr '\n' ' ' | tr -s ' ')"
-if printf '%s' "$_doc" | grep -qi 'before baking the template' && printf '%s' "$_doc" | grep -qE 'apt(-get)? install.*(libnss3|libatk|libgbm|libgl1|fonts-liberation)'; then
+if grep -qi 'before baking the template' <<<"$_doc" && grep -qE 'apt(-get)? install.*(libnss3|libatk|libgbm|libgl1|fonts-liberation)' <<<"$_doc"; then
     bad "TEMPLATE.md does not instruct baking repo packages" "found 'before baking the template' with an apt install of a repo package"
 else ok "TEMPLATE.md does not instruct baking repo packages"; fi
-if printf '%s' "$_doc" | grep -qE 'apt(-get)? install.*(libnss3|libatk1\.0-0|libgbm1|libgl1)'; then
+if grep -qE 'apt(-get)? install.*(libnss3|libatk1\.0-0|libgbm1|libgl1)' <<<"$_doc"; then
     bad "TEMPLATE.md has no apt install of Chromium libs" "found"
 else ok "TEMPLATE.md has no apt install of Chromium libs"; fi
 
@@ -598,7 +598,7 @@ _ap_fn="$(sed -n '/^apt_proxy_content()/,/^}/p' "$SUBSTRATE")"
 _ap_got="$(APT_PROXY_DETECT=/usr/local/bin/x bash -c "$_ap_fn; apt_proxy_content")"
 if [ "$_ap_got" = 'Acquire::http::Proxy-Auto-Detect "/usr/local/bin/x";' ]; then ok "apt proxy drop-in is a Proxy-Auto-Detect line"
 else bad "apt proxy drop-in is a Proxy-Auto-Detect line" "got: $_ap_got"; fi
-if printf '%s' "$CODE" | grep -qE '^Acquire::http::Proxy "'; then bad "no static Acquire::http::Proxy anywhere" "found one"
+if grep -qE '^Acquire::http::Proxy "' <<<"$CODE"; then bad "no static Acquire::http::Proxy anywhere" "found one"
 else ok "no static Acquire::http::Proxy anywhere"; fi
 if has '^[[:space:]]*check_apt_proxy$'; then ok "--check verifies the apt proxy"
 else bad "--check verifies the apt proxy" "check_apt_proxy not in run_checks"; fi
@@ -656,23 +656,23 @@ done
 # The spill AMI's runner must give rootless podman the same user-manager and
 # runtime dir the Proxmox template's does (sp-oauh2n).
 _ab="$(grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh")"
-if printf '%s\n' "$_ab" | grep -q 'useradd --system'; then bad "the spill runner is a regular user" "useradd --system gives no user manager"
+if grep -q 'useradd --system' <<<"$_ab"; then bad "the spill runner is a regular user" "useradd --system gives no user manager"
 else ok "the spill runner is a regular user"; fi
-if printf '%s\n' "$_ab" | grep -q '^Environment=XDG_RUNTIME_DIR=/run/user/%U'; then bad "the spill runner service takes its uid from session.env" "%U in a system unit expands to 0"
-elif printf '%s\n' "$_ab" | grep -q '^EnvironmentFile=/etc/ephemeral-runner/session.env' && printf '%s\n' "$_ab" | grep -q 'XDG_RUNTIME_DIR=/run/user/%s'; then ok "the spill runner service takes its uid from session.env"
+if grep -q '^Environment=XDG_RUNTIME_DIR=/run/user/%U' <<<"$_ab"; then bad "the spill runner service takes its uid from session.env" "%U in a system unit expands to 0"
+elif grep -q '^EnvironmentFile=/etc/ephemeral-runner/session.env' <<<"$_ab" && grep -q 'XDG_RUNTIME_DIR=/run/user/%s' <<<"$_ab"; then ok "the spill runner service takes its uid from session.env"
 else bad "the spill runner service takes its uid from session.env" "no EnvironmentFile with the real uid"; fi
 # sp-2lzkvo: podman must be found on the unit's own PATH, and on the user manager's.
-if printf '%s\n' "$_ab" | grep -q -- 'EnvironmentFile=/etc/ephemeral-runner/session.env /usr/bin/env '; then ok "the build-time podman check resolves podman on the runner unit's PATH"
+if grep -q -- 'EnvironmentFile=/etc/ephemeral-runner/session.env /usr/bin/env ' <<<"$_ab"; then ok "the build-time podman check resolves podman on the runner unit's PATH"
 else bad "the build-time podman check resolves podman on the runner unit's PATH" "systemd-run resolves a bare podman on sudo's PATH"; fi
-if printf '%s\n' "$_ab" | grep -q '^PATH=.*50-runner-env.conf\|environment.d/50-runner-env.conf' && printf '%s\n' "$_ab" | grep -q 'runner-env/bin'; then ok "the user manager's environment carries the runner-env bin"
+if grep -q '^PATH=.*50-runner-env.conf\|environment.d/50-runner-env.conf' <<<"$_ab" && grep -q 'runner-env/bin' <<<"$_ab"; then ok "the user manager's environment carries the runner-env bin"
 else bad "the user manager's environment carries the runner-env bin" "no environment.d entry"; fi
-if printf '%s\n' "$_ab" | grep -q 'user.conf.d/50-runner-env.conf' && printf '%s\n' "$_ab" | grep -q 'DefaultEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin'; then ok "systemd --user units start with the runner-env bin on PATH (sp-5nl8jo)"
+if grep -q 'user.conf.d/50-runner-env.conf' <<<"$_ab" && grep -q 'DefaultEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin' <<<"$_ab"; then ok "systemd --user units start with the runner-env bin on PATH (sp-5nl8jo)"
 else bad "systemd --user units start with the runner-env bin on PATH (sp-5nl8jo)" "no DefaultEnvironment drop-in"; fi
-if printf '%s\n' "$_ab" | grep -q 'user/service.d/50-runner-env.conf' && printf '%s\n' "$_ab" | grep -q 'Service\]\\nEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin'; then ok "user units carry the runner-env PATH on the unit itself, over PAM's (sp-of73ze)"
+if grep -q 'user/service.d/50-runner-env.conf' <<<"$_ab" && grep -q 'Service\]\\nEnvironment=PATH=/opt/ephemeral-ci/runner-env/bin' <<<"$_ab"; then ok "user units carry the runner-env PATH on the unit itself, over PAM's (sp-of73ze)"
 else bad "user units carry the runner-env PATH on the unit itself, over PAM's (sp-of73ze)" "no user/service.d Environment= drop-in"; fi
-if printf '%s\n' "$_ab" | grep -q '^Wants=user@\\\${RUNNER_UID}.service' && printf '%s\n' "$_ab" | grep -q '^After=.*user@\\\${RUNNER_UID}.service'; then ok "the spill runner service waits for the user manager"
+if grep -q '^Wants=user@\\\${RUNNER_UID}.service' <<<"$_ab" && grep -q '^After=.*user@\\\${RUNNER_UID}.service' <<<"$_ab"; then ok "the spill runner service waits for the user manager"
 else bad "the spill runner service waits for the user manager" "no Wants/After user@<uid>.service"; fi
-if printf '%s\n' "$_ab" | grep -q 'podman info fails under the runner service'; then ok "the AMI build proves podman info passes for the runner before imaging"
+if grep -q 'podman info fails under the runner service' <<<"$_ab"; then ok "the AMI build proves podman info passes for the runner before imaging"
 else bad "the AMI build proves podman info passes for the runner before imaging" "no check"; fi
 
 echo
@@ -693,11 +693,11 @@ else bad "the policy is valid JSON defaulting to insecureAcceptAnything" "got: $
 
 # On a host with no policy file, --check must name it.
 _pol_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/no-such-policy.json" bash "$SUBSTRATE" --check 2>&1)"
-if printf '%s' "$_pol_out" | grep -q "MISSING $STUBS/no-such-policy.json"; then ok "--check fails when policy.json is absent"
+if grep -q "MISSING $STUBS/no-such-policy.json" <<<"$_pol_out"; then ok "--check fails when policy.json is absent"
 else bad "--check fails when policy.json is absent" "not reported"; fi
 printf '{}\n' > "$STUBS/policy.json"
 _pol_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/policy.json" bash "$SUBSTRATE" --check 2>&1)"
-if printf '%s' "$_pol_out" | grep -q "MISSING $STUBS/policy.json"; then bad "--check accepts a present policy.json" "still reported"
+if grep -q "MISSING $STUBS/policy.json" <<<"$_pol_out"; then bad "--check accepts a present policy.json" "still reported"
 else ok "--check accepts a present policy.json"; fi
 
 echo
@@ -716,11 +716,11 @@ else bad "--check verifies a Quadlet unit materialises" "check_quadlet not in ru
 if has 'ln -sfn "\$_gen_src" "\$GENERATOR_DIR/podman-user-generator"'; then ok "install links the env's generator where systemd looks"
 else bad "install links the env's generator where systemd looks" "no ln step"; fi
 _q_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_GENERATOR_DIR="$STUBS/no-generators" bash "$SUBSTRATE" --check 2>&1)"
-if printf '%s' "$_q_out" | grep -q "MISSING $STUBS/no-generators/podman-user-generator"; then ok "--check fails on an image with no user generator for podman"
+if grep -q "MISSING $STUBS/no-generators/podman-user-generator" <<<"$_q_out"; then ok "--check fails on an image with no user generator for podman"
 else bad "--check fails on an image with no user generator for podman" "not reported"; fi
 mkdir -p "$STUBS/generators"; : > "$STUBS/generators/podman-user-generator"
 _q_out="$(PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_SKIP_QUADLET_PROBE=1 SUBSTRATE_GENERATOR_DIR="$STUBS/generators" bash "$SUBSTRATE" --check 2>&1)"
-if printf '%s' "$_q_out" | grep -q "podman-user-generator"; then bad "--check accepts a registered generator" "still reported"
+if grep -q "podman-user-generator" <<<"$_q_out"; then bad "--check accepts a registered generator" "still reported"
 else ok "--check accepts a registered generator"; fi
 
 if has 'QUADLET_UNIT_DIRS="\$QUADLET_FIXTURE_DIR" "\$g" --user --dryrun'; then ok "--check proves the generator by --dryrun over a repo fixture, installing no unit"
@@ -730,7 +730,7 @@ else bad "the Quadlet fixture ships in the repo" "missing"; fi
 
 # sp-xi9pd2: an absent fixture dir is named, not reported as "rendered no [Service]".
 _q_out="$(QUADLET_FIXTURE_DIR="$STUBS/no-fixture" PATH="$STUBS:$PATH" SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_GENERATOR_DIR="$STUBS/generators" bash "$SUBSTRATE" --check 2>&1)"
-if printf '%s' "$_q_out" | grep -q 'fixture dir missing/empty'; then ok "an absent Quadlet fixture dir is named"
+if grep -q 'fixture dir missing/empty' <<<"$_q_out"; then ok "an absent Quadlet fixture dir is named"
 else bad "an absent Quadlet fixture dir is named" "not reported"; fi
 if grep -q 'scripts/fixtures/quadlet' "$(dirname "$SUBSTRATE")/ami-build.sh"; then ok "ami-build ships the Quadlet fixture to the build instance"
 else bad "ami-build ships the Quadlet fixture to the build instance" "not shipped"; fi
@@ -741,7 +741,7 @@ printf '#!/bin/sh\ncase "$1" in run) echo "Error: newuidmap: command not found" 
 chmod +x "$_pm/podman"
 _pr_out="$(PATH="$_pm:$STUBS:$PATH" SUBSTRATE_SMOKE_IMAGE=example/img SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/policy.json" bash "$SUBSTRATE" --check 2>&1)"
 rm -rf "$_pm"
-if printf '%s' "$_pr_out" | grep -q 'newuidmap: command not found'; then ok "a failed smoke run prints podman's own error"
+if grep -q 'newuidmap: command not found' <<<"$_pr_out"; then ok "a failed smoke run prints podman's own error"
 else bad "a failed smoke run prints podman's own error" "output lacked podman's stderr"; fi
 
 # sp-6odr3t: as root ($SUDO empty) the smoke run drops to the runner with runuser,
@@ -753,7 +753,7 @@ printf '#!/bin/sh\ncase "$1" in run) echo "Error: ran as runner" >&2; exit 125;;
 chmod +x "$_pm/id" "$_pm/runuser" "$_pm/podman"
 _pr_out="$(PATH="$_pm:$STUBS:$PATH" SUBSTRATE_SMOKE_IMAGE=example/img SUBSTRATE_USER="$(/usr/bin/id -un)" SUBSTRATE_POLICY_FILE="$STUBS/policy.json" bash "$SUBSTRATE" --check 2>&1)"
 rm -rf "$_pm"
-if printf '%s' "$_pr_out" | grep -q 'Error: ran as runner' && ! printf '%s' "$_pr_out" | grep -q -- '-u: command not found'; then ok "as root the smoke run reaches podman via runuser"
+if grep -q 'Error: ran as runner' <<<"$_pr_out" && ! grep -q -- '-u: command not found' <<<"$_pr_out"; then ok "as root the smoke run reaches podman via runuser"
 else bad "as root the smoke run reaches podman via runuser" "$_pr_out"; fi
 
 printf '  %d passed, %d failed\n' "$PASS" "$FAIL"

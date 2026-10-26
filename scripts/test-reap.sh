@@ -261,12 +261,12 @@ echo "--- Test 1: reap.sh skips VM with template:1 (VMID != TEMPLATE_VMID)"
 
     output=$(TEMPLATE_VMID=101 _run_reap --dry-run 2>&1 || true)
 
-    if printf '%s\n' "$output" | grep -q 'would destroy.*9100'; then
+    if grep -q 'would destroy.*9100' <<<"$output"; then
         echo "  expected fail: reap.sh would destroy VM 9100 (template:1 flag not checked)" >&2
         exit 1
     fi
     # After fix, reap.sh must log that 9100 is a template or was skipped as one.
-    printf '%s\n' "$output" | grep -qiE 'template.*9100|9100.*template|skipping.*9100' || {
+    grep -qiE 'template.*9100|9100.*template|skipping.*9100' <<<"$output" || {
         echo "  expected fail: reap.sh did not log a template-skip for VMID 9100" >&2
         exit 1
     }
@@ -340,12 +340,12 @@ echo "--- Test 3: TEMPLATE_VMID from CRED_FILE reaches reap.sh"
         bash "$REAP" --dry-run 2>&1 || true
     )
 
-    if printf '%s\n' "$output" | grep -q 'would destroy.*9100'; then
+    if grep -q 'would destroy.*9100' <<<"$output"; then
         echo "  expected fail: TEMPLATE_VMID from CRED_FILE did not reach reap.sh — would destroy 9100" >&2
         exit 1
     fi
     # After fix, reap.sh must log "skipping template VMID 9100".
-    printf '%s\n' "$output" | grep -qiE 'skipping template.*9100|template.*9100' || {
+    grep -qiE 'skipping template.*9100|template.*9100' <<<"$output" || {
         echo "  expected fail: reap.sh did not log a template-skip for 9100 — CRED_FILE not sourced" >&2
         exit 1
     }
@@ -437,7 +437,7 @@ echo "--- Test 5: busy check queries the ORG runner endpoint"
     output=$(GITHUB_TOKEN=tok GH_ORG=DeckDumpster GH_REPO=DeckDumpster/pokedumpster \
              _run_reap --dry-run 2>&1 || true)
 
-    if printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+    if grep -q 'would destroy.*500' <<<"$output"; then
         echo "  expected fail: reap.sh would destroy VM 500 while its runner is busy" >&2
         exit 1
     fi
@@ -466,7 +466,7 @@ echo "--- Test 6: GH_ORG unset falls back to the repo runner endpoint"
     output=$(GITHUB_TOKEN=tok GH_ORG='' GH_REPO=DeckDumpster/deckdumpster \
              _run_reap --dry-run 2>&1 || true)
 
-    if printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+    if grep -q 'would destroy.*500' <<<"$output"; then
         echo "  expected fail: reap.sh would destroy VM 500 while its runner is busy" >&2
         exit 1
     fi
@@ -497,12 +497,12 @@ echo "--- Test 7: busy check uses the runner name from the VM description"
 
     output=$(GITHUB_TOKEN=tok GH_ORG=DeckDumpster _run_reap --dry-run 2>&1 || true)
 
-    if printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+    if grep -q 'would destroy.*500' <<<"$output"; then
         echo "  expected fail: reap.sh would destroy VM 500 while runner ci-run-7 is busy" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
     fi
-    printf '%s\n' "$output" | grep -q 'ci-run-7' || {
+    grep -q 'ci-run-7' <<<"$output" || {
         echo "  expected fail: reap.sh never named the runner from the description" >&2
         exit 1
     }
@@ -674,12 +674,12 @@ echo "--- Test 11: provision_time= overrides meta.ctime — recent VM not reaped
 
     output=$(_run_reap --dry-run 2>&1 || true)
 
-    if printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+    if grep -q 'would destroy.*500' <<<"$output"; then
         echo "  expected fail: reap.sh would destroy VM 500 despite recent provision_time= (meta.ctime is old)" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
     fi
-    printf '%s\n' "$output" | grep -q 'provision-time' || {
+    grep -q 'provision-time' <<<"$output" || {
         echo "  expected fail: provision_time= not used as age source; output was:" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
@@ -708,12 +708,12 @@ echo "--- Test 12: provision_time= overrides meta.ctime — old VM IS reaped"
 
     output=$(_run_reap --dry-run 2>&1 || true)
 
-    if ! printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+    if ! grep -q 'would destroy.*500' <<<"$output"; then
         echo "  expected fail: reap.sh kept VM 500 despite old provision_time= (meta.ctime is recent)" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
     fi
-    printf '%s\n' "$output" | grep -q 'provision-time' || {
+    grep -q 'provision-time' <<<"$output" || {
         echo "  expected fail: provision_time= not used as age source; output was:" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
@@ -748,12 +748,12 @@ echo "--- Test 13: VM with meta.ctime == template's ctime is skipped as unknown-
 
     output=$(_run_reap --dry-run 2>&1 || true)
 
-    if printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+    if grep -q 'would destroy.*500' <<<"$output"; then
         echo "  expected fail: reap.sh would destroy VM 500 whose meta.ctime equals the template's" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
     fi
-    printf '%s\n' "$output" | grep -qiE 'age unknown|unknown.*age' || {
+    grep -qiE 'age unknown|unknown.*age' <<<"$output" || {
         echo "  expected fail: reap.sh did not report unknown-age for VM 500; output was:" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
@@ -784,12 +784,12 @@ echo "--- Test 14: VM with distinct meta.ctime aged normally and reaped"
 
     output=$(_run_reap --dry-run 2>&1 || true)
 
-    if ! printf '%s\n' "$output" | grep -q 'would destroy.*500'; then
+    if ! grep -q 'would destroy.*500' <<<"$output"; then
         echo "  expected fail: reap.sh did not reap VM 500 whose meta.ctime differs from template's and is old" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
     fi
-    printf '%s\n' "$output" | grep -q 'qm-config' || {
+    grep -q 'qm-config' <<<"$output" || {
         echo "  expected fail: meta.ctime (qm-config) not used as age source; output was:" >&2
         printf '%s\n' "$output" | sed 's/^/    /' >&2
         exit 1
@@ -1202,14 +1202,14 @@ for r in json.load(sys.stdin).get("runners",[]):
     output=$(_run_reap_ec2 --dry-run 2>&1 || true)
 
     # The instance must NOT appear in "would terminate".
-    if printf '%s\n' "$output" | grep -q "would terminate EC2 ${_iid}"; then
+    if grep -q "would terminate EC2 ${_iid}" <<<"$output"; then
         echo "test-reap: reap.sh would terminate busy-runner instance $_iid" >&2
         printf '%s\n' "$output" | grep -i ec2 | head -10 | sed 's/^/    /' >&2
         exit 1
     fi
 
     # Verify it appeared in the log (so we know it was evaluated, not missed).
-    printf '%s\n' "$output" | grep -q "$_iid" || {
+    grep -q "$_iid" <<<"$output" || {
         echo "test-reap: instance $_iid was not even evaluated by the reaper" >&2
         printf '%s\n' "$output" | grep -i ec2 | head -10 | sed 's/^/    /' >&2
         exit 1
@@ -1273,7 +1273,7 @@ echo "--- Test 17: orphaned EBS volume is deleted by the reaper"
         exit 1
     fi
 
-    printf '%s\n' "$output" | grep -qE "EBS volume ${_vol_id} deleted|would delete orphaned EBS volume ${_vol_id}" || {
+    grep -qE "EBS volume ${_vol_id} deleted|would delete orphaned EBS volume ${_vol_id}" <<<"$output" || {
         echo "test-reap: reap.sh did not log deletion of volume $_vol_id" >&2
         printf '%s\n' "$output" | grep -i 'vol\|ebs\|volume' | head -10 | sed 's/^/    /' >&2
         exit 1
@@ -1306,7 +1306,7 @@ echo "--- Test 18: stale AMI-builder instance is reaped (dry-run, age cutoff 0h)
     # past the cutoff. Dry-run so nothing is actually terminated.
     output=$(_run_reap_ec2 --dry-run --max-age-hours 0 2>&1 || true)
 
-    printf '%s\n' "$output" | grep -q "would terminate EC2 builder ${_iid}" || {
+    grep -q "would terminate EC2 builder ${_iid}" <<<"$output" || {
         echo "test-reap: reap.sh did not flag builder instance $_iid for termination" >&2
         printf '%s\n' "$output" | grep -i ec2 | head -10 | sed 's/^/    /' >&2
         exit 1

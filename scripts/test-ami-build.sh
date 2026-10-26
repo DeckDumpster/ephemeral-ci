@@ -913,7 +913,7 @@ if [ "$_ssm_online" -eq 1 ]; then
                 --query 'Status' \
                 --output text --region "$REGION" 2>/dev/null)" || pkg_status=""
 
-            not_installed="$(printf '%s' "$pkg_out" | grep '^NOT_INSTALLED:' || true)"
+            not_installed="$(grep '^NOT_INSTALLED:' <<<"$pkg_out" || true)"
             if [ "$pkg_status" = "Success" ] && [ -z "$not_installed" ]; then
                 ok "pkg-check: all substrate packages present"
             else

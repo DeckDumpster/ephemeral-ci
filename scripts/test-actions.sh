@@ -72,7 +72,7 @@ PY
 )
 
 for var in $REQUIRED_VARS; do
-    if printf '%s\n' "$DESTROY_ENV" | grep -qx "$var"; then
+    if grep -qx "$var" <<<"$DESTROY_ENV"; then
         _pass "teardown action Destroy step sets \$${var} (required by teardown.sh)"
     else
         _fail "teardown action Destroy step does NOT set \$${var} (required by teardown.sh)"
@@ -94,7 +94,7 @@ for k in (action.get("outputs") or {}):
 PY
 )
 
-if printf '%s\n' "$PROVISION_OUTPUTS" | grep -qx "vm-token"; then
+if grep -qx "vm-token" <<<"$PROVISION_OUTPUTS"; then
     _pass "provision/action.yml declares vm-token output"
 else
     _fail "provision/action.yml does NOT declare vm-token output"
@@ -111,7 +111,7 @@ for k in (action.get("inputs") or {}):
 PY
 )
 
-if printf '%s\n' "$TEARDOWN_INPUTS" | grep -qx "vm-token"; then
+if grep -qx "vm-token" <<<"$TEARDOWN_INPUTS"; then
     _pass "teardown/action.yml declares vm-token input"
 else
     _fail "teardown/action.yml does NOT declare vm-token input"
@@ -142,7 +142,7 @@ fi
 # teardown.sh's _require_env exits non-zero before the first API call, and every
 # VM leaks until the reaper picks it up.
 
-if printf '%s\n' "$TEARDOWN_INPUTS" | grep -qx "template-vmid"; then
+if grep -qx "template-vmid" <<<"$TEARDOWN_INPUTS"; then
     _pass "teardown/action.yml declares template-vmid input"
 else
     _fail "teardown/action.yml does NOT declare template-vmid input"

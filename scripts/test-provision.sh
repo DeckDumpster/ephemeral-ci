@@ -403,14 +403,14 @@ fi
 
 # vmid= must appear: the clone POST succeeded so the VM exists and teardown
 # must be able to identify and destroy it.
-if printf '%s\n' "$OUT" | grep -qE '^vmid=[0-9]+$'; then
+if grep -qE '^vmid=[0-9]+$' <<<"$OUT"; then
     ok "test-2: vmid= present on stdout despite clone task failure"
 else
     ko "test-2: vmid= missing from stdout when clone task fails — caller cannot clean up"
 fi
 
 # vmtoken= must also appear for the same reason.
-if printf '%s\n' "$OUT" | grep -qE '^vmtoken=[a-f0-9]+$'; then
+if grep -qE '^vmtoken=[a-f0-9]+$' <<<"$OUT"; then
     ok "test-2: vmtoken= present on stdout despite clone task failure"
 else
     ko "test-2: vmtoken= missing from stdout when clone task fails — caller cannot clean up"
@@ -461,7 +461,7 @@ else
     ko "test-4: provision.sh should exit non-zero on start task failure"
 fi
 
-if printf '%s\n' "$OUT4" | grep -qE '^vmid=[0-9]+$'; then
+if grep -qE '^vmid=[0-9]+$' <<<"$OUT4"; then
     ok "test-4: vmid=<n> present on stdout despite start failure"
 else
     ko "test-4: vmid=<n> missing from stdout on start failure (got: '$OUT4')"
@@ -1104,13 +1104,13 @@ else
     ko "test-20: provision exited non-zero ($_rc20) — cannot check vmtoken"
 fi
 
-if printf '%s\n' "$OUT20" | grep -qE '^vmtoken=[a-f0-9]{32}$'; then
+if grep -qE '^vmtoken=[a-f0-9]{32}$' <<<"$OUT20"; then
     ok "test-20: vmtoken=<32 hex chars> appears on stdout"
 else
     ko "test-20: vmtoken= line missing or not 32 hex chars (got: $(printf '%s\n' "$OUT20" | grep vmtoken || echo '<nothing>'))"
 fi
 
-if printf '%s\n' "$OUT20" | grep -qE '^vmid=[0-9]+$'; then
+if grep -qE '^vmid=[0-9]+$' <<<"$OUT20"; then
     ok "test-20: vmid= still present on stdout alongside vmtoken"
 else
     ko "test-20: vmid= missing from stdout"
