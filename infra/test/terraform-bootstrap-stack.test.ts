@@ -165,7 +165,7 @@ test('role policy is least privilege: no admin, no unscoped iam or secrets', () 
     }
   }
   expect(JSON.stringify(statements)).not.toContain('AdministratorAccess');
-  template.resourceCountIs('AWS::IAM::ManagedPolicy', 3);
+  template.resourceCountIs('AWS::IAM::ManagedPolicy', 7);
 });
 
 test('name patterns cover exactly spira, cubby, pkdump, dumpstar, identity, mtgc and remarkable, nothing broader', () => {
@@ -205,4 +205,24 @@ test('adopted resources are named patterns, never a bare wildcard, and never the
   expect(json).toContain('ephemeral-ci-*');
   expect(json).toContain('oidc-provider/token.actions.githubusercontent.com');
   expect(json).not.toContain('cdk-bootstrap');
+});
+
+test('every IAM policy document fits the 6144-character quota, and the deploy role stays within 10 managed policies', () => {
+  // AWS counts a policy's characters with whitespace stripped. Minified template JSON,
+  // with each intrinsic still wrapped, is a conservative upper bound.
+  const quota = 6144;
+  const docs = [
+    ...Object.entries(template.findResources('AWS::IAM::ManagedPolicy')),
+    ...Object.entries(template.findResources('AWS::IAM::Policy')),
+  ].map(([id, r]) => [id, JSON.stringify((r as any).Properties.PolicyDocument).length] as const);
+  expect(docs.length).toBeGreaterThan(0);
+  for (const [id, size] of docs) {
+    expect({ id, fits: size <= quota }).toEqual({ id, fits: true });
+  }
+  const deployRoleId = Object.keys(template.findResources('AWS::IAM::Role'))[0];
+  const attached = Object.values(template.findResources('AWS::IAM::ManagedPolicy')).filter(
+    (r) => JSON.stringify((r as any).Properties.Roles ?? []).includes(deployRoleId),
+  );
+  expect(attached.length).toBeGreaterThan(0);
+  expect(attached.length).toBeLessThanOrEqual(10);
 });
