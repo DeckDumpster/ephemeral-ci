@@ -208,25 +208,21 @@ test('adopted resources are named patterns, never a bare wildcard, and never the
 });
 
 test('every IAM policy document fits the 6144-character quota, and the deploy role stays within 10 managed policies', () => {
-  // AWS counts a policy's characters with whitespace stripped; minified JSON is the upper bound.
+  // AWS counts a policy's characters with whitespace stripped. Minified template JSON,
+  // with each intrinsic still wrapped, is a conservative upper bound.
   const quota = 6144;
   const docs = [
     ...Object.entries(template.findResources('AWS::IAM::ManagedPolicy')),
     ...Object.entries(template.findResources('AWS::IAM::Policy')),
-  ].map(([id, r]) => [id, JSON.stringify((r as any).Properties.PolicyDocument)] as const);
+  ].map(([id, r]) => [id, JSON.stringify((r as any).Properties.PolicyDocument).length] as const);
   expect(docs.length).toBeGreaterThan(0);
-  for (const [id, json] of docs) {
-    // CloudFormation intrinsics resolve to ~12-char account ids and short partitions/regions;
-    // count each {"Ref":...} / Fn::Join wrapper at the cost of the literal it stands for.
-    const resolved = json
-      .replace(/\{"Ref":"AWS::AccountId"\}/g, '123456789012')
-      .replace(/\{"Ref":"AWS::Partition"\}/g, 'aws')
-      .replace(/\{"Ref":"AWS::Region"\}/g, 'us-west-2');
-    expect({ id, size: Math.max(json.length, resolved.length) <= quota }).toEqual({ id, size: true });
+  for (const [id, size] of docs) {
+    expect({ id, fits: size <= quota }).toEqual({ id, fits: true });
   }
-  const roleRefs = (r: any) => ([] as unknown[]).concat(r.Properties.Roles ?? []);
+  const deployRoleId = Object.keys(template.findResources('AWS::IAM::Role'))[0];
   const attached = Object.values(template.findResources('AWS::IAM::ManagedPolicy')).filter(
-    (r) => roleRefs(r).length > 0,
+    (r) => JSON.stringify((r as any).Properties.Roles ?? []).includes(deployRoleId),
   );
+  expect(attached.length).toBeGreaterThan(0);
   expect(attached.length).toBeLessThanOrEqual(10);
 });
