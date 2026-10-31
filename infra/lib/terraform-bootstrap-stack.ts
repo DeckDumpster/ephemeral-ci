@@ -121,13 +121,20 @@ export class TerraformBootstrapStack extends cdk.Stack {
 
     // IAM statements live in managed policies: a role's inline policies share a
     // 10240-character cap and CDK splits them silently.
+    // Each group of IAM statements gets three policies (read, principal writes,
+    // policy/instance-profile writes) so none nears the 6144-character quota
+    // as prefixes are added.
     const prefixedIam = new iam.ManagedPolicy(this, 'PrefixedIamPolicy', { roles: [role] });
+    const prefixedIamWrite = new iam.ManagedPolicy(this, 'PrefixedIamWritePolicy', { roles: [role] });
+    const prefixedIamPolicyWrite = new iam.ManagedPolicy(this, 'PrefixedIamPolicyWritePolicy', { roles: [role] });
     const adoptedIamPolicy = new iam.ManagedPolicy(this, 'AdoptedIamPolicy', { roles: [role] });
+    const adoptedIamWrite = new iam.ManagedPolicy(this, 'AdoptedIamWritePolicy', { roles: [role] });
+    const adoptedIamPolicyWrite = new iam.ManagedPolicy(this, 'AdoptedIamPolicyWritePolicy', { roles: [role] });
 
     // IAM, name-prefixed. Writes to users and roles are allowed only with the
     // boundary; policies and instance profiles grant nothing by themselves and
     // can only reach boundary-carrying principals through those writes.
-    this.addIam(prefixedIam, 'Prefixed', boundaryCondition, ['user', 'role', 'policy', 'instance-profile'].flatMap(iamArn));
+    this.addIam({ read: prefixedIam, write: prefixedIamWrite, policyWrite: prefixedIamPolicyWrite }, 'Prefixed', boundaryCondition, ['user', 'role', 'policy', 'instance-profile'].flatMap(iamArn));
 
     // What the retired CDK stacks (EphemeralCiSpill, EphemeralCiBackup) created,
     // adopted into Terraform by import. Their physical names are the explicit
@@ -141,7 +148,7 @@ export class TerraformBootstrapStack extends cdk.Stack {
         (kind) => `arn:${this.partition}:iam::${this.account}:${kind}/${p}`,
       ),
     );
-    this.addIam(adoptedIamPolicy, 'Adopted', boundaryCondition, adoptedIamArns);
+    this.addIam({ read: adoptedIamPolicy, write: adoptedIamWrite, policyWrite: adoptedIamPolicyWrite }, 'Adopted', boundaryCondition, adoptedIamArns);
     // The existing role the backup stack attached its secret-read policy to.
     // Read-only: writes to spira-concierge are denied below.
     prefixedIam.addStatements(new iam.PolicyStatement({
@@ -242,7 +249,7 @@ export class TerraformBootstrapStack extends cdk.Stack {
   }
 
   private addIam(
-    role: iam.ManagedPolicy,
+    policies: { read: iam.ManagedPolicy; write: iam.ManagedPolicy; policyWrite: iam.ManagedPolicy },
     sidPrefix: string,
     boundaryCondition: Record<string, Record<string, string>>,
     arns: string[],
@@ -250,7 +257,7 @@ export class TerraformBootstrapStack extends cdk.Stack {
     const ofKind = (kind: string) => arns.filter((a) => a.includes(`:${kind}/`));
     const principals = [...ofKind('user'), ...ofKind('role')];
     const others = [...ofKind('policy'), ...ofKind('instance-profile')];
-    role.addStatements(new iam.PolicyStatement({
+    policies.read.addStatements(new iam.PolicyStatement({
       sid: `${sidPrefix}IamRead`,
       actions: [
         'iam:GetUser', 'iam:ListUserTags', 'iam:ListGroupsForUser', 'iam:ListAccessKeys',
@@ -262,7 +269,7 @@ export class TerraformBootstrapStack extends cdk.Stack {
       ],
       resources: arns,
     }));
-    role.addStatements(new iam.PolicyStatement({
+    policies.write.addStatements(new iam.PolicyStatement({
       sid: `${sidPrefix}IamPrincipalWrite`,
       actions: [
         'iam:CreateUser', 'iam:DeleteUser', 'iam:UpdateUser', 'iam:TagUser', 'iam:UntagUser',
@@ -281,7 +288,7 @@ export class TerraformBootstrapStack extends cdk.Stack {
     // Reference, "Actions, resources, and condition keys for AWS Identity and
     // Access Management"), so keys are limited to users tagged at creation,
     // which this role can only do alongside the boundary.
-    role.addStatements(new iam.PolicyStatement({
+    policies.write.addStatements(new iam.PolicyStatement({
       sid: `${sidPrefix}IamAccessKeyWrite`,
       actions: ['iam:CreateAccessKey', 'iam:DeleteAccessKey', 'iam:UpdateAccessKey'],
       resources: ofKind('user'),
@@ -294,13 +301,13 @@ export class TerraformBootstrapStack extends cdk.Stack {
     // an existing principal. This statement lets the role (re)apply only the
     // boundary tag key on principals under the managed prefixes; the guards
     // stay covered by DenyIamWritesOnGuards.
-    role.addStatements(new iam.PolicyStatement({
+    policies.write.addStatements(new iam.PolicyStatement({
       sid: `${sidPrefix}IamBoundaryTagWrite`,
       actions: ['iam:TagUser', 'iam:UntagUser', 'iam:TagRole', 'iam:UntagRole'],
       resources: principals,
       conditions: { 'ForAllValues:StringEquals': { 'aws:TagKeys': [BOUNDARY_TAG_KEY] } },
     }));
-    role.addStatements(new iam.PolicyStatement({
+    policies.policyWrite.addStatements(new iam.PolicyStatement({
       sid: `${sidPrefix}IamPolicyWrite`,
       actions: [
         'iam:CreatePolicy', 'iam:DeletePolicy', 'iam:CreatePolicyVersion', 'iam:DeletePolicyVersion',

@@ -165,7 +165,7 @@ test('role policy is least privilege: no admin, no unscoped iam or secrets', () 
     }
   }
   expect(JSON.stringify(statements)).not.toContain('AdministratorAccess');
-  template.resourceCountIs('AWS::IAM::ManagedPolicy', 3);
+  template.resourceCountIs('AWS::IAM::ManagedPolicy', 7);
 });
 
 test('name patterns cover exactly spira, cubby, pkdump, dumpstar, identity, mtgc and remarkable, nothing broader', () => {
@@ -205,4 +205,28 @@ test('adopted resources are named patterns, never a bare wildcard, and never the
   expect(json).toContain('ephemeral-ci-*');
   expect(json).toContain('oidc-provider/token.actions.githubusercontent.com');
   expect(json).not.toContain('cdk-bootstrap');
+});
+
+test('every IAM policy document fits the 6144-character quota, and the deploy role stays within 10 managed policies', () => {
+  // AWS counts a policy's characters with whitespace stripped; minified JSON is the upper bound.
+  const quota = 6144;
+  const docs = [
+    ...Object.entries(template.findResources('AWS::IAM::ManagedPolicy')),
+    ...Object.entries(template.findResources('AWS::IAM::Policy')),
+  ].map(([id, r]) => [id, JSON.stringify((r as any).Properties.PolicyDocument)] as const);
+  expect(docs.length).toBeGreaterThan(0);
+  for (const [id, json] of docs) {
+    // CloudFormation intrinsics resolve to ~12-char account ids and short partitions/regions;
+    // count each {"Ref":...} / Fn::Join wrapper at the cost of the literal it stands for.
+    const resolved = json
+      .replace(/\{"Ref":"AWS::AccountId"\}/g, '123456789012')
+      .replace(/\{"Ref":"AWS::Partition"\}/g, 'aws')
+      .replace(/\{"Ref":"AWS::Region"\}/g, 'us-west-2');
+    expect({ id, size: Math.max(json.length, resolved.length) <= quota }).toEqual({ id, size: true });
+  }
+  const roleRefs = (r: any) => ([] as unknown[]).concat(r.Properties.Roles ?? []);
+  const attached = Object.values(template.findResources('AWS::IAM::ManagedPolicy')).filter(
+    (r) => roleRefs(r).length > 0,
+  );
+  expect(attached.length).toBeLessThanOrEqual(10);
 });
