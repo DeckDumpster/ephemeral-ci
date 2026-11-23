@@ -164,6 +164,39 @@ if [ "${BACKEND:-}" = "ec2" ]; then
         exit 1
     fi
 
+    # Name why the instance ended (or that it is still running): state on
+    # arrival, AWS end reason and market. Diagnostic only -- a parse failure
+    # yields nulls and never changes the exit code.
+    _end_json="$(printf '%s' "$_raw_info" | jq -c \
+        --arg id "$INSTANCE_ID" --arg label "${RUNNER_LABEL:-}" '
+        (if type == "object" then . else {} end) as $i
+        | {event: "instance-end", instance_id: $id,
+           label: (if $label == "" then null else $label end),
+           state: $i.State.Name,
+           reason_code: $i.StateReason.Code,
+           reason: $i.StateReason.Message,
+           transition: $i.StateTransitionReason,
+           market: ($i.InstanceLifecycle // "on-demand")}' 2>/dev/null)" || _end_json=""
+    if [ -z "$_end_json" ]; then
+        _end_json="$(jq -cn --arg id "$INSTANCE_ID" --arg label "${RUNNER_LABEL:-}" \
+            '{event: "instance-end", instance_id: $id, label: (if $label == "" then null else $label end),
+              state: null, reason_code: null, reason: null, transition: null, market: null}' \
+            2>/dev/null)" || _end_json=""
+    fi
+    [ -z "$_end_json" ] || rr_log_line instance-end "$_end_json"
+    _end_state="$(printf '%s' "$_end_json" | jq -r '.state // ""' 2>/dev/null || true)"
+    _end_code="$(printf '%s' "$_end_json" | jq -r '.reason_code // ""' 2>/dev/null || true)"
+    _end_msg="$(printf '%s' "$_end_json" | jq -r '.reason // ""' 2>/dev/null || true)"
+    if [ "$_end_state" != "running" ] && [[ "$_end_code" == Server.Spot* ]]; then
+        printf '::warning::runner %s was reclaimed by EC2 spot (%s)\n' \
+            "${RUNNER_LABEL:-$INSTANCE_ID}" "$_end_code" >&2
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            printf 'Runner %s was reclaimed by EC2 spot (%s): %s\n' \
+                "${RUNNER_LABEL:-$INSTANCE_ID}" "$_end_code" "$_end_msg" \
+                >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+        fi
+    fi
+
     _ec2_state="$(printf '%s' "$_raw_info" | python3 -c \
         'import json,sys; d=json.load(sys.stdin) or {}; print(d.get("State",{}).get("Name",""))' \
         2>/dev/null || true)"
