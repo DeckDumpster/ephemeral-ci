@@ -137,7 +137,7 @@ if [ "${BACKEND:-}" = "ec2" ]; then
                transition: $i.StateTransitionReason,
                market: ($i.InstanceLifecycle // (if $i.State then "on-demand" else null end)),
                runner: $runner,
-               runner_busy: ($busy | fromjson? // null),
+               runner_busy: (try ($busy | fromjson) catch null),
                runner_checked_at: (if $checked == "" then null else $checked end),
                runner_error: (if $rerr == "" then null else $rerr end),
                registered_at: ($r.registered_at? // null),
