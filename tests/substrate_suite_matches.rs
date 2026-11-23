@@ -2,6 +2,9 @@
 //! into `grep -q` makes the upstream command take SIGPIPE when grep exits at
 //! its first match, so the verdict varies run to run (sp-suxc7q). Matches must
 //! read a here-string or a file instead.
+//!
+//! Limit: a line-by-line scan of a leading `-q` flag cluster; it does not join
+//! continuation lines or see `--quiet` or a `-q` after the pattern.
 
 use std::path::PathBuf;
 
@@ -12,7 +15,7 @@ fn piped_grep_q_lines(script: &str) -> Vec<usize> {
         .enumerate()
         .filter(|(_, l)| !l.trim_start().starts_with('#'))
         .filter(|(_, l)| {
-            l.split('|').skip(1).any(|seg| {
+            l.replace("||", ";").split('|').skip(1).any(|seg| {
                 let mut w = seg.split_whitespace();
                 w.next() == Some("grep")
                     && w.take_while(|a| a.starts_with('-') && !a.starts_with("--"))
@@ -25,7 +28,7 @@ fn piped_grep_q_lines(script: &str) -> Vec<usize> {
 
 #[test]
 fn detector_flags_a_planted_pipeline_into_grep_q() {
-    let planted = "# x | grep -q y\nok\ncat f | grep -qE 'a|b'\nif grep -q a <<<\"$X\"; then\nx | grep -c a\n";
+    let planted = "# x | grep -q y\nok\ncat f | grep -qE 'a|b'\nif grep -q a <<<\"$X\"; then\nx | grep -c a\ny || grep -q z\n";
     assert_eq!(piped_grep_q_lines(planted), vec![3]);
 }
 
