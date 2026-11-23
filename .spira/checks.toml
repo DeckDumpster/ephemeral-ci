@@ -1,0 +1,5 @@
+# Rows `work checks` runs before a branch is submitted. Add a [[check]] with name, run, budget_ms.
+[[check]]
+name = "static"
+run = "bash scripts/ci-static.sh"
+budget_ms = 3000

@@ -29,79 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The exclusions are named individually, never widened to "all warnings",
-      # so anything not on this list is a hard failure on new code.
-      #
-      #   SC1091, SC1090  the credential file and the pvapi helper are sourced
-      #                   from paths resolved at runtime on the hypervisor;
-      #                   shellcheck cannot follow either and there is no
-      #                   directive that makes a runtime path constant.
-      #   SC2034          pvapi.sh sets PVAPI_STATUS and PVAPI_BODY for its
-      #                   CALLERS to read after sourcing, and two tests capture
-      #                   stdout only to keep it out of the log. Each is a
-      #                   variable used somewhere shellcheck cannot see.
-      #   SC2015          `a && b || c` appears throughout as a deliberate
-      #                   idiom. Rewriting 16 sites in scripts that destroy
-      #                   virtual machines to satisfy a style check is a worse
-      #                   trade than the check is worth.
-      #   SC2016          This repository's scripts build command strings for
-      #                   remote execution via SSH and SSM. The $ must survive
-      #                   unexpanded until the remote shell sees it, and printf
-      #                   format strings must not be expanded locally at all, so
-      #                   single quotes are the required spelling — not a mistake.
-      #                   Per-line directives were rejected because the idiom
-      #                   appears in every new script that touches SSM or SSH.
-      # The spira gate command (repo-map) names the same scripts this CI runs.
-      # This step keeps them honest: if a gate clause names a script that does
-      # not exist yet, this step fails here instead of blocking every branch at
-      # gate time with NO_VERDICT (scar: sp-h08ym).
-      - name: gate scripts present
-        run: |
-          for script in \
-              scripts/test-provision.sh \
-              scripts/test-teardown.sh \
-              scripts/test-reap.sh \
-              scripts/test-template-substrate.sh \
-              scripts/test-advance-inputs.sh \
-              scripts/test-advance-credentials.sh \
-              scripts/test-check-ami-for-ref.sh \
-              scripts/test-ami-build.sh \
-              scripts/test-spill-params.sh \
-              scripts/test-spill-probe.sh \
-              scripts/test-spill-probe-first-test.sh \
-              scripts/test-tailnet.sh \
-              scripts/test-warm-cache.sh \
-              scripts/test-workflow-paths.sh; do
-            test -f "$script" || { echo "gate command references $script but it is missing"; exit 1; }
-          done
-
-      - name: shellcheck
+      # Script modes, gate scripts present, shellcheck and the composite-action
+      # parses are one script, so `work checks` and CI run the same thing
+      # (sp-4rim2v). The shellcheck exclusions are named in the script.
+      - name: static checks
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -e SC1091,SC1090,SC2034,SC2015,SC2016 scripts/*.sh scripts/guest/*.sh
-
-      # A tracked .sh with a shebang but no execute bit cannot be run by an
-      # operator without an explicit `bash` prefix — the two facts disagree about
-      # whether the file is a program. An executable .sh without a shebang is
-      # the mirror: the OS will reject it at exec. Both are caught here.
-      # The shebang test requires a `/` after `#!` so that inline-block markers
-      # like `#!maxpar-begin` are not mistaken for interpreter lines.
-      - name: script mode consistency
-        run: |
-          bad=$(git ls-files -s -- '*.sh' | while read -r mode _ _ path; do
-            if head -1 "$path" | grep -q '^#!.*/'; then shebang=1; else shebang=0; fi
-            if [ "$mode" = "100755" ]; then exec_bit=1; else exec_bit=0; fi
-            if [ "$shebang" = 1 ] && [ "$exec_bit" = 0 ]; then
-              echo "has shebang but not executable: $path"
-            fi
-            if [ "$shebang" = 0 ] && [ "$exec_bit" = 1 ]; then
-              echo "executable but no shebang: $path"
-            fi
-          done)
-          if [ -n "$bad" ]; then
-            echo "$bad"
-            exit 1
-          fi
+          bash scripts/ci-static.sh --full
 
       - name: provision
         run: bash scripts/test-provision.sh
@@ -188,59 +122,6 @@ jobs:
       # VM-to-runner correlation), and the guard that no *.py is tracked.
       - name: rust tests
         run: cargo test --locked
-
-      # A composite action with a malformed action.yml fails at the moment a
-      # consumer calls it, in that consumer's run, with an error naming this
-      # repository. Parsing them here means the break is found where it was
-      # made. Checks structure, not just YAML validity: `runs.using` and every
-      # step having a shell are the two mistakes that actually get made.
-      - name: action definitions parse and declare a shell
-        run: |
-          python3 - <<'PY'
-          import sys, yaml, pathlib
-          bad = 0
-          for f in sorted(pathlib.Path(".").glob("*/action.yml")):
-              d = yaml.safe_load(f.read_text())
-              runs = d.get("runs", {})
-              if runs.get("using") != "composite":
-                  print(f"{f}: runs.using is {runs.get('using')!r}, expected 'composite'"); bad += 1
-              for i, step in enumerate(runs.get("steps", [])):
-                  if "run" in step and "shell" not in step:
-                      print(f"{f}: step {i} ({step.get('name','?')}) has `run` with no `shell`"); bad += 1
-              print(f"{f}: ok" if not bad else f"{f}: checked")
-          sys.exit(1 if bad else 0)
-          PY
-
-      # Every input the actions declare must be consumed somewhere in the file,
-      # and every ${{ inputs.x }} must be declared. A typo in either direction
-      # is silent: an undeclared input expands to the empty string, so a
-      # misspelled secret reaches provision.sh as "" and the failure surfaces
-      # as a Proxmox auth error on a machine that no longer exists.
-      - name: action inputs are declared and used
-        run: |
-          python3 - <<'PY'
-          import sys, re, yaml, pathlib
-          bad = 0
-          for f in sorted(pathlib.Path(".").glob("*/action.yml")):
-              text = f.read_text()
-              d = yaml.safe_load(text)
-              declared = set(d.get("inputs", {}) or {})
-              used = set(re.findall(r"inputs\.([a-zA-Z0-9_-]+)", text))
-              for x in sorted(declared - used):
-                  print(f"{f}: input '{x}' is declared but never used"); bad += 1
-              # The literal characters "$" "{" "{" MUST NOT appear adjacent anywhere
-              # in this run: block. GitHub lexes the whole script for expressions
-              # before the shell ever sees it, finds "{{ inputs" inside the
-              # f-string's escaped braces, fails to parse it, and the run becomes
-              # a startup_failure -- no jobs, no annotation on any step, and the
-              # workflow listed by its path instead of its name. It is the whole
-              # file that dies, so the other six checks here never ran either.
-              # Assembled from pieces so the sequence never exists in the source.
-              expr = "$" + "{{ inputs.%s }}"
-              for x in sorted(used - declared):
-                  print(f"{f}: '{expr % x}' is used but never declared"); bad += 1
-          sys.exit(1 if bad else 0)
-          PY
 
   # Infrastructure is Terraform (law-infrastructure-is-terraform); the one CDK
   # stack left is TerraformBootstrap. Offline only: no credentials, the AWS

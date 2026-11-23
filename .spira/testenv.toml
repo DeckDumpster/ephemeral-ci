@@ -1,0 +1,9 @@
+# The one tier is the static script; `lint` is omitted so submit runs no container.
+image = "docker.io/library/ubuntu:24.04"
+workdir = "/work"
+timeout = 60
+default = ["static"]
+
+[tier.static]
+argv = ["bash", "scripts/ci-static.sh"]
+timeout = 60
