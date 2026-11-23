@@ -146,3 +146,14 @@ fn missing_state_reason_logs_nulls_and_keeps_exit_code() {
     assert_eq!(l.field("transition"), "null");
     assert!(!stderr(&r).contains("::warning::"));
 }
+
+#[test]
+fn any_server_spot_code_warns_but_not_while_running() {
+    let reason = r#","StateReason":{"Code":"Server.SpotInstanceShutdown","Message":"Server.SpotInstanceShutdown: Spot instance shutdown"}"#;
+    let gone = run("spot-other", &info("terminated", reason, r#","InstanceLifecycle":"spot""#));
+    assert!(stderr(&gone).contains("reclaimed by EC2 spot (Server.SpotInstanceShutdown)"));
+    let live = run("spot-running", &info("running", reason, r#","InstanceLifecycle":"spot""#));
+    assert_eq!(live.out.status.code(), Some(0), "{}", stderr(&live));
+    assert!(!stderr(&live).contains("::warning::"));
+    assert!(!live.summary.contains("reclaimed by EC2 spot"));
+}
