@@ -376,16 +376,18 @@ runs:
         finish() {
           [ -n "$RUN_RECORD" ] || return 0
           bash "${{ github.action_path }}/../scripts/run-record.sh" finish \
-            "$RUN_RECORD" "$1" "$2" || true
+            "$RUN_RECORD" "$1" "$2" "${3:-}" || true
         }
         started=$SECONDS
         tries=$(( TIMEOUT / 6 ))
         [ "$tries" -gt 0 ] || tries=1
         for _ in $(seq 1 "$tries"); do
-          if gh api "orgs/${{ github.repository_owner }}/actions/runners" \
-               --paginate --jq '.runners[].name' | grep -qx "$LABEL"; then
-            echo "runner $LABEL registered"
-            finish $(( SECONDS - started )) ok
+          status="$(gh api "orgs/${{ github.repository_owner }}/actions/runners" \
+               --paginate --jq '.runners[] | [.name, .status] | @tsv' \
+               | awk -F'\t' -v n="$LABEL" '$1 == n && !s { s = $2 } END { print s }')" || status=""
+          if [ -n "$status" ]; then
+            echo "runner $LABEL registered ($status)"
+            finish $(( SECONDS - started )) ok "$status"
             exit 0
           fi
           sleep 6

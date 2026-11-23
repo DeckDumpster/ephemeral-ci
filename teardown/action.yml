@@ -100,6 +100,14 @@ inputs:
     required: false
     default: ''
 
+  run-record:
+    description: >-
+      The provision action's `run-record` output. Teardown reads when the runner
+      registered and in what status, so the instance-end line can say when it
+      was last seen online. Optional; without it those fields are null.
+    required: false
+    default: ''
+
 runs:
   using: composite
   steps:
@@ -184,6 +192,9 @@ runs:
         # Lets teardown log a tag:round-vm node out of the tailnet by name.
         TS_OAUTH_CLIENT_ID: ${{ inputs.ts-oauth-client-id }}
         TS_OAUTH_SECRET: ${{ inputs.ts-oauth-secret }}
+        RUN_RECORD: ${{ inputs.run-record }}
+        GH_TOKEN: ${{ inputs.runner-reg-pat }}
+        RUNNER_ORG: ${{ github.repository_owner }}
       run: bash "${{ github.action_path }}/../scripts/teardown.sh"
 
     # A cancel between run-instances and provision's outputs leaves vmid,
@@ -198,6 +209,9 @@ runs:
         RUNNER_LABEL: ${{ inputs.label }}
         REPO_SLUG: ${{ github.repository }}
         SPILL_REGION: us-west-2
+        RUN_RECORD: ${{ inputs.run-record }}
+        GH_TOKEN: ${{ inputs.runner-reg-pat }}
+        RUNNER_ORG: ${{ github.repository_owner }}
       run: bash "${{ github.action_path }}/../scripts/teardown.sh"
 
     # DESTROYING THE VM DOES NOT DEREGISTER THE RUNNER.

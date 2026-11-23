@@ -6,7 +6,7 @@
 # A job's duration lumps all of that together; this is what separates it.
 #
 # Sourced by provision.sh, teardown.sh and reap.sh; also runnable as
-#   run-record.sh finish <record-json> <register-seconds|-> <outcome>
+#   run-record.sh finish <record-json> <register-seconds|-> <outcome> [runner-status]
 # which the provision action calls once the runner registers.
 #
 # Every record is ONE line of JSON, and every log line opens with its own UTC
@@ -153,16 +153,21 @@ PY
 
 rr_log_end() { rr_log_line end "$(rr_end_record "$@")"; }
 
-# finish <record-json> <register-seconds|-> <outcome>: complete the provision
-# record with the register wait, log it, publish the job output.
+# finish <record-json> <register-seconds|-> <outcome> [runner-status]: complete
+# the provision record with the register wait, log it, publish the job output.
+# On outcome ok the runner's observed status is stamped with the time seen, so
+# teardown can say when the runner was last known online (sp-ptyk2g).
 rr_finish() {
-    local json="$1" reg="$2" outcome="$3"
-    json="$(RR_JSON="$json" RR_REG="$reg" RR_OUT="$outcome" python3 -c '
-import json, os
+    local json="$1" reg="$2" outcome="$3" status="${4:-}"
+    json="$(RR_JSON="$json" RR_REG="$reg" RR_OUT="$outcome" RR_STATUS="$status" python3 -c '
+import json, os, time
 r = json.loads(os.environ["RR_JSON"])
 reg = os.environ["RR_REG"]
 r["register_s"] = int(reg) if reg.isdigit() else None
 r["outcome"] = os.environ["RR_OUT"]
+if r["outcome"] == "ok" and os.environ["RR_STATUS"]:
+    r["registered_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    r["registered_status"] = os.environ["RR_STATUS"]
 print(json.dumps(r, separators=(",", ":")))')" || return 1
     rr_log_line record "$json"
     [ -z "${GITHUB_OUTPUT:-}" ] || printf 'run-record=%s\n' "$json" >> "$GITHUB_OUTPUT"
@@ -170,8 +175,8 @@ print(json.dumps(r, separators=(",", ":")))')" || return 1
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     case "${1:-}" in
-        finish) [ $# -eq 4 ] || { echo "usage: run-record.sh finish <json> <register-s|-> <outcome>" >&2; exit 2; }
-                rr_finish "$2" "$3" "$4" ;;
-        *) echo "usage: run-record.sh finish <json> <register-s|-> <outcome>" >&2; exit 2 ;;
+        finish) { [ $# -eq 4 ] || [ $# -eq 5 ]; } || { echo "usage: run-record.sh finish <json> <register-s|-> <outcome> [runner-status]" >&2; exit 2; }
+                rr_finish "$2" "$3" "$4" "${5:-}" ;;
+        *) echo "usage: run-record.sh finish <json> <register-s|-> <outcome> [runner-status]" >&2; exit 2 ;;
     esac
 fi
