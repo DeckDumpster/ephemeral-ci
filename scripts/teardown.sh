@@ -105,12 +105,54 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=run-record.sh
 . "$SCRIPT_DIR/run-record.sh"
+# shellcheck source=runner-state.sh
+. "$SCRIPT_DIR/runner-state.sh"
 
 # ── EC2 path ──────────────────────────────────────────────────────────────────
 if [ "${BACKEND:-}" = "ec2" ]; then
     SPILL_REGION="${SPILL_REGION:-us-west-2}"
     EC2_TERMINATE_TIMEOUT="${EC2_TERMINATE_TIMEOUT:-120}"
     EC2_TERMINATE_POLL="${EC2_TERMINATE_POLL:-5}"
+
+    # One instance-end line per teardown, whatever path it takes (sp-ptyk2g).
+    # _end_emit <instance-id|""> <describe-json|""> <describe-error|"">
+    # Adds what the runner's registration looked like at this moment. Diagnostic
+    # only: a failure here yields nulls and never changes the exit code.
+    _end_emit() {
+        local id="$1" info="$2" derr="$3"
+        _end_json="$(jq -cn --arg info "$info" \
+            --arg id "$id" --arg label "${RUNNER_LABEL:-}" --arg derr "$derr" \
+            --arg runner "${RS_STATE:-unknown}" --arg busy "${RS_BUSY:-null}" \
+            --arg checked "${RS_CHECKED_AT:-}" --arg rerr "${RS_ERROR:-}" \
+            --arg rec "${RUN_RECORD:-}" '
+            (try ($info | fromjson | if type == "object" then . else {} end) catch {}) as $i
+            | (try ($rec | fromjson | select(type == "object")) catch null) as $r
+            | (if ($r.registered_status? // null) == "online" then ($r.registered_at // null) else null end) as $reg_online
+            | {event: "instance-end",
+               instance_id: (if $id == "" then null else $id end),
+               label: (if $label == "" then null else $label end),
+               state: $i.State.Name,
+               reason_code: $i.StateReason.Code,
+               reason: ($i.StateReason.Message // (if $derr == "" then null else $derr end)),
+               transition: $i.StateTransitionReason,
+               market: ($i.InstanceLifecycle // (if $i.State then "on-demand" else null end)),
+               runner: $runner,
+               runner_busy: (try ($busy | fromjson) catch null),
+               runner_checked_at: (if $checked == "" then null else $checked end),
+               runner_error: (if $rerr == "" then null else $rerr end),
+               registered_at: ($r.registered_at? // null),
+               last_online_at: (if $runner == "online" and $checked != "" then $checked else $reg_online end)}' 2>/dev/null)" || _end_json=""
+        if [ -z "$_end_json" ]; then
+            _end_json="$(jq -cn --arg id "$id" --arg label "${RUNNER_LABEL:-}" \
+                '{event: "instance-end", instance_id: (if $id == "" then null else $id end),
+                  label: (if $label == "" then null else $label end), state: null,
+                  reason_code: null, reason: null, transition: null, market: null,
+                  runner: "unknown", runner_busy: null, runner_checked_at: null,
+                  runner_error: "instance-end line failed to build", registered_at: null,
+                  last_online_at: null}' 2>/dev/null)" || _end_json=""
+        fi
+        [ -z "$_end_json" ] || rr_log_line instance-end "$_end_json"
+    }
 
     # A cancel can land after run-instances but before provision emits
     # instance-id, so the caller has no id to pass. The instance carries the
@@ -127,13 +169,19 @@ if [ "${BACKEND:-}" = "ec2" ]; then
                 --query 'Reservations[*].Instances[*].InstanceId' \
                 --output text 2>&1)"; then
             printf 'teardown.sh: EC2 lookup by runner label failed: %s\n' "$_by_label_ids" >&2
+            rs_query "${RUNNER_ORG:-}" "$RUNNER_LABEL"
+            _end_emit "" "" "$_by_label_ids"
             exit 1
         fi
         if [ -z "$(printf '%s' "$_by_label_ids" | tr -d '[:space:]')" ]; then
             printf 'teardown.sh: no EC2 instance carries runner label %s; nothing to terminate\n' \
                 "$RUNNER_LABEL" >&2
+            rs_query "${RUNNER_ORG:-}" "$RUNNER_LABEL"
+            _end_emit "" "" "no instance carries the runner label"
             exit 0
         fi
+        rs_query "${RUNNER_ORG:-}" "$RUNNER_LABEL"
+        for _id in $_by_label_ids; do _end_emit "$_id" "" "found by runner label; not described"; done
         # shellcheck disable=SC2086
         aws ec2 terminate-instances --region "$SPILL_REGION" \
             --instance-ids $_by_label_ids >/dev/null
@@ -161,29 +209,16 @@ if [ "${BACKEND:-}" = "ec2" ]; then
                           --query 'Reservations[0].Instances[0]' \
                           --output json 2>&1)"; then
         printf 'teardown.sh: EC2 describe-instances failed: %s\n' "$_raw_info" >&2
+        rs_query "${RUNNER_ORG:-}" "${RUNNER_LABEL:-}"
+        _end_emit "$INSTANCE_ID" "" "$_raw_info"
         exit 1
     fi
 
     # Name why the instance ended (or that it is still running): state on
     # arrival, AWS end reason and market. Diagnostic only -- a parse failure
     # yields nulls and never changes the exit code.
-    _end_json="$(printf '%s' "$_raw_info" | jq -c \
-        --arg id "$INSTANCE_ID" --arg label "${RUNNER_LABEL:-}" '
-        (if type == "object" then . else {} end) as $i
-        | {event: "instance-end", instance_id: $id,
-           label: (if $label == "" then null else $label end),
-           state: $i.State.Name,
-           reason_code: $i.StateReason.Code,
-           reason: $i.StateReason.Message,
-           transition: $i.StateTransitionReason,
-           market: ($i.InstanceLifecycle // "on-demand")}' 2>/dev/null)" || _end_json=""
-    if [ -z "$_end_json" ]; then
-        _end_json="$(jq -cn --arg id "$INSTANCE_ID" --arg label "${RUNNER_LABEL:-}" \
-            '{event: "instance-end", instance_id: $id, label: (if $label == "" then null else $label end),
-              state: null, reason_code: null, reason: null, transition: null, market: null}' \
-            2>/dev/null)" || _end_json=""
-    fi
-    [ -z "$_end_json" ] || rr_log_line instance-end "$_end_json"
+    rs_query "${RUNNER_ORG:-}" "${RUNNER_LABEL:-}"
+    _end_emit "$INSTANCE_ID" "$_raw_info" ""
     _end_state="$(printf '%s' "$_end_json" | jq -r '.state // ""' 2>/dev/null || true)"
     _end_code="$(printf '%s' "$_end_json" | jq -r '.reason_code // ""' 2>/dev/null || true)"
     _end_msg="$(printf '%s' "$_end_json" | jq -r '.reason // ""' 2>/dev/null || true)"

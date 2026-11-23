@@ -2534,6 +2534,15 @@ printf '%s\n' "$_fin47" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z ephem
     && grep -q '"register_s":37' "$SCRATCH/gho47" \
     && ok "test-47c: finish logs a self-stamped line and publishes register_s" || ko "test-47c: finish output: $_fin47"
 
+_fin47d="$(GITHUB_OUTPUT="$SCRATCH/gho47d" bash "$SCRIPT_DIR/run-record.sh" finish "$_rec47a" 5 ok online 2>/dev/null >/dev/null; cat "$SCRATCH/gho47d")"
+_fin47e="$(GITHUB_OUTPUT="$SCRATCH/gho47e" bash "$SCRIPT_DIR/run-record.sh" finish "$_rec47a" 5 ok 2>/dev/null >/dev/null; cat "$SCRATCH/gho47e")"
+printf '%s\n' "$_fin47d" | grep -Eq '"registered_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z"' \
+    && printf '%s\n' "$_fin47d" | grep -q '"registered_status":"online"' \
+    && ! printf '%s\n' "$_fin47e" | grep -q 'registered_' \
+    && printf '%s\n' "$_fin47e" | grep -q '"register_s":5' \
+    && ok "test-47d: finish with a status stamps registered_at/status; three arguments do not" \
+    || ko "test-47d: finish status: '$_fin47d' / '$_fin47e'"
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
