@@ -608,9 +608,10 @@ if [ -n "$_ap_w" ] && [ -n "$_ap_u" ] && [ "$_ap_w" -lt "$_ap_u" ]; then ok "the
 else bad "the proxy is written before the first apt-get update" "write at ${_ap_w:-none}, install at ${_ap_u:-none}"; fi
 if has 'exit 1 ;;' && ! has 'SUBSTRATE_APT_PROXY is not set'; then ok "install does not refuse an unset SUBSTRATE_APT_PROXY"
 else bad "install does not refuse an unset SUBSTRATE_APT_PROXY" "refusal still present"; fi
-if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh" | grep -q "SUBSTRATE_APT_PROXY='\${APT_PROXY_URL:-}'"; then ok "ami-build.sh passes an optional SUBSTRATE_APT_PROXY to the substrate"
+_ami_code="$(grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh")"
+if grep -q "SUBSTRATE_APT_PROXY='\${APT_PROXY_URL:-}'" <<<"$_ami_code"; then ok "ami-build.sh passes an optional SUBSTRATE_APT_PROXY to the substrate"
 else bad "ami-build.sh passes an optional SUBSTRATE_APT_PROXY to the substrate" "not passed with a :- default"; fi
-if grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/ami-build.sh" | grep -q 'APT_PROXY_URL is not set'; then bad "ami-build.sh runs with APT_PROXY_URL unset" "still refuses"
+if grep -q 'APT_PROXY_URL is not set' <<<"$_ami_code"; then bad "ami-build.sh runs with APT_PROXY_URL unset" "still refuses"
 else ok "ami-build.sh runs with APT_PROXY_URL unset"; fi
 
 # The detect hook itself, extracted from the substrate and run against real sockets.
