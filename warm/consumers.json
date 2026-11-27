@@ -19,7 +19,7 @@
       "name": "dumpstar",
       "repo": "https://github.com/DeckDumpster/dumpstar.git",
       "ref": "main",
-      "lockfiles": ["Cargo.lock", "rust-toolchain.toml", "frontend/package-lock.json", "Containerfile"],
+      "lockfiles": ["Cargo.lock", "rust-toolchain.toml", "frontend/package-lock.json", "Containerfile", "flake.nix", "flake.lock"],
       "env": {"CARGO_TARGET_DIR": "$HOME/.cache/dumpstar-builds"},
       "steps": [
         "bash deploy/runner-deps.sh",
