@@ -353,6 +353,8 @@ never copied here. It does not change what CI runs.
   lockfile it names at each consumer's ref. `warm-refresh.yml` compares it every six
   hours (`scripts/check-warm-fresh.sh`) and dispatches Build spill AMI when it differs.
   A fetch failure is never read as fresh.
+  A consumer's lockfiles include whatever pins a tool its runner-deps installs: dumpstar's
+  `flake.nix` and `flake.lock`, which pin the sccache it installs.
 * **Fail closed.** A failing step fails the bake and the AMI build.
 * **Known limit.** pokedumpster's Containerfile scopes its cargo target *cache mount* by
   a hash of the checkout path (pd-wjmd). Image layers are baked either way; whether the
