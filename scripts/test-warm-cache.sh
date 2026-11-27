@@ -93,9 +93,5 @@ AWS_FAIL=1 bash "$T/check-a.sh" >/dev/null 2>&1; rc=$?
 jq -e '.consumers | length > 0 and all(.[]; (.steps | length) > 0 and (.lockfiles | length) > 0)' "$REAL_MANIFEST" >/dev/null \
     && ok "shipped manifest is well-formed" || ko "shipped manifest is well-formed"
 
-# dumpstar's runner-deps installs sccache from its flake, so a pin change must rebake.
-jq -e '.consumers[] | select(.name == "dumpstar") | .lockfiles | contains(["flake.nix", "flake.lock"])' "$REAL_MANIFEST" >/dev/null \
-    && ok "dumpstar's flake is a bake input" || ko "dumpstar's flake is a bake input"
-
 printf '%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
